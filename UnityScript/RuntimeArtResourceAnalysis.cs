@@ -135,35 +135,61 @@ public class RuntimeArtResourceAnalysis : EditorWindow
 
     public static Texture2D CopyTextureToTexture2D(Texture t)
     {
+        if (t == null) return null;
+
         Texture2D tex = null;
         RenderTexture prev = RenderTexture.active;
+        RenderTexture tmp = null;
+
         try
         {
             if (t is RenderTexture rt)
             {
-                RenderTexture tmp = RenderTexture.GetTemporary(rt.width, rt.height, 0, RenderTextureFormat.ARGB32);
+                tmp = RenderTexture.GetTemporary(rt.width, rt.height, 0, RenderTextureFormat.ARGB32);
                 Graphics.Blit(rt, tmp);
-                RenderTexture.active = tmp;
-                tex = new Texture2D(tmp.width, tmp.height, TextureFormat.RGBA32, false);
-                tex.ReadPixels(new Rect(0, 0, tmp.width, tmp.height), 0, 0);
-                tex.Apply();
-                RenderTexture.ReleaseTemporary(tmp);
             }
-            else if (t is Texture2D t2)
+            else if (t is Texture2D t2 && t2.isReadable)
             {
                 tex = new Texture2D(t2.width, t2.height, TextureFormat.RGBA32, false);
                 tex.SetPixels(t2.GetPixels());
                 tex.Apply();
+                return tex;
             }
+            else
+            {
+                int width = t.width;
+                int height = t.height;
+                if (width <= 0 || height <= 0) return null;
+
+                tmp = RenderTexture.GetTemporary(width, height, 0, RenderTextureFormat.ARGB32);
+                Graphics.Blit(t, tmp);
+            }
+
+            if (tmp == null) return tex;
+
+            RenderTexture.active = tmp;
+            tex = new Texture2D(tmp.width, tmp.height, TextureFormat.RGBA32, false);
+            tex.ReadPixels(new Rect(0, 0, tmp.width, tmp.height), 0, 0);
+            tex.Apply();
         }
         catch (Exception e)
         {
-            Debug.LogException(e);
+            Debug.LogWarning($"CopyTextureToTexture2D failed for {t?.name}: {e.Message}");
+            if (tex != null)
+            {
+                UnityEngine.Object.DestroyImmediate(tex);
+                tex = null;
+            }
         }
         finally
         {
+            if (tmp != null)
+            {
+                RenderTexture.ReleaseTemporary(tmp);
+            }
             RenderTexture.active = prev;
         }
+
         return tex;
     }
 

@@ -277,7 +277,21 @@ public class TelemetrySender : MonoBehaviour
                         if (!string.IsNullOrEmpty(respObj.url))
                         {
                             // update local snapshot entry and notify server about updated resource
-                            var updated = new ResourceEntry { id = rwt.entry.id, name = rwt.entry.name, type = rwt.entry.type, width = rwt.entry.width, height = rwt.entry.height, sizeKB = rwt.entry.sizeKB, thumbnailUrl = respObj.url };
+                            var updated = new ResourceEntry {
+                                id = rwt.entry.id,
+                                name = rwt.entry.name,
+                                type = rwt.entry.type,
+                                category = rwt.entry.category,
+                                width = rwt.entry.width,
+                                height = rwt.entry.height,
+                                sizeKB = rwt.entry.sizeKB,
+                                format = rwt.entry.format,
+                                depth = rwt.entry.depth,
+                                mipCount = rwt.entry.mipCount,
+                                shader = rwt.entry.shader,
+                                notes = rwt.entry.notes,
+                                thumbnailUrl = respObj.url
+                            };
                             var snapshotMsg = new SnapshotMessage { clientId = clientId, resources = new List<ResourceEntry> { updated } };
                             var j = JsonConvert.SerializeObject(snapshotMsg);
 #if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS

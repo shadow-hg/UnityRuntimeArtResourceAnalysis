@@ -62,16 +62,34 @@ function handleWsMessage(ws, msg, clientId) {
   try { obj = JSON.parse(msg); } catch (e) { console.warn('invalid json from', clientId); return; }
 
   if (obj.type === 'frame') {
-    // store frame minimal
+    const thumb = obj.thumbnailUrl || obj.thumbnail || null;
     const frameEntry = {
       frameIndex: obj.frameIndex,
       timestamp: obj.timestamp || Date.now(),
       sceneName: obj.sceneName || obj.state || null,
-      dt: obj.dt || null,
+      dt: obj.dt !== undefined ? obj.dt : null,
       metrics: obj.metrics || {},
       resources: obj.resources || [],
-      thumbnail: obj.thumbnailUrl || null
+      thumbnail: thumb,
+      thumbnailUrl: thumb,
+      buildVersion: obj.buildVersion || null
     };
+
+    const passthroughKeys = [
+      'camera',
+      'quality',
+      'events',
+      'memory',
+      'annotations',
+      'tags',
+      'notes',
+      'playback',
+      'device',
+      'environment'
+    ];
+    for (const key of passthroughKeys) {
+      if (obj[key] !== undefined) frameEntry[key] = obj[key];
+    }
     timelines[clientId].push(frameEntry);
     // cap length
     if (timelines[clientId].length > 20000) timelines[clientId].shift();
