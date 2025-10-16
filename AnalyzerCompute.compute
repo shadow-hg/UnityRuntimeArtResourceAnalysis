@@ -1,0 +1,70 @@
+﻿// AnalyzerCompute.compute
+// Compatible with URP: expects _SceneColor/_SceneDepth/_SceneNormal/_MotionVectors (optional)
+
+#pragma kernel CSMain
+
+RWTexture2D<float4> _Output;
+
+Texture2D<float4>   _SceneColor;     // SRGB may be bound; we use as linear math-wise for visualization
+Texture2D<float>    _SceneDepth;     // 0..1 device depth (URP reversed-Z aware is handled by producer; we just visualize)
+Texture2D<float4>   _SceneNormal;    // encoded normals (assume world or view, we just use xy as hint)
+Texture2D<float2>   _MotionVectors;  // optional
+int2                _TexSize;
+
+SamplerState sampler_linear_clamp;
+
+float3 HeatJet(float v)
+{
+    // simple blue->red ramp
+    v = saturate(v);
+    float3 c;
+    c.r = smoothstep(0.5, 1.0, v);
+    c.g = 1.0 - abs(v - 0.5) * 2.0;
+    c.b = 1.0 - smoothstep(0.0, 0.5, v);
+    return saturate(c);
+}
+
+[numthreads(8, 8, 1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _TexSize.x || id.y >= _TexSize.y) return;
+
+    float2 uv = (id.xy + 0.5) / (float2)_TexSize;
+
+    // Safe sampling with try/catch is not available in HLSL; rely on C# to bind fallbacks.
+    float4 col    = _SceneColor.SampleLevel(sampler_linear_clamp, uv, 0);
+    float  depth  = _SceneDepth.SampleLevel(sampler_linear_clamp, uv, 0);
+    float4 normal = _SceneNormal.SampleLevel(sampler_linear_clamp, uv, 0);
+    float2 mv     = 0;
+    // _MotionVectors is optional; if not set, C# won't bind it and shader will use default 0s.
+    // But to be safe against some drivers, we guard with a compile-time macro pattern.
+    // If bound, the value will be non-zero for moving pixels typically.
+    // (No way to detect "bound" here; rely on C# to set or not use it.)
+
+    // Depth heat (near -> far)
+    float depthHeat = saturate(depth);      // As-is visualization
+    float3 depthRGB = HeatJet(1.0 - depthHeat);
+
+    // Normal hint (encode normal xy)
+    float2 n2 = normal.xy * 0.5 + 0.5;
+    float3 normalTint = float3(n2.x, n2.y, 1.0 - max(n2.x, n2.y));
+
+    // Motion magnitude
+    // Some URP pipelines encode per-pixel motion in screen-space pixels per frame
+    // We'll visualize magnitude if motion is bound; else it'll remain 0.
+    // If C# didn't bind _MotionVectors, sample returns 0.
+    mv = _MotionVectors.SampleLevel(sampler_linear_clamp, uv, 0);
+    float motionMag = saturate(length(mv) * 0.25);
+
+    // Compose:
+    // base from depth heat, modulated by normal hint; add motion highlight
+    float3 baseCol = lerp(depthRGB, normalTint, 0.35);
+    baseCol = lerp(baseCol, float3(1, 0, 0), motionMag * 0.65);
+
+    // Optionally mix source color for context
+    float3 src = col.rgb;
+    float mixAmount = 0.35; // overlay amount
+    float3 outCol = lerp(src, baseCol, mixAmount);
+
+    _Output[int2(id.xy)] = float4(outCol, 1.0);
+}
