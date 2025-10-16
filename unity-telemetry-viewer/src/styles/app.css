@@ -1,0 +1,82 @@
+html, body {
+    margin: 0;
+    padding: 0;
+    font-family: Arial, sans-serif;
+    background-color: #f0f0f0;
+}
+
+#app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+}
+
+.toolbar {
+    background-color: #007acc;
+    color: white;
+    padding: 10px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+button {
+    background: #007acc;
+    color: white;
+    border: none;
+    padding: 8px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+button.secondary {
+    background: #555;
+}
+
+@media (max-width: 800px) {
+    .toolbar { flex-direction: column; align-items: stretch; gap: 8px; }
+    .frame-list { max-height: 140px; }
+    .timeline { margin: 6px; padding: 8px; }
+}
+
+.connection-panel {
+    background-color: #ffffff;
+    padding: 15px;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    margin: 10px;
+}
+
+.timeline {
+    background-color: #ffffff;
+    padding: 15px;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    margin: 10px;
+    flex-grow: 1;
+    overflow-y: auto;
+}
+
+.frame-list {
+    background-color: #ffffff;
+    padding: 15px;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    margin: 10px;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.frame-viewer {
+    background-color: #000000;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    margin: 10px;
+    flex-grow: 1;
+}

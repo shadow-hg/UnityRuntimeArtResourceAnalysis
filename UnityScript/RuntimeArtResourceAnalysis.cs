@@ -133,7 +133,7 @@ public class RuntimeArtResourceAnalysis : EditorWindow
         }
     }
 
-    private static Texture2D CopyTextureToTexture2D(Texture t)
+    public static Texture2D CopyTextureToTexture2D(Texture t)
     {
         Texture2D tex = null;
         RenderTexture prev = RenderTexture.active;

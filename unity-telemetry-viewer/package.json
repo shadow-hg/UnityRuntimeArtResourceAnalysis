@@ -1,0 +1,31 @@
+{
+  "name": "unity-telemetry-viewer",
+  "version": "1.0.0",
+  "description": "A real-time telemetry viewer for Unity editor tools to visualize data from mobile devices over a local network.",
+  "main": "src/main.tsx",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "serve": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0",
+    "typescript": "^4.0.0"
+  },
+  "devDependencies": {
+    "vite": "^4.4.0",
+    "@types/react": "^18.0.0",
+    "@types/react-dom": "^18.0.0",
+    "@vitejs/plugin-react": "^4.0.0"
+  },
+  "keywords": [
+    "unity",
+    "telemetry",
+    "viewer",
+    "real-time",
+    "websocket"
+  ],
+  "author": "Your Name",
+  "license": "MIT"
+}
