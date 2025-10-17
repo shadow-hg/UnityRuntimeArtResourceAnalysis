@@ -10,6 +10,7 @@ import {
   isTextureCategory,
   ResourceSummary
 } from '../utils/resourceMetadata';
+import { collectActiveFrameResources } from '../utils/frameResources';
 
 type Props = {
   frame: any | null;
@@ -58,40 +59,10 @@ const FrameDetails: React.FC<Props> = ({ frame, resourceCatalog, onRequestFullsc
     return Number.isFinite(parsed) ? parsed : null;
   }, [frame.frameIndex]);
 
-  const inlineResourceMap = useMemo(() => {
-    const map = new Map<string, any>();
-    if (Array.isArray(frame.resourceSnapshot)) {
-      for (const item of frame.resourceSnapshot) {
-        if (!item || !item.id) continue;
-        map.set(item.id, item);
-      }
-    }
-    return map;
-  }, [frame.resourceSnapshot]);
-
-  const activeResources = useMemo(() => {
-    const result: any[] = [];
-    const seen = new Set<string>();
-
-    if (Array.isArray(frame.resources)) {
-      for (const rid of frame.resources) {
-        if (typeof rid !== 'string' || seen.has(rid)) continue;
-        seen.add(rid);
-        const fromCatalog = resourceCatalog?.[rid];
-        const fromSnapshot = inlineResourceMap.get(rid);
-        if (fromCatalog || fromSnapshot) {
-          result.push({ ...(fromCatalog || {}), ...(fromSnapshot || {}) });
-        }
-      }
-    }
-
-    // fallback: include snapshot entries without ids in the resources array
-    if (result.length === 0 && inlineResourceMap.size > 0) {
-      result.push(...Array.from(inlineResourceMap.values()));
-    }
-
-    return result;
-  }, [frame.resources, resourceCatalog, inlineResourceMap]);
+  const activeResources = useMemo(
+    () => collectActiveFrameResources(frame, resourceCatalog),
+    [frame, resourceCatalog]
+  );
 
   const summaryCache = useMemo(() => new WeakMap<any, ResourceSummary>(), []);
 

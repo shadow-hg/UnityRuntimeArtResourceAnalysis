@@ -1,4 +1,13 @@
-import React from 'react';
+import React, { useMemo } from 'react';
+import { formatMemoryFromKB } from '../utils/format';
+import {
+  buildResourceSummary,
+  getDisplayMemoryKB,
+  getResourceCategory,
+  isTextureCategory,
+  ResourceSummary
+} from '../utils/resourceMetadata';
+import { collectActiveFrameResources } from '../utils/frameResources';
 
 type Props = {
   frame: any | null;
@@ -90,6 +99,50 @@ const FrameViewer: React.FC<Props> = ({ frame, resourceCatalog }) => {
   const frameIndex = typeof frame?.frameIndex === 'number' ? `#${frame.frameIndex}` : '';
   const scene = frame?.sceneName || frame?.state || '未命名场景';
   const timestamp = frame?.timestamp ? new Date(frame.timestamp) : null;
+  const activeResources = useMemo(
+    () => collectActiveFrameResources(frame, resourceCatalog),
+    [frame, resourceCatalog]
+  );
+
+  const textureSummaries = useMemo(() => {
+    if (!activeResources || activeResources.length === 0) return [] as {
+      key: string;
+      name: string;
+      displayMemoryKB: number;
+      compressedKB: number;
+      dimensions: string | null;
+      format: string | null;
+    }[];
+
+    const cache = new WeakMap<any, ResourceSummary>();
+
+    return activeResources
+      .map((resource, index) => {
+        const category = getResourceCategory(resource);
+        if (!isTextureCategory(category)) return null;
+
+        const summary = cache.get(resource) || buildResourceSummary(resource);
+        if (!cache.has(resource)) {
+          cache.set(resource, summary);
+        }
+
+        const displayMemoryKB = getDisplayMemoryKB(resource, summary);
+        const compressedKB = summary.compressedKB;
+        const name = resource.name || resource.id || `纹理 ${index + 1}`;
+        const key = resource.id || resource.guid || name || `texture-${index}`;
+
+        return {
+          key,
+          name,
+          displayMemoryKB,
+          compressedKB,
+          dimensions: summary.dimensions || null,
+          format: summary.format || null
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => item !== null)
+      .sort((a, b) => b.displayMemoryKB - a.displayMemoryKB);
+  }, [activeResources]);
 
   return (
     <div className="panel frame-viewer">
@@ -112,6 +165,31 @@ const FrameViewer: React.FC<Props> = ({ frame, resourceCatalog }) => {
           </div>
         )}
       </div>
+      {textureSummaries.length > 0 && (
+        <div className="frame-viewer__details">
+          <div className="frame-viewer__details-title">纹理概览</div>
+          <ul className="frame-viewer__texture-list">
+            {textureSummaries.map((texture) => {
+              const showCompressed = texture.compressedKB > 0;
+              return (
+                <li key={texture.key} className="frame-viewer__texture-item">
+                  <div className="frame-viewer__texture-name">{texture.name}</div>
+                  <div className="frame-viewer__texture-meta">
+                    <span>{formatMemoryFromKB(texture.displayMemoryKB)}</span>
+                    {showCompressed && (
+                      <span className="frame-viewer__texture-meta-secondary">
+                        压缩 {formatMemoryFromKB(texture.compressedKB)}
+                      </span>
+                    )}
+                    {texture.dimensions && <span>{texture.dimensions}</span>}
+                    {texture.format && <span>{texture.format}</span>}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
     </div>
   );
 };
