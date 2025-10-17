@@ -36,9 +36,6 @@ function pickCameraImage(camera: any): string | null {
 function pickThumbnail(frame: any | null, resourceCatalog?: Record<string, any>) {
   if (!frame) return null;
 
-  const cameraImage = pickCameraImage(frame.camera);
-  if (cameraImage) return cameraImage;
-
   const directSources = [
     frame.thumbnailUrl,
     frame.thumbnail,
@@ -52,6 +49,9 @@ function pickThumbnail(frame: any | null, resourceCatalog?: Record<string, any>)
 
   const direct = directSources.find((value) => value && value.trim().length > 0);
   if (direct) return direct;
+
+  const cameraImage = pickCameraImage(frame.camera);
+  if (cameraImage) return cameraImage;
 
   if (Array.isArray(frame.resourceSnapshot)) {
     for (const res of frame.resourceSnapshot) {

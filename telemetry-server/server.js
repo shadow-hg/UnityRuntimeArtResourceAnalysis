@@ -37,7 +37,149 @@ const clients = new Map();
 const timelines = {};
 // per-client resource catalog: clientId -> {resourceId -> resourceMeta}
 const resourceCatalog = {};
+// per-client session metadata
+const currentSessions = {};
+const sessionHistory = {};
 const MAX_TIMELINE_LENGTH = 10000;
+const MAX_SESSION_HISTORY = 20;
+
+function createSessionId(clientId) {
+  const unique = Math.random().toString(36).slice(2, 10);
+  return `${clientId}-${Date.now().toString(36)}-${unique}`;
+}
+
+function ensureSessionHistory(clientId) {
+  if (!sessionHistory[clientId]) sessionHistory[clientId] = [];
+  return sessionHistory[clientId];
+}
+
+function archiveCurrentSession(clientId, reason = 'archive') {
+  const current = currentSessions[clientId];
+  if (!current) return null;
+
+  const frames = timelines[clientId] || [];
+  const catalog = resourceCatalog[clientId] || {};
+  const frameCount = frames.length;
+  const resourceCount = Object.keys(catalog).length;
+
+  if (frameCount === 0 && resourceCount === 0) {
+    currentSessions[clientId] = null;
+    return null;
+  }
+
+  const endedAt = Date.now();
+  const record = {
+    sessionId: current.sessionId,
+    startedAt: current.startedAt,
+    endedAt,
+    frameCount,
+    resourceCount,
+    frames,
+    catalog,
+    reason
+  };
+
+  const history = ensureSessionHistory(clientId);
+  history.unshift(record);
+  while (history.length > MAX_SESSION_HISTORY) history.pop();
+
+  currentSessions[clientId] = null;
+  timelines[clientId] = [];
+  resourceCatalog[clientId] = {};
+
+  return record;
+}
+
+function beginNewSession(clientId, origin = 'connect') {
+  const now = Date.now();
+  const previous = archiveCurrentSession(clientId, 'superseded');
+  const sessionId = createSessionId(clientId);
+  timelines[clientId] = [];
+  resourceCatalog[clientId] = {};
+  currentSessions[clientId] = {
+    sessionId,
+    startedAt: now,
+    frameCount: 0,
+    resourceCount: 0,
+    origin,
+    archived: previous?.sessionId || null
+  };
+  return currentSessions[clientId];
+}
+
+function getSessionOverview(clientId) {
+  const current = currentSessions[clientId];
+  const history = ensureSessionHistory(clientId).map((entry) => ({
+    sessionId: entry.sessionId,
+    startedAt: entry.startedAt,
+    endedAt: entry.endedAt,
+    frameCount: entry.frameCount,
+    resourceCount: entry.resourceCount,
+    reason: entry.reason
+  }));
+
+  const currentSummary = current
+    ? {
+        sessionId: current.sessionId,
+        startedAt: current.startedAt,
+        frameCount: current.frameCount,
+        resourceCount: current.resourceCount,
+        origin: current.origin
+      }
+    : null;
+
+  return { currentSession: currentSummary, history };
+}
+
+function broadcastSessionUpdate(clientId) {
+  const overview = getSessionOverview(clientId);
+  broadcastToBrowsers({ type: 'session_update', clientId, ...overview });
+}
+
+function resetClientData(clientId) {
+  timelines[clientId] = [];
+  resourceCatalog[clientId] = {};
+}
+
+function getSessionData(clientId, sessionId) {
+  if (!clientId) return null;
+  if (sessionId) {
+    const current = currentSessions[clientId];
+    if (current && current.sessionId === sessionId) {
+      return {
+        sessionId,
+        frames: timelines[clientId] || [],
+        catalog: resourceCatalog[clientId] || {},
+        current: true
+      };
+    }
+    const history = ensureSessionHistory(clientId);
+    const record = history.find((entry) => entry.sessionId === sessionId);
+    if (record) {
+      return {
+        sessionId,
+        frames: record.frames || [],
+        catalog: record.catalog || {},
+        current: false,
+        startedAt: record.startedAt,
+        endedAt: record.endedAt
+      };
+    }
+    return null;
+  }
+
+  const current = currentSessions[clientId];
+  if (current) {
+    return {
+      sessionId: current.sessionId,
+      frames: timelines[clientId] || [],
+      catalog: resourceCatalog[clientId] || {},
+      current: true
+    };
+  }
+
+  return { sessionId: null, frames: [], catalog: {}, current: false };
+}
 
 function broadcastToBrowsers(obj) {
   const str = JSON.stringify(obj);
@@ -76,15 +218,50 @@ wss.on('connection', (ws, req) => {
     clients.set(ws, { id: clientId, type: role });
     console.log('[ws] connected', role, clientId);
 
-    // send a hello ack
-    ws.send(JSON.stringify({ type: 'hello', serverTime: Date.now(), clientId }));
-
     // initialize structures
     if (!timelines[clientId]) timelines[clientId] = [];
     if (!resourceCatalog[clientId]) resourceCatalog[clientId] = {};
+    ensureSessionHistory(clientId);
+
+    if (role === 'unity') {
+      const session = beginNewSession(clientId, 'connect');
+      broadcastSessionUpdate(clientId);
+      console.log('[session] started', clientId, session.sessionId);
+    }
+
+    // send a hello ack
+    ws.send(JSON.stringify({
+      type: 'hello',
+      serverTime: Date.now(),
+      clientId,
+      session: currentSessions[clientId] || null,
+      sessions: getSessionOverview(clientId)
+    }));
+
+    if (role !== 'unity') {
+      const knownClients = new Set([...Object.keys(currentSessions), ...Object.keys(sessionHistory), ...Object.keys(timelines)]);
+      for (const knownClientId of knownClients) {
+        try {
+          ws.send(JSON.stringify({ type: 'session_update', clientId: knownClientId, ...getSessionOverview(knownClientId) }));
+        } catch (error) {
+          console.warn('failed to send session overview', knownClientId, error);
+        }
+      }
+    }
 
     ws.on('message', (m) => handleWsMessage(ws, m));
-    ws.on('close', () => { clients.delete(ws); console.log('[ws] closed', clientId); });
+    ws.on('close', () => {
+      clients.delete(ws);
+      console.log('[ws] closed', clientId);
+      const info = { id: clientId, type: role };
+      if (info.type === 'unity') {
+        const archived = archiveCurrentSession(clientId, 'disconnect');
+        if (archived) {
+          console.log('[session] archived', clientId, archived.sessionId);
+        }
+        broadcastSessionUpdate(clientId);
+      }
+    });
   });
 });
 
@@ -126,6 +303,7 @@ function handleWsMessage(ws, msg) {
   }
 
   if (obj.type === 'frame') {
+    const session = currentSessions[clientId] || (role === 'unity' ? beginNewSession(clientId, 'frame') : null);
     const thumb = obj.thumbnailUrl || obj.thumbnail || null;
     const frameEntry = {
       frameIndex: obj.frameIndex,
@@ -139,7 +317,8 @@ function handleWsMessage(ws, msg) {
       resourceCount: typeof obj.resourceCount === 'number' ? obj.resourceCount : (Array.isArray(obj.resources) ? obj.resources.length : 0),
       thumbnail: thumb,
       thumbnailUrl: thumb,
-      buildVersion: obj.buildVersion || null
+      buildVersion: obj.buildVersion || null,
+      sessionId: session ? session.sessionId : null
     };
 
     const passthroughKeys = [
@@ -159,6 +338,13 @@ function handleWsMessage(ws, msg) {
     }
     timelines[clientId].push(frameEntry);
     if (timelines[clientId].length > MAX_TIMELINE_LENGTH) timelines[clientId].shift();
+    if (session) {
+      const previousCount = session.frameCount || 0;
+      session.frameCount = timelines[clientId].length;
+      if (!previousCount && session.frameCount > 0) {
+        broadcastSessionUpdate(clientId);
+      }
+    }
 
     if (obj.resourceSnapshot) {
       for (const r of obj.resourceSnapshot) {
@@ -168,7 +354,7 @@ function handleWsMessage(ws, msg) {
       }
     }
 
-    broadcastToBrowsers({ type: 'frame', clientId, frame: frameEntry });
+    broadcastToBrowsers({ type: 'frame', clientId, frame: frameEntry, sessionId: frameEntry.sessionId });
   } else if (obj.type === 'resource_snapshot') {
     const shouldReplace = obj.replace !== false;
     if (!resourceCatalog[clientId] || shouldReplace) {
@@ -181,7 +367,21 @@ function handleWsMessage(ws, msg) {
         resourceCatalog[clientId][r.id] = { ...existing, ...r };
       }
     }
-    broadcastToBrowsers({ type: 'resource_snapshot', clientId, resources: obj.resources, replace: shouldReplace });
+    const session = currentSessions[clientId];
+    if (session) {
+      const previousResourceCount = session.resourceCount || 0;
+      session.resourceCount = Object.keys(resourceCatalog[clientId]).length;
+      if (!previousResourceCount && session.resourceCount > 0) {
+        broadcastSessionUpdate(clientId);
+      }
+    }
+    broadcastToBrowsers({
+      type: 'resource_snapshot',
+      clientId,
+      resources: obj.resources,
+      replace: shouldReplace,
+      sessionId: session ? session.sessionId : null
+    });
   } else if (obj.type === 'ping') {
     ws.send(JSON.stringify({ type: 'pong', pongTime: Date.now() }));
   } else if (obj.type === 'control_ack') {
@@ -199,17 +399,49 @@ app.use('/static', express.static(path.join(__dirname, '..', 'unity-telemetry-vi
 app.get('/api/clients', (req, res) => {
   const list = [];
   for (const [ws, info] of clients) list.push(info);
-  res.json({ clients: list, timelines: Object.keys(timelines) });
+  const sessions = {};
+  const knownClients = new Set(Object.keys(timelines));
+  Object.keys(currentSessions).forEach((id) => knownClients.add(id));
+  Object.keys(sessionHistory).forEach((id) => knownClients.add(id));
+  list.forEach((info) => { if (info?.id) knownClients.add(info.id); });
+  for (const clientId of knownClients) {
+    sessions[clientId] = getSessionOverview(clientId);
+  }
+  res.json({ clients: list, timelines: Object.keys(timelines), sessions });
 });
 
 app.get('/api/timeline/:clientId', (req, res) => {
   const id = req.params.clientId;
-  res.json({ frames: timelines[id] || [] });
+  const sessionId = req.query.sessionId ? String(req.query.sessionId) : null;
+  const data = getSessionData(id, sessionId);
+  res.json({ frames: data ? data.frames : [], sessionId: data ? data.sessionId : sessionId || null });
 });
 
 app.get('/api/catalog/:clientId', (req, res) => {
   const id = req.params.clientId;
-  res.json({ catalog: resourceCatalog[id] || {} });
+  const sessionId = req.query.sessionId ? String(req.query.sessionId) : null;
+  const data = getSessionData(id, sessionId);
+  res.json({ catalog: data ? data.catalog : {}, sessionId: data ? data.sessionId : sessionId || null });
+});
+
+app.get('/api/sessions', (req, res) => {
+  const summary = {};
+  const knownClients = new Set(Object.keys(timelines));
+  Object.keys(currentSessions).forEach((id) => knownClients.add(id));
+  Object.keys(sessionHistory).forEach((id) => knownClients.add(id));
+  for (const clientId of knownClients) {
+    summary[clientId] = getSessionOverview(clientId);
+  }
+  res.json({ sessions: summary });
+});
+
+app.get('/api/sessions/:clientId', (req, res) => {
+  const id = req.params.clientId;
+  if (!id) {
+    res.status(400).json({ error: 'clientId required' });
+    return;
+  }
+  res.json(getSessionOverview(id));
 });
 
 // thumbnail upload (multipart)

@@ -12,6 +12,9 @@
   --success: #34d399;
   --error: #f87171;
   --shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
+  --layout-padding-x: 32px;
+  --layout-padding-bottom: 40px;
+  --section-gap: 24px;
   font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif;
 }
 
@@ -37,6 +40,14 @@ body {
   flex-direction: column;
   min-height: 100vh;
   backdrop-filter: blur(24px);
+}
+
+.app-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--section-gap);
+  flex: 1;
+  padding: var(--section-gap) var(--layout-padding-x) var(--layout-padding-bottom);
 }
 
 .sr-only {
@@ -119,15 +130,14 @@ body {
 .app-body {
   display: flex;
   flex-direction: column;
-  gap: 24px;
-  padding: 24px 32px 40px;
+  gap: var(--section-gap);
   flex: 1;
 }
 
 .app-body__upper {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: var(--section-gap);
   align-items: stretch;
   flex: 1;
 }
@@ -135,7 +145,7 @@ body {
 .bottom-panels {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: var(--section-gap);
   width: 100%;
 }
 
@@ -153,9 +163,10 @@ body {
 .session-controls {
   display: grid;
   grid-template-columns: minmax(0, 1.3fr) minmax(280px, 0.7fr);
-  gap: 24px;
-  padding: 20px 32px 0;
+  gap: var(--section-gap);
+  padding: 0;
   align-items: center;
+  width: 100%;
 }
 
 .session-controls--dimmed {
@@ -214,6 +225,11 @@ body {
   grid-column: span 1;
 }
 
+.session-controls__field--full {
+  flex: 1;
+  min-width: 240px;
+}
+
 .session-controls__actions {
   display: flex;
   gap: 10px;
@@ -243,6 +259,14 @@ body {
   flex-wrap: wrap;
 }
 
+.session-controls__history {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
 .session-controls__label {
   font-size: 12px;
   text-transform: uppercase;
@@ -260,7 +284,7 @@ body {
 }
 
 .timeline-section {
-  padding: 16px 32px 0;
+  padding: 0;
 }
 
 .timeline-section .panel {
@@ -276,7 +300,7 @@ body {
 .sidebar {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: var(--section-gap);
 }
 
 .sidebar--right {
@@ -288,7 +312,7 @@ body {
 .main-area {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: var(--section-gap);
 }
 
 .main-area--dimmed {
@@ -305,7 +329,7 @@ body {
 
 .main-bottom {
   display: grid;
-  gap: 24px;
+  gap: var(--section-gap);
 }
 
 .panel {
