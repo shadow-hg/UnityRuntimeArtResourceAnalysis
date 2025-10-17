@@ -72,7 +72,9 @@ function handleWsMessage(ws, msg, clientId) {
       resources: obj.resources || [],
       thumbnail: thumb,
       thumbnailUrl: thumb,
-      buildVersion: obj.buildVersion || null
+      buildVersion: obj.buildVersion || null,
+      resourceSnapshot: obj.resourceSnapshot || null,
+      resourceBreakdown: obj.resourceBreakdown || obj.resourceStats || null
     };
 
     const passthroughKeys = [

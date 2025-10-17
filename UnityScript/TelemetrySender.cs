@@ -105,6 +105,8 @@ public class TelemetrySender : MonoBehaviour
 
         // Collect resources: integrate with runtime collector
         List<ResourceEntry> resources = null;
+        List<ResourceEntry> frameResourceSnapshot = null;
+        ResourceCategoryStat[] resourceBreakdown = null;
         if (sendResourceSnapshots) {
             resources = CollectResourceSnapshot();
         }
@@ -124,21 +126,18 @@ public class TelemetrySender : MonoBehaviour
 #endif
                 // start background upload of thumbnails for resources that have textures available
                 StartCoroutine(UploadResourceThumbnailsAsync(resources));
+                frameResourceSnapshot = resources;
             }
+            resourceBreakdown = BuildResourceBreakdown(resources);
+        }
+
+        var resourceIds = ResourceIdsFrom(resources);
+        if (resourceBreakdown == null && resources != null && resources.Count > 0)
+        {
+            resourceBreakdown = BuildResourceBreakdown(resources);
         }
 
         // Build frame message
-        var frameMsg = new Dictionary<string, object>() {
-            { "type", "frame" },
-            { "clientId", clientId },
-            { "frameIndex", frameIndex },
-            { "timestamp", ts },
-            { "sceneName", SceneManager.GetActiveScene().name },
-            { "dt", Time.deltaTime },
-            { "metrics", metrics },
-            { "resources", resources != null ? ResourceIdsFrom(resources) : new List<string>() }
-        };
-
         // thumbnail capture/upload
         if (sendThumbnail && (frameCounter % thumbnailIntervalFrames == 0)) {
             StartCoroutine(CaptureAndUploadThumbnail(frameIndex, (url) => {
@@ -149,7 +148,9 @@ public class TelemetrySender : MonoBehaviour
                     sceneName = SceneManager.GetActiveScene().name,
                     dt = Time.deltaTime,
                     metrics = new Metrics { fps = (float)metrics["fps"], dt = Time.deltaTime },
-                    resources = ResourceIdsFrom(resources)
+                    resources = resourceIds,
+                    resourceSnapshot = frameResourceSnapshot,
+                    resourceBreakdown = resourceBreakdown
                 };
                 if (!string.IsNullOrEmpty(url)) fm.thumbnailUrl = url;
 #if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
@@ -165,7 +166,9 @@ public class TelemetrySender : MonoBehaviour
                 sceneName = SceneManager.GetActiveScene().name,
                 dt = Time.deltaTime,
                 metrics = new Metrics { fps = (float)metrics["fps"], dt = Time.deltaTime },
-                resources = ResourceIdsFrom(resources)
+                resources = resourceIds,
+                resourceSnapshot = frameResourceSnapshot,
+                resourceBreakdown = resourceBreakdown
             };
 #if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
             var fj = JsonConvert.SerializeObject(fm);
@@ -182,6 +185,31 @@ public class TelemetrySender : MonoBehaviour
             if (!string.IsNullOrEmpty(r.id)) ids.Add(r.id);
         }
         return ids;
+    }
+
+    private ResourceCategoryStat[] BuildResourceBreakdown(List<ResourceEntry> resources)
+    {
+        if (resources == null || resources.Count == 0) return null;
+        var map = new Dictionary<string, ResourceCategoryStat>();
+        foreach (var resource in resources)
+        {
+            if (resource == null) continue;
+            var category = !string.IsNullOrEmpty(resource.category) ? resource.category : resource.type;
+            if (string.IsNullOrEmpty(category)) category = "Unknown";
+
+            if (!map.TryGetValue(category, out var stat))
+            {
+                stat = new ResourceCategoryStat { category = category, count = 0, sizeKB = 0 };
+                map[category] = stat;
+            }
+
+            stat.count += 1;
+            if (resource.sizeKB > 0) stat.sizeKB += resource.sizeKB;
+        }
+
+        var list = new List<ResourceCategoryStat>(map.Values);
+        list.Sort((a, b) => string.CompareOrdinal(a.category, b.category));
+        return list.ToArray();
     }
 
 
@@ -288,9 +316,18 @@ public class TelemetrySender : MonoBehaviour
                                 format = rwt.entry.format,
                                 depth = rwt.entry.depth,
                                 mipCount = rwt.entry.mipCount,
+                                dimension = rwt.entry.dimension,
+                                filterMode = rwt.entry.filterMode,
+                                wrapMode = rwt.entry.wrapMode,
+                                colorSpace = rwt.entry.colorSpace,
                                 shader = rwt.entry.shader,
                                 notes = rwt.entry.notes,
-                                thumbnailUrl = respObj.url
+                                thumbnailUrl = respObj.url,
+                                keywords = rwt.entry.keywords,
+                                metrics = rwt.entry.metrics,
+                                parentId = rwt.entry.parentId,
+                                variantKey = rwt.entry.variantKey,
+                                subMeshCount = rwt.entry.subMeshCount
                             };
                             var snapshotMsg = new SnapshotMessage { clientId = clientId, resources = new List<ResourceEntry> { updated } };
                             var j = JsonConvert.SerializeObject(snapshotMsg);
@@ -381,7 +418,7 @@ public class SnapshotMessage { public string type = "resource_snapshot"; public 
 public class Metrics { public float fps; public float dt; }
 
 [Serializable]
-public class FrameMessage { public string type = "frame"; public string clientId; public int frameIndex; public long timestamp; public string sceneName; public float dt; public Metrics metrics; public List<string> resources; public string thumbnailUrl; }
+public class FrameMessage { public string type = "frame"; public string clientId; public int frameIndex; public long timestamp; public string sceneName; public float dt; public Metrics metrics; public List<string> resources; public string thumbnailUrl; public List<ResourceEntry> resourceSnapshot; public ResourceCategoryStat[] resourceBreakdown; }
 
 [Serializable]
 public class ThumbUploadResponse { public string url; }
