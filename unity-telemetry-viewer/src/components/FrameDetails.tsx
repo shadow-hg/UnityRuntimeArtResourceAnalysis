@@ -1,9 +1,18 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { formatMemoryFromKB, formatNumber, formatSeconds, formatTimestamp } from '../utils/format';
+import {
+  buildMaterialSummary,
+  buildResourceSummary,
+  coerceSize,
+  describeMesh,
+  getResourceCategory
+} from '../utils/resourceMetadata';
 
 type Props = {
   frame: any | null;
   resourceCatalog?: Record<string, any> | undefined;
+  onRequestFullscreen?: () => void;
+  isFullscreen?: boolean;
 };
 
 type ResourceGroup = {
@@ -13,22 +22,19 @@ type ResourceGroup = {
   resources: any[];
 };
 
-function getResourceCategory(resource: any) {
-  return resource?.category || resource?.type || '未分类';
-}
-
-function coerceSizeKB(value: any) {
-  if (typeof value === 'number') return value;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-const FrameDetails: React.FC<Props> = ({ frame, resourceCatalog }) => {
+const FrameDetails: React.FC<Props> = ({ frame, resourceCatalog, onRequestFullscreen, isFullscreen }) => {
   if (!frame) {
     return (
-      <div className="panel frame-details">
+      <div className={`panel frame-details ${isFullscreen ? 'frame-details--fullscreen' : ''}`}>
         <div className="panel-header">
           <div className="panel-title">帧洞察</div>
+          {onRequestFullscreen && (
+            <div className="panel-header__actions">
+              <button type="button" className="panel-button" onClick={onRequestFullscreen}>
+                {isFullscreen ? '退出全屏' : '全屏查看'}
+              </button>
+            </div>
+          )}
         </div>
         <div className="empty-state">选择左侧的帧查看详细指标</div>
       </div>
@@ -91,7 +97,7 @@ const FrameDetails: React.FC<Props> = ({ frame, resourceCatalog }) => {
       const category = getResourceCategory(resource);
       const group = groups.get(category) || { category, count: 0, sizeKB: 0, resources: [] };
       group.count += 1;
-      group.sizeKB += coerceSizeKB(resource.sizeKB ?? resource.size ?? 0);
+      group.sizeKB += coerceSize(resource.sizeKB ?? resource.size ?? 0);
       group.resources.push(resource);
       groups.set(category, group);
     }
@@ -130,6 +136,7 @@ const FrameDetails: React.FC<Props> = ({ frame, resourceCatalog }) => {
   }, [detailedResourceGroups, frame.resourceCount, frame.resources, fallbackResourceStats]);
 
   const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
+  const [expandedResourceKey, setExpandedResourceKey] = useState<string | null>(null);
 
   useEffect(() => {
     if (!expandedCategory) return;
@@ -137,6 +144,10 @@ const FrameDetails: React.FC<Props> = ({ frame, resourceCatalog }) => {
       setExpandedCategory(null);
     }
   }, [expandedCategory, resourceGroups]);
+
+  useEffect(() => {
+    setExpandedResourceKey(null);
+  }, [expandedCategory, frame]);
 
   const metricsEntries = useMemo(() => {
     if (!frame.metrics || typeof frame.metrics !== 'object') return [] as [string, any][];
@@ -161,9 +172,16 @@ const FrameDetails: React.FC<Props> = ({ frame, resourceCatalog }) => {
   }, [frame]);
 
   return (
-    <div className="panel frame-details">
+    <div className={`panel frame-details ${isFullscreen ? 'frame-details--fullscreen' : ''}`}>
       <div className="panel-header">
         <div className="panel-title">帧洞察</div>
+        {onRequestFullscreen && (
+          <div className="panel-header__actions">
+            <button type="button" className="panel-button" onClick={onRequestFullscreen}>
+              {isFullscreen ? '退出全屏' : '全屏查看'}
+            </button>
+          </div>
+        )}
       </div>
       <div className="stats-grid">
         <div className="stat-card">
@@ -247,7 +265,10 @@ const FrameDetails: React.FC<Props> = ({ frame, resourceCatalog }) => {
                   <button
                     type="button"
                     className={`resource-breakdown__row ${isExpanded ? 'resource-breakdown__row--expanded' : ''}`}
-                    onClick={() => setExpandedCategory(isExpanded ? null : stat.category)}
+                    onClick={() => {
+                      setExpandedCategory(isExpanded ? null : stat.category);
+                      setExpandedResourceKey(null);
+                    }}
                     aria-expanded={isExpanded}
                     aria-controls={labelId}
                   >
@@ -265,35 +286,176 @@ const FrameDetails: React.FC<Props> = ({ frame, resourceCatalog }) => {
                   </button>
                   {isExpanded && stat.resources && stat.resources.length > 0 && (
                     <div className="resource-breakdown__details" id={labelId}>
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>名称</th>
-                            <th>大小</th>
-                            <th>信息</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {stat.resources.map((res) => {
-                            const dimensions = res.width && res.height ? `${res.width}×${res.height}` : null;
-                            const extra: string[] = [];
-                            if (res.format) extra.push(res.format);
-                            if (res.mipCount) extra.push(`MIP×${formatNumber(res.mipCount)}`);
-                            if (res.vertexCount) extra.push(`顶点 ${formatNumber(res.vertexCount)}`);
-                            if (res.triangleCount) extra.push(`三角 ${formatNumber(res.triangleCount)}`);
-                            if (res.variantCount) extra.push(`变体×${formatNumber(res.variantCount)}`);
-                            if (res.isReadable === false) extra.push('不可读');
-                            const info = [res.type, dimensions, extra.join(' · ')].filter(Boolean).join(' | ');
-                            return (
-                              <tr key={res.id || res.name}>
-                                <td>{res.name || res.id || '未命名资源'}</td>
-                                <td>{formatMemoryFromKB(coerceSizeKB(res.sizeKB ?? res.size ?? 0))}</td>
-                                <td>{info || '-'}</td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
+                      {stat.resources.map((res, index) => {
+                        const resourceKey = res.id || `${res.name || stat.category}-${index}`;
+                        const summary = buildResourceSummary(res);
+                        const materialSummary = stat.category === 'Material' ? buildMaterialSummary(res) : null;
+                        const isResourceExpanded = expandedResourceKey === resourceKey;
+                        const runtimeMemory = summary.runtimeKB || summary.originalKB;
+                        const meshSummary = stat.category === 'Mesh' ? describeMesh(res) : [];
+                        const infoChips = new Set<string>();
+                        if (res.shader) infoChips.add(res.shader);
+                        if (res.renderQueue) infoChips.add(`队列 ${res.renderQueue}`);
+                        if (res.passCount) infoChips.add(`Pass ${formatNumber(res.passCount)}`);
+                        if (res.dimension) infoChips.add(res.dimension);
+                        if (res.colorSpace) infoChips.add(res.colorSpace);
+                        if (res.mipCount) infoChips.add(`MIP×${formatNumber(res.mipCount)}`);
+                        if (res.antiAliasing) infoChips.add(`MSAA×${formatNumber(res.antiAliasing)}`);
+                        if (res.isReadable === false) infoChips.add('不可读');
+                        meshSummary.forEach((chip) => infoChips.add(chip));
+                        const chips = Array.from(infoChips).filter(Boolean);
+
+                        return (
+                          <div
+                            key={resourceKey}
+                            className={`resource-breakdown__item ${isResourceExpanded ? 'resource-breakdown__item--expanded' : ''}`}
+                          >
+                            <button
+                              type="button"
+                              className="resource-breakdown__item-header"
+                              onClick={() => setExpandedResourceKey(isResourceExpanded ? null : resourceKey)}
+                              aria-expanded={isResourceExpanded}
+                            >
+                              <div>
+                                <div className="resource-breakdown__item-title">{res.name || res.id || '未命名资源'}</div>
+                                <div className="resource-breakdown__item-meta">
+                                  <span>{formatMemoryFromKB(runtimeMemory)}</span>
+                                  {summary.originalKB > 0 && summary.runtimeKB > 0 && summary.runtimeKB !== summary.originalKB && (
+                                    <span className="resource-breakdown__item-meta-secondary">原始 {formatMemoryFromKB(summary.originalKB)}</span>
+                                  )}
+                                  {summary.dimensions && <span>{summary.dimensions}</span>}
+                                  {summary.format && <span>{summary.format}</span>}
+                                </div>
+                              </div>
+                              <div className="resource-breakdown__item-tags">
+                                <span className="resource-panel__badge">{getResourceCategory(res)}</span>
+                                {summary.textureRefs.length > 0 && (
+                                  <span className="resource-panel__tag">纹理×{formatNumber(summary.textureRefs.length)}</span>
+                                )}
+                                {materialSummary && materialSummary.textureCount > 0 && (
+                                  <span className="resource-panel__tag">引用纹理×{formatNumber(materialSummary.textureCount)}</span>
+                                )}
+                              </div>
+                            </button>
+                            {isResourceExpanded && (
+                              <div className="resource-breakdown__item-body">
+                                <div className="resource-breakdown__item-preview">
+                                  {summary.thumbnail ? (
+                                    <img src={summary.thumbnail} alt={res.name || 'Resource'} />
+                                  ) : (
+                                    <div className="resource-breakdown__item-preview--empty">无缩略图</div>
+                                  )}
+                                </div>
+                                <div className="resource-breakdown__item-info">
+                                  <dl>
+                                    <div>
+                                      <dt>内存占用</dt>
+                                      <dd>{formatMemoryFromKB(runtimeMemory)}</dd>
+                                    </div>
+                                    {summary.originalKB > 0 && summary.runtimeKB > 0 && summary.runtimeKB !== summary.originalKB && (
+                                      <div>
+                                        <dt>原始大小</dt>
+                                        <dd>{formatMemoryFromKB(summary.originalKB)}</dd>
+                                      </div>
+                                    )}
+                                    {summary.dimensions && (
+                                      <div>
+                                        <dt>分辨率</dt>
+                                        <dd>{summary.dimensions}</dd>
+                                      </div>
+                                    )}
+                                    {summary.format && (
+                                      <div>
+                                        <dt>格式</dt>
+                                        <dd>{summary.format}</dd>
+                                      </div>
+                                    )}
+                                    {res.vertexCount && (
+                                      <div>
+                                        <dt>顶点</dt>
+                                        <dd>{formatNumber(res.vertexCount)}</dd>
+                                      </div>
+                                    )}
+                                    {res.triangleCount && (
+                                      <div>
+                                        <dt>三角形</dt>
+                                        <dd>{formatNumber(res.triangleCount)}</dd>
+                                      </div>
+                                    )}
+                                    {res.mipCount && (
+                                      <div>
+                                        <dt>MIP 数</dt>
+                                        <dd>{formatNumber(res.mipCount)}</dd>
+                                      </div>
+                                    )}
+                                    {res.variantCount && (
+                                      <div>
+                                        <dt>变体</dt>
+                                        <dd>{formatNumber(res.variantCount)}</dd>
+                                      </div>
+                                    )}
+                                    {res.isReadable === false && (
+                                      <div>
+                                        <dt>可读性</dt>
+                                        <dd>不可读</dd>
+                                      </div>
+                                    )}
+                                    {res.notes && (
+                                      <div>
+                                        <dt>备注</dt>
+                                        <dd>{res.notes}</dd>
+                                      </div>
+                                    )}
+                                  </dl>
+                                  {chips.length > 0 && (
+                                    <div className="resource-breakdown__section">
+                                      <div className="resource-breakdown__section-title">关键信息</div>
+                                      <div className="resource-panel__chips">
+                                        {chips.map((chip) => (
+                                          <span key={chip} className="resource-panel__chip">{chip}</span>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                  {summary.keywords.length > 0 && (
+                                    <div className="resource-breakdown__section">
+                                      <div className="resource-breakdown__section-title">关键词</div>
+                                      <div className="resource-panel__chips">
+                                        {summary.keywords.map((keyword: string) => (
+                                          <span key={keyword} className="resource-panel__chip">{keyword}</span>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                  {summary.textureRefs.length > 0 && (
+                                    <div className="resource-breakdown__section">
+                                      <div className="resource-breakdown__section-title">引用纹理</div>
+                                      <ul className="resource-panel__texture-list">
+                                        {summary.textureRefs.map((tex) => (
+                                          <li key={`${tex.id || ''}-${tex.name || ''}`}>
+                                            <span>{tex.name || tex.id || '纹理'}</span>
+                                            {tex.id && <span className="resource-panel__tag">{tex.id}</span>}
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    </div>
+                                  )}
+                                  {materialSummary && materialSummary.textureNames.length > 0 && (
+                                    <div className="resource-breakdown__section">
+                                      <div className="resource-breakdown__section-title">材质引用</div>
+                                      <div className="resource-panel__chips">
+                                        {materialSummary.textureNames.map((name) => (
+                                          <span key={name} className="resource-panel__chip">{name}</span>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
