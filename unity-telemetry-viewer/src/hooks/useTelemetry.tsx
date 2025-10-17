@@ -86,7 +86,8 @@ export function useTelemetry(wsUrl?: string | null) {
         const current = { ...(next[clientId] || {}) };
         for (const resource of resources) {
           if (!resource || !resource.id) continue;
-          current[resource.id] = resource;
+          const existing = current[resource.id] || {};
+          current[resource.id] = { ...existing, ...resource };
         }
         next[clientId] = current;
         return next;

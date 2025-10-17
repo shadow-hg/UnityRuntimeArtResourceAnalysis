@@ -44,6 +44,7 @@ public class TelemetrySender : MonoBehaviour
 
     // simple last-sent snapshot hash to avoid flooding
     private string lastSnapshotHash = null;
+    private List<ResourceEntry> currentResourceSnapshot = new List<ResourceEntry>();
 
     void Start()
     {
@@ -104,30 +105,42 @@ public class TelemetrySender : MonoBehaviour
         metrics["dt"] = Time.deltaTime;
 
         // Collect resources: integrate with runtime collector
-        List<ResourceEntry> resources = null;
-        if (sendResourceSnapshots) {
-            resources = CollectResourceSnapshot();
-        }
+        List<ResourceEntry> latestSnapshot = null;
+        if (sendResourceSnapshots)
+        {
+            try
+            {
+                latestSnapshot = CollectResourceSnapshot() ?? new List<ResourceEntry>();
+            }
+            catch
+            {
+                latestSnapshot = new List<ResourceEntry>();
+            }
+            currentResourceSnapshot = latestSnapshot;
 
-        // send resource snapshot only when changed
-        if (resources != null) {
-            var snapWrapper = new ResourceEntryListWrapper { items = resources };
+            // send resource snapshot only when changed
+            var snapWrapper = new ResourceEntryListWrapper { items = latestSnapshot };
             var snapJson = JsonUtility.ToJson(snapWrapper);
-            var hash = snapJson.GetHashCode().ToString();
-            if (hash != lastSnapshotHash) {
+            var hash = Hash128.Compute(snapJson).ToString();
+            if (hash != lastSnapshotHash)
+            {
                 lastSnapshotHash = hash;
-                // convert to serializable message
-                var snapshotMsg = new SnapshotMessage { clientId = clientId, resources = resources };
+                var snapshotMsg = new SnapshotMessage { clientId = clientId, resources = latestSnapshot };
 #if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
                 var j = JsonConvert.SerializeObject(snapshotMsg);
                 _ = SendTextAsync(j);
 #endif
-                // start background upload of thumbnails for resources that have textures available
-                StartCoroutine(UploadResourceThumbnailsAsync(resources));
+                StartCoroutine(UploadResourceThumbnailsAsync(latestSnapshot));
             }
         }
 
-        // Build frame message
+        var activeResources = currentResourceSnapshot ?? new List<ResourceEntry>();
+        int resourceTotalKB;
+        int resourceCount;
+        var resourceStats = SummarizeResourceStats(activeResources, out resourceTotalKB, out resourceCount);
+        var resourceIds = ResourceIdsFrom(activeResources);
+
+        // Build frame message dictionary snapshot (for debugging / potential extensions)
         var frameMsg = new Dictionary<string, object>() {
             { "type", "frame" },
             { "clientId", clientId },
@@ -136,8 +149,13 @@ public class TelemetrySender : MonoBehaviour
             { "sceneName", SceneManager.GetActiveScene().name },
             { "dt", Time.deltaTime },
             { "metrics", metrics },
-            { "resources", resources != null ? ResourceIdsFrom(resources) : new List<string>() }
+            { "resources", resourceIds },
+            { "resourceStats", resourceStats },
+            { "resourceTotalKB", resourceTotalKB },
+            { "resourceCount", resourceCount }
         };
+
+        var fpsValue = metrics.ContainsKey("fps") ? (float)metrics["fps"] : 0f;
 
         // thumbnail capture/upload
         if (sendThumbnail && (frameCounter % thumbnailIntervalFrames == 0)) {
@@ -148,8 +166,11 @@ public class TelemetrySender : MonoBehaviour
                     timestamp = ts,
                     sceneName = SceneManager.GetActiveScene().name,
                     dt = Time.deltaTime,
-                    metrics = new Metrics { fps = (float)metrics["fps"], dt = Time.deltaTime },
-                    resources = ResourceIdsFrom(resources)
+                    metrics = new Metrics { fps = fpsValue, dt = Time.deltaTime },
+                    resources = resourceIds,
+                    resourceStats = resourceStats,
+                    resourceTotalKB = resourceTotalKB,
+                    resourceCount = resourceCount
                 };
                 if (!string.IsNullOrEmpty(url)) fm.thumbnailUrl = url;
 #if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
@@ -164,8 +185,11 @@ public class TelemetrySender : MonoBehaviour
                 timestamp = ts,
                 sceneName = SceneManager.GetActiveScene().name,
                 dt = Time.deltaTime,
-                metrics = new Metrics { fps = (float)metrics["fps"], dt = Time.deltaTime },
-                resources = ResourceIdsFrom(resources)
+                metrics = new Metrics { fps = fpsValue, dt = Time.deltaTime },
+                resources = resourceIds,
+                resourceStats = resourceStats,
+                resourceTotalKB = resourceTotalKB,
+                resourceCount = resourceCount
             };
 #if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
             var fj = JsonConvert.SerializeObject(fm);
@@ -182,6 +206,41 @@ public class TelemetrySender : MonoBehaviour
             if (!string.IsNullOrEmpty(r.id)) ids.Add(r.id);
         }
         return ids;
+    }
+
+    private List<ResourceCategoryStat> SummarizeResourceStats(List<ResourceEntry> resources, out int totalKB, out int totalCount)
+    {
+        totalKB = 0;
+        totalCount = 0;
+        var stats = new Dictionary<string, ResourceCategoryStat>(StringComparer.Ordinal);
+        if (resources != null)
+        {
+            foreach (var r in resources)
+            {
+                if (r == null) continue;
+                totalCount++;
+                var category = !string.IsNullOrEmpty(r.category) ? r.category : (!string.IsNullOrEmpty(r.type) ? r.type : "Uncategorized");
+                if (!stats.TryGetValue(category, out var stat))
+                {
+                    stat = new ResourceCategoryStat { category = category, count = 0, sizeKB = 0 };
+                    stats[category] = stat;
+                }
+                stat.count++;
+                var size = Mathf.Max(0, r.sizeKB);
+                stat.sizeKB += size;
+                totalKB += size;
+            }
+        }
+
+        var list = new List<ResourceCategoryStat>(stats.Values);
+        list.Sort((a, b) =>
+        {
+            int sizeCompare = b.sizeKB.CompareTo(a.sizeKB);
+            if (sizeCompare != 0) return sizeCompare;
+            return string.CompareOrdinal(a.category ?? string.Empty, b.category ?? string.Empty);
+        });
+
+        return list;
     }
 
 
@@ -277,22 +336,9 @@ public class TelemetrySender : MonoBehaviour
                         if (!string.IsNullOrEmpty(respObj.url))
                         {
                             // update local snapshot entry and notify server about updated resource
-                            var updated = new ResourceEntry {
-                                id = rwt.entry.id,
-                                name = rwt.entry.name,
-                                type = rwt.entry.type,
-                                category = rwt.entry.category,
-                                width = rwt.entry.width,
-                                height = rwt.entry.height,
-                                sizeKB = rwt.entry.sizeKB,
-                                format = rwt.entry.format,
-                                depth = rwt.entry.depth,
-                                mipCount = rwt.entry.mipCount,
-                                shader = rwt.entry.shader,
-                                notes = rwt.entry.notes,
-                                thumbnailUrl = respObj.url
-                            };
-                            var snapshotMsg = new SnapshotMessage { clientId = clientId, resources = new List<ResourceEntry> { updated } };
+                            rwt.entry.thumbnailUrl = respObj.url;
+                            UpdateCachedResource(rwt.entry);
+                            var snapshotMsg = new SnapshotMessage { clientId = clientId, resources = new List<ResourceEntry> { rwt.entry } };
                             var j = JsonConvert.SerializeObject(snapshotMsg);
 #if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
                             _ = SendTextAsync(j);
@@ -302,6 +348,21 @@ public class TelemetrySender : MonoBehaviour
                     }
                     catch { }
                 }
+            }
+        }
+    }
+
+    private void UpdateCachedResource(ResourceEntry updated)
+    {
+        if (updated == null || string.IsNullOrEmpty(updated.id)) return;
+        if (currentResourceSnapshot == null) return;
+        for (int i = 0; i < currentResourceSnapshot.Count; i++)
+        {
+            var entry = currentResourceSnapshot[i];
+            if (entry != null && entry.id == updated.id)
+            {
+                currentResourceSnapshot[i] = updated;
+                break;
             }
         }
     }
@@ -381,7 +442,7 @@ public class SnapshotMessage { public string type = "resource_snapshot"; public 
 public class Metrics { public float fps; public float dt; }
 
 [Serializable]
-public class FrameMessage { public string type = "frame"; public string clientId; public int frameIndex; public long timestamp; public string sceneName; public float dt; public Metrics metrics; public List<string> resources; public string thumbnailUrl; }
+public class FrameMessage { public string type = "frame"; public string clientId; public int frameIndex; public long timestamp; public string sceneName; public float dt; public Metrics metrics; public List<string> resources; public List<ResourceCategoryStat> resourceStats; public int resourceTotalKB; public int resourceCount; public string thumbnailUrl; }
 
 [Serializable]
 public class ThumbUploadResponse { public string url; }

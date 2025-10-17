@@ -389,6 +389,27 @@ body {
   font-size: 12px;
 }
 
+.frame-list__row--resource {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.frame-list__row--resource span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.frame-list__tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 11px;
+  color: var(--text-primary);
+}
+
 .frame-list__scene {
   font-weight: 600;
 }
@@ -496,6 +517,99 @@ body {
   color: var(--text-primary);
 }
 
+.timeline-panel__chart {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.timeline-panel__chart-bars {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(56px, 1fr));
+  gap: 10px;
+}
+
+.timeline-panel__bar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 10px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid transparent;
+  transition: border 0.18s ease, transform 0.18s ease, background 0.18s ease;
+  cursor: pointer;
+}
+
+.timeline-panel__bar:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.06);
+  transform: translateY(-2px);
+}
+
+.timeline-panel__bar--active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(108, 92, 231, 0.35);
+  background: rgba(108, 92, 231, 0.12);
+}
+
+.timeline-panel__bar-stack {
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 3px;
+  height: 120px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: rgba(10, 12, 20, 0.9);
+}
+
+.timeline-panel__segment {
+  border-radius: 6px;
+}
+
+.timeline-panel__bar-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.timeline-panel__bar-index {
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.timeline-panel__bar-value {
+  font-family: 'JetBrains Mono', 'SFMono-Regular', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  color: var(--text-muted);
+}
+
+.timeline-panel__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.timeline-panel__legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.timeline-panel__legend-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
+}
+
 .timeline-panel__slider {
   display: flex;
   flex-direction: column;
@@ -516,15 +630,54 @@ body {
 .timeline-panel__details {
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.04);
-  padding: 12px;
-  max-height: 240px;
-  overflow: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
-.timeline-panel__details pre {
+.timeline-panel__details-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 12px;
+}
+
+.timeline-panel__details-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+.timeline-panel__details-value {
+  margin-top: 4px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.timeline-panel__details-list {
   margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
   font-size: 12px;
-  font-family: 'JetBrains Mono', 'SFMono-Regular', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+}
+
+.timeline-panel__details-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 0.8fr);
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-muted);
+}
+
+.timeline-panel__details-list li span:first-child {
+  color: var(--text-primary);
+  font-weight: 500;
 }
 
 .stats-grid {
@@ -586,6 +739,63 @@ body {
 .metrics-panel__value {
   font-size: 14px;
   font-weight: 600;
+}
+
+.resource-breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.resource-breakdown__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.resource-breakdown__info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.resource-breakdown__category {
+  font-size: 13px;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.resource-breakdown__count {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.resource-breakdown__bar {
+  position: relative;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+
+.resource-breakdown__bar-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+
+.resource-breakdown__value {
+  font-family: 'JetBrains Mono', 'SFMono-Regular', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 .metrics-list {
@@ -704,6 +914,44 @@ body {
   gap: 12px;
   font-size: 12px;
   color: var(--text-muted);
+}
+
+.resource-card__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(108, 92, 231, 0.18);
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+}
+
+.resource-card__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.resource-card__chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 11px;
+  color: var(--text-muted);
+  max-width: 100%;
+}
+
+.resource-card__note {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 @media (max-width: 1280px) {

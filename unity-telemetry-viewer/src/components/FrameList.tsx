@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import { Frame } from '../hooks/useTelemetry';
+import { formatMemoryFromKB, formatNumber } from '../utils/format';
 
 type Props = {
   frames: Frame[];
@@ -34,6 +35,16 @@ const FrameList: React.FC<Props> = ({ frames, selectedFrameKey, onSelect }) => {
             const rawFps = dt && dt > 0 ? 1 / dt : frame.metrics?.fps;
             const fps = typeof rawFps === 'number' && Number.isFinite(rawFps) ? rawFps : null;
             const timestamp = frame.timestamp ? new Date(frame.timestamp) : null;
+            const statsArray: any[] = Array.isArray(frame.resourceStats) ? frame.resourceStats : [];
+            const resourceTotalKB = typeof frame.resourceTotalKB === 'number'
+              ? frame.resourceTotalKB
+              : statsArray.reduce((sum, stat) => sum + Number(stat?.sizeKB ?? 0), 0);
+            const resourceCountValue = typeof frame.resourceCount === 'number'
+              ? frame.resourceCount
+              : Array.isArray(frame.resources)
+                ? frame.resources.length
+                : statsArray.reduce((sum, stat) => sum + Number(stat?.count ?? 0), 0);
+            const topCategory = statsArray.length > 0 ? (statsArray[0]?.category || '未分类') : null;
             const isActive = key === selectedFrameKey;
 
             return (
@@ -50,6 +61,11 @@ const FrameList: React.FC<Props> = ({ frames, selectedFrameKey, onSelect }) => {
                 <div className="frame-list__row frame-list__row--meta">
                   <span>{timestamp ? timestamp.toLocaleTimeString() : '未知时间'}</span>
                   {fps !== null && <span>{fps.toFixed(1)} FPS</span>}
+                </div>
+                <div className="frame-list__row frame-list__row--resource">
+                  <span>{formatNumber(resourceCountValue)} 资源</span>
+                  <span>{formatMemoryFromKB(resourceTotalKB)}</span>
+                  {topCategory && <span className="frame-list__tag">{topCategory}</span>}
                 </div>
               </button>
             );

@@ -31,7 +31,29 @@ const FrameDetails: React.FC<Props> = ({ frame }) => {
     return Number.isFinite(parsed) ? parsed : null;
   }, [frame.frameIndex]);
 
-  const resourceCount = Array.isArray(frame.resources) ? frame.resources.length : 0;
+  const resourceStats = useMemo(() => {
+    if (!Array.isArray(frame.resourceStats)) return [] as { category: string; count: number; sizeKB: number }[];
+    return (frame.resourceStats as any[])
+      .map((stat) => ({
+        category: stat?.category || '未分类',
+        count: Number(stat?.count ?? 0),
+        sizeKB: Number(stat?.sizeKB ?? 0)
+      }))
+      .filter((stat) => Number.isFinite(stat.count) || Number.isFinite(stat.sizeKB));
+  }, [frame]);
+
+  const resourceTotalKB = useMemo(() => {
+    if (typeof frame.resourceTotalKB === 'number') return frame.resourceTotalKB;
+    return resourceStats.reduce((sum, stat) => sum + (Number.isFinite(stat.sizeKB) ? stat.sizeKB : 0), 0);
+  }, [frame.resourceTotalKB, resourceStats]);
+
+  const resourceCount = useMemo(() => {
+    if (typeof frame.resourceCount === 'number') return frame.resourceCount;
+    if (Array.isArray(frame.resources)) return frame.resources.length;
+    return resourceStats.reduce((sum, stat) => sum + (Number.isFinite(stat.count) ? stat.count : 0), 0);
+  }, [frame.resourceCount, frame.resources, resourceStats]);
+
+  const topResourceStats = useMemo(() => resourceStats.slice(0, 6), [resourceStats]);
 
   const metricsEntries = useMemo(() => {
     if (!frame.metrics || typeof frame.metrics !== 'object') return [] as [string, any][];
@@ -78,6 +100,10 @@ const FrameDetails: React.FC<Props> = ({ frame }) => {
           <span className="stat-card__value">{formatNumber(resourceCount)}</span>
         </div>
         <div className="stat-card">
+          <span className="stat-card__label">资源内存</span>
+          <span className="stat-card__value">{formatMemoryFromKB(resourceTotalKB)}</span>
+        </div>
+        <div className="stat-card">
           <span className="stat-card__label">场景</span>
           <span className="stat-card__value">{frame.sceneName || frame.state || '未知场景'}</span>
         </div>
@@ -122,6 +148,29 @@ const FrameDetails: React.FC<Props> = ({ frame }) => {
               </li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {topResourceStats.length > 0 && (
+        <div className="metrics-panel">
+          <div className="metrics-panel__title">资源分类</div>
+          <div className="resource-breakdown">
+            {topResourceStats.map((stat) => (
+              <div key={stat.category} className="resource-breakdown__row">
+                <div className="resource-breakdown__info">
+                  <span className="resource-breakdown__category">{stat.category}</span>
+                  <span className="resource-breakdown__count">{formatNumber(stat.count)} 个</span>
+                </div>
+                <div className="resource-breakdown__bar">
+                  <div
+                    className="resource-breakdown__bar-fill"
+                    style={{ width: resourceTotalKB > 0 ? `${Math.max(2, (stat.sizeKB / resourceTotalKB) * 100)}%` : '0%' }}
+                  />
+                </div>
+                <div className="resource-breakdown__value">{formatMemoryFromKB(stat.sizeKB)}</div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
 using UnityEngine.Experimental.Rendering;
 using UnityEngine.Rendering;
@@ -7,10 +9,21 @@ using UnityEngine.Rendering;
 // It collects textures referenced by active Renderers' materials and active Cameras' target RenderTextures.
 public static class RuntimeResourceCollector
 {
+    private class ShaderAggregate
+    {
+        public readonly HashSet<string> keywords = new HashSet<string>(StringComparer.Ordinal);
+        public readonly HashSet<string> variants = new HashSet<string>(StringComparer.Ordinal);
+        public int materialCount;
+    }
+
     public static List<ResourceEntry> GetSnapshot()
     {
         var list = new List<ResourceEntry>();
-        var seen = new HashSet<int>();
+        var textureSeen = new HashSet<int>();
+        var materialSeen = new HashSet<int>();
+        var meshSeen = new HashSet<int>();
+        var shaderSeen = new HashSet<int>();
+        var shaderAggregates = new Dictionary<Shader, ShaderAggregate>();
 
         // Collect from Renderers' materials
         var renderers = Object.FindObjectsOfType<Renderer>(true);
@@ -35,7 +48,7 @@ public static class RuntimeResourceCollector
                             {
                                 var propName = m.shader.GetPropertyName(i);
                                 var tex = m.GetTexture(propName);
-                                AddTextureEntry(tex, list, seen, $"{m.name}/{propName}");
+                                AddTextureEntry(tex, list, textureSeen, $"{m.name}/{propName}");
                             }
                         }
                         catch { }
@@ -44,11 +57,14 @@ public static class RuntimeResourceCollector
                 else
                 {
                     // fallback common names
-                    AddTextureEntry(m.GetTexture("_MainTex"), list, seen, $"{m.name}/_MainTex");
-                    AddTextureEntry(m.GetTexture("_BaseMap"), list, seen, $"{m.name}/_BaseMap");
-                    AddTextureEntry(m.GetTexture("_BumpMap"), list, seen, $"{m.name}/_BumpMap");
-                    AddTextureEntry(m.GetTexture("_EmissionMap"), list, seen, $"{m.name}/_EmissionMap");
+                    AddTextureEntry(m.GetTexture("_MainTex"), list, textureSeen, $"{m.name}/_MainTex");
+                    AddTextureEntry(m.GetTexture("_BaseMap"), list, textureSeen, $"{m.name}/_BaseMap");
+                    AddTextureEntry(m.GetTexture("_BumpMap"), list, textureSeen, $"{m.name}/_BumpMap");
+                    AddTextureEntry(m.GetTexture("_EmissionMap"), list, textureSeen, $"{m.name}/_EmissionMap");
                 }
+
+                bool addedMaterial = AddMaterialEntry(m, list, materialSeen);
+                RegisterShaderUsage(m, list, shaderAggregates, addedMaterial);
             }
         }
 
@@ -57,39 +73,45 @@ public static class RuntimeResourceCollector
         foreach (var c in cams)
         {
             var rt = c.targetTexture;
-            AddTextureEntry(rt, list, seen, $"{c.name}.targetTexture");
+            AddTextureEntry(rt, list, textureSeen, $"{c.name}.targetTexture");
         }
 
         // Optionally, include any loaded RenderTextures (may include temporary RTs)
         var allRTs = Object.FindObjectsOfType<RenderTexture>(true);
         foreach (var r in allRTs)
         {
-            AddTextureEntry(r, list, seen, "RenderTexture");
+            AddTextureEntry(r, list, textureSeen, "RenderTexture");
         }
 
         // Materials referenced by renderers
-        foreach (var renderer in renderers)
-        {
-            var mats = renderer.sharedMaterials;
-            if (mats == null) continue;
-            foreach (var mat in mats)
-            {
-                AddMaterialEntry(mat, list, seen);
-            }
-        }
-
         // Meshes referenced by MeshFilter / SkinnedMeshRenderer
         var meshFilters = Object.FindObjectsOfType<MeshFilter>(true);
         foreach (var mf in meshFilters)
         {
-            AddMeshEntry(mf.sharedMesh, list, seen);
+            AddMeshEntry(mf.sharedMesh, list, meshSeen);
         }
 
         var skinnedRenderers = Object.FindObjectsOfType<SkinnedMeshRenderer>(true);
         foreach (var smr in skinnedRenderers)
         {
-            AddMeshEntry(smr.sharedMesh, list, seen);
+            AddMeshEntry(smr.sharedMesh, list, meshSeen);
         }
+
+        foreach (var kvp in shaderAggregates.OrderBy(k => k.Key != null ? k.Key.name : string.Empty, StringComparer.Ordinal))
+        {
+            AddShaderEntry(kvp.Key, kvp.Value, list, shaderSeen);
+        }
+
+        list.Sort((a, b) =>
+        {
+            var catA = a.category ?? a.type ?? string.Empty;
+            var catB = b.category ?? b.type ?? string.Empty;
+            int catCompare = string.CompareOrdinal(catA, catB);
+            if (catCompare != 0) return catCompare;
+            int sizeCompare = b.sizeKB.CompareTo(a.sizeKB);
+            if (sizeCompare != 0) return sizeCompare;
+            return string.CompareOrdinal(a.name ?? string.Empty, b.name ?? string.Empty);
+        });
 
         return list;
     }
@@ -147,58 +169,43 @@ public static class RuntimeResourceCollector
             AddTextureEntryWithTex(r, list, seen, "RenderTexture");
         }
 
+        list.Sort((a, b) => string.CompareOrdinal(a.entry?.name ?? string.Empty, b.entry?.name ?? string.Empty));
+
         return list;
     }
 
-    private static void AddTextureEntry(Texture tex, List<ResourceEntry> list, HashSet<int> seen, string note = null)
+    private static void AddTextureEntry(Texture tex, List<ResourceEntry> list, HashSet<int> seen, string usage = null)
     {
         if (tex == null) return;
         int id = tex.GetInstanceID();
         if (seen.Contains(id)) return;
         seen.Add(id);
-        var entry = new ResourceEntry();
-        entry.id = id.ToString();
-        entry.name = tex.name ?? "<unnamed>";
-        entry.type = tex.GetType().Name;
-        entry.category = tex is RenderTexture ? "RenderTexture" : "Texture";
-        try { entry.width = tex.width; } catch { entry.width = 0; }
-        try { entry.height = tex.height; } catch { entry.height = 0; }
-        entry.format = GetTextureFormat(tex);
-        entry.depth = GetTextureDepth(tex);
-        entry.mipCount = GetTextureMips(tex);
-        try { entry.sizeKB = (int)(RuntimeEstimateMemoryBytes(tex) / 1024); } catch { entry.sizeKB = 0; }
-        entry.notes = note;
-        list.Add(entry);
+        var entry = BuildTextureEntry(tex, usage);
+        if (entry != null)
+        {
+            list.Add(entry);
+        }
     }
 
-    private static void AddTextureEntryWithTex(Texture tex, List<ResourceWithTexture> list, HashSet<int> seen, string note = null)
+    private static void AddTextureEntryWithTex(Texture tex, List<ResourceWithTexture> list, HashSet<int> seen, string usage = null)
     {
         if (tex == null) return;
         int id = tex.GetInstanceID();
         if (seen.Contains(id)) return;
         seen.Add(id);
 
-        var entry = new ResourceEntry();
-        entry.id = id.ToString();
-        entry.name = tex.name ?? "<unnamed>";
-        entry.type = tex.GetType().Name;
-        entry.category = tex is RenderTexture ? "RenderTexture" : "Texture";
-        try { entry.width = tex.width; } catch { entry.width = 0; }
-        try { entry.height = tex.height; } catch { entry.height = 0; }
-        entry.format = GetTextureFormat(tex);
-        entry.depth = GetTextureDepth(tex);
-        entry.mipCount = GetTextureMips(tex);
-        try { entry.sizeKB = (int)(RuntimeEstimateMemoryBytes(tex) / 1024); } catch { entry.sizeKB = 0; }
-        entry.notes = note;
-
-        list.Add(new ResourceWithTexture { entry = entry, tex = tex });
+        var entry = BuildTextureEntry(tex, usage);
+        if (entry != null)
+        {
+            list.Add(new ResourceWithTexture { entry = entry, tex = tex });
+        }
     }
 
-    private static void AddMaterialEntry(Material mat, List<ResourceEntry> list, HashSet<int> seen)
+    private static bool AddMaterialEntry(Material mat, List<ResourceEntry> list, HashSet<int> seen)
     {
-        if (mat == null) return;
+        if (mat == null) return false;
         int id = mat.GetInstanceID();
-        if (seen.Contains(id)) return;
+        if (seen.Contains(id)) return false;
         seen.Add(id);
 
         var entry = new ResourceEntry
@@ -209,10 +216,16 @@ public static class RuntimeResourceCollector
             category = "Material",
             shader = mat.shader ? mat.shader.name : null,
             notes = mat.IsKeywordEnabled("_ALPHATEST_ON") ? "AlphaTest" : null,
-            sizeKB = EstimateMaterialMemoryKB(mat)
+            sizeKB = EstimateMaterialMemoryKB(mat),
+            passCount = mat.shader ? SafeGetShaderPassCount(mat.shader) : 0,
+            keywordCount = mat.shaderKeywords != null ? mat.shaderKeywords.Length : 0,
+            keywords = mat.shaderKeywords != null && mat.shaderKeywords.Length > 0 ? mat.shaderKeywords.ToArray() : null,
+            renderQueue = mat.renderQueue.ToString(),
+            usage = mat.name
         };
 
         list.Add(entry);
+        return true;
     }
 
     private static void AddMeshEntry(Mesh mesh, List<ResourceEntry> list, HashSet<int> seen)
@@ -230,10 +243,208 @@ public static class RuntimeResourceCollector
             category = "Mesh",
             vertexCount = mesh.vertexCount,
             triangleCount = mesh.triangles != null ? mesh.triangles.Length / 3 : 0,
-            sizeKB = (int)(EstimateMeshMemoryBytes(mesh) / 1024)
+            sizeKB = (int)(EstimateMeshMemoryBytes(mesh) / 1024),
+            subMeshCount = mesh.subMeshCount,
+            boundsX = mesh.bounds.size.x,
+            boundsY = mesh.bounds.size.y,
+            boundsZ = mesh.bounds.size.z,
+            usage = mesh.name
         };
 
         list.Add(entry);
+    }
+
+    private static ResourceEntry BuildTextureEntry(Texture tex, string usage)
+    {
+        if (tex == null) return null;
+        var entry = new ResourceEntry();
+        int id = tex.GetInstanceID();
+        entry.id = id.ToString();
+        entry.name = tex.name ?? "<unnamed>";
+        entry.type = tex.GetType().Name;
+        entry.category = tex is RenderTexture ? "RenderTexture" : "Texture";
+        try { entry.width = tex.width; } catch { entry.width = 0; }
+        try { entry.height = tex.height; } catch { entry.height = 0; }
+        entry.format = GetTextureFormat(tex);
+        entry.depth = GetTextureDepth(tex);
+        entry.mipCount = GetTextureMips(tex);
+        try { entry.sizeKB = (int)(RuntimeEstimateMemoryBytes(tex) / 1024); } catch { entry.sizeKB = 0; }
+        entry.dimension = SafeGetDimension(tex);
+        entry.wrapMode = SafeGetWrapMode(tex);
+        entry.filterMode = SafeGetFilterMode(tex);
+        entry.anisoLevel = SafeGetAnisoLevel(tex);
+        entry.isReadable = IsTextureReadable(tex);
+        entry.colorSpace = QualitySettings.activeColorSpace.ToString();
+        entry.usage = usage;
+
+        if (tex is RenderTexture rt)
+        {
+            entry.antiAliasing = rt.antiAliasing;
+            entry.depth = rt.depth;
+            entry.notes = CombineNotes(usage, rt.graphicsFormat.ToString(), rt.antiAliasing > 1 ? "MSAA" + rt.antiAliasing : null);
+        }
+        else
+        {
+            entry.notes = usage;
+        }
+
+        return entry;
+    }
+
+    private static string CombineNotes(params string[] parts)
+    {
+        if (parts == null) return null;
+        var filtered = parts.Where(p => !string.IsNullOrEmpty(p)).ToArray();
+        if (filtered.Length == 0) return null;
+        return string.Join(" | ", filtered);
+    }
+
+    private static string SafeGetDimension(Texture tex)
+    {
+        try { return tex.dimension.ToString(); } catch { return null; }
+    }
+
+    private static string SafeGetWrapMode(Texture tex)
+    {
+        try { return tex.wrapMode.ToString(); } catch { return null; }
+    }
+
+    private static string SafeGetFilterMode(Texture tex)
+    {
+        try { return tex.filterMode.ToString(); } catch { return null; }
+    }
+
+    private static int SafeGetAnisoLevel(Texture tex)
+    {
+        try { return tex.anisoLevel; } catch { return 0; }
+    }
+
+    private static bool IsTextureReadable(Texture tex)
+    {
+        try
+        {
+            if (tex is Texture2D t2) return t2.isReadable;
+            if (tex is Texture3D t3) return t3.isReadable;
+#if UNITY_2018_2_OR_NEWER
+            if (tex is Texture2DArray t2a) return t2a.isReadable;
+            if (tex is Cubemap cube) return cube.isReadable;
+#endif
+        }
+        catch { }
+        return tex is RenderTexture;
+    }
+
+    private static void RegisterShaderUsage(Material mat, List<ResourceEntry> list, Dictionary<Shader, ShaderAggregate> shaderAggregates, bool countMaterial)
+    {
+        if (mat == null) return;
+        var shader = mat.shader;
+        if (shader == null) return;
+
+        if (!shaderAggregates.TryGetValue(shader, out var aggregate))
+        {
+            aggregate = new ShaderAggregate();
+            shaderAggregates[shader] = aggregate;
+        }
+
+        if (countMaterial)
+        {
+            aggregate.materialCount++;
+        }
+
+        var keywords = FilterKeywords(mat.shaderKeywords);
+        foreach (var keyword in keywords)
+        {
+            aggregate.keywords.Add(keyword);
+        }
+
+        var variantKey = BuildVariantKey(shader, keywords);
+        if (aggregate.variants.Add(variantKey))
+        {
+            AddShaderVariantEntry(shader, mat, keywords, list, variantKey);
+        }
+    }
+
+    private static string[] FilterKeywords(string[] keywords)
+    {
+        if (keywords == null || keywords.Length == 0) return Array.Empty<string>();
+        return keywords.Where(k => !string.IsNullOrEmpty(k)).Distinct(StringComparer.Ordinal).OrderBy(k => k, StringComparer.Ordinal).ToArray();
+    }
+
+    private static string BuildVariantKey(Shader shader, string[] keywords)
+    {
+        var shaderId = shader != null ? shader.GetInstanceID().ToString() : "unknown";
+        if (keywords == null || keywords.Length == 0) return shaderId + "::default";
+        return shaderId + "::" + string.Join("|", keywords);
+    }
+
+    private static void AddShaderEntry(Shader shader, ShaderAggregate aggregate, List<ResourceEntry> list, HashSet<int> seen)
+    {
+        if (shader == null) return;
+        int id = shader.GetInstanceID();
+        if (seen.Contains(id)) return;
+        seen.Add(id);
+
+        var keywords = aggregate != null ? aggregate.keywords.OrderBy(k => k, StringComparer.Ordinal).ToArray() : Array.Empty<string>();
+        var entry = new ResourceEntry
+        {
+            id = id.ToString(),
+            name = shader.name ?? "<unnamed>",
+            type = "Shader",
+            category = "Shader",
+            shader = shader.name,
+            passCount = SafeGetShaderPassCount(shader),
+            keywordCount = keywords.Length,
+            keywords = keywords.Length > 0 ? keywords : null,
+            variantCount = aggregate != null ? aggregate.variants.Count : 0,
+            sizeKB = EstimateShaderMemoryKB(shader, aggregate),
+            notes = CombineNotes(aggregate != null && aggregate.materialCount > 0 ? $"Materials×{aggregate.materialCount}" : null, shader.isSupported ? null : "Unsupported"),
+            usage = shader.name
+        };
+
+        list.Add(entry);
+    }
+
+    private static void AddShaderVariantEntry(Shader shader, Material mat, string[] keywords, List<ResourceEntry> list, string variantKey)
+    {
+        var entry = new ResourceEntry
+        {
+            id = variantKey,
+            name = shader != null ? shader.name : mat != null ? mat.name : "<variant>",
+            type = "ShaderVariant",
+            category = "ShaderVariant",
+            shader = shader != null ? shader.name : null,
+            keywordCount = keywords != null ? keywords.Length : 0,
+            keywords = keywords != null && keywords.Length > 0 ? keywords : null,
+            passCount = shader != null ? SafeGetShaderPassCount(shader) : 0,
+            sizeKB = EstimateShaderVariantMemoryKB(mat, keywords != null ? keywords.Length : 0),
+            notes = CombineNotes(mat != null ? mat.name : null, keywords != null && keywords.Length > 0 ? string.Join(",", keywords) : "Default"),
+            variantId = variantKey,
+            usage = mat != null ? mat.name : null
+        };
+
+        list.Add(entry);
+    }
+
+    private static int SafeGetShaderPassCount(Shader shader)
+    {
+        try { return Mathf.Max(0, shader.passCount); } catch { return 0; }
+    }
+
+    private static int EstimateShaderMemoryKB(Shader shader, ShaderAggregate aggregate)
+    {
+        int passCount = SafeGetShaderPassCount(shader);
+        int keywordCount = aggregate != null ? aggregate.keywords.Count : 0;
+        int variantCount = aggregate != null ? aggregate.variants.Count : 0;
+        int estimate = (passCount + 1) * 2 + keywordCount + variantCount * 2;
+        return Mathf.Clamp(estimate, 1, 4096);
+    }
+
+    private static int EstimateShaderVariantMemoryKB(Material mat, int keywordCount)
+    {
+        int passCount = 1;
+        try { if (mat != null && mat.shader != null) passCount = Mathf.Max(1, mat.shader.passCount); } catch { }
+        int estimate = Mathf.Max(1, keywordCount + 1) * passCount;
+        return Mathf.Clamp(estimate, 1, 2048);
     }
 
     private static string GetTextureFormat(Texture tex)
