@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './styles/app.css';
 import Toolbar from './components/Toolbar';
-import ResourcePanel from './components/ResourcePanel';
 import FrameViewer from './components/FrameViewer';
 import Timeline from './components/Timeline';
 import FrameDetails from './components/FrameDetails';
@@ -33,9 +32,10 @@ export default function App() {
   const [displayFrames, setDisplayFrames] = useState<Frame[]>(frames);
   const [displayCatalog, setDisplayCatalog] = useState(catalog);
   const [displayCatalogIndex, setDisplayCatalogIndex] = useState(catalogIndex);
-  const [fullscreenPanel, setFullscreenPanel] = useState<'details' | 'resources' | null>(null);
+  const [fullscreenPanel, setFullscreenPanel] = useState<'details' | null>(null);
   const [captureControlsExpanded, setCaptureControlsExpanded] = useState(false);
   const selectedControlState = selectedClientId ? controlState[selectedClientId] : undefined;
+  const connectionWasOpenRef = useRef(connectionState === 'open');
 
   useEffect(() => {
     if (!livePinned) {
@@ -67,6 +67,19 @@ export default function App() {
     if (!livePinned) return;
     setLivePinned(false);
   }, [livePinned]);
+
+  useEffect(() => {
+    const isOpen = connectionState === 'open';
+    if (isOpen && !connectionWasOpenRef.current) {
+      setPlaying(true);
+      setAutoFollow(true);
+      resumeLiveView();
+    }
+    if (!isOpen && connectionWasOpenRef.current) {
+      setPlaying(false);
+    }
+    connectionWasOpenRef.current = isOpen;
+  }, [connectionState, resumeLiveView]);
 
   const clients = useMemo(() => {
     const ids = new Set<string>();
@@ -134,7 +147,6 @@ export default function App() {
     playIndexRef.current = idx;
   }, [selectedFrame, visibleFrames]);
 
-  const resources = selectedClientId ? displayCatalog[selectedClientId] : [];
   const resourceCatalog = selectedClientId ? displayCatalogIndex[selectedClientId] : undefined;
 
   const latestFrameTimestamp = useMemo(() => {
@@ -313,18 +325,6 @@ export default function App() {
               anchorRef={captureToggleRef}
             />
           </div>
-          <ResourcePanel
-            resources={resources}
-            onSelect={(resource) => {
-              const rid = resource?.id;
-              if (!rid) return;
-              const idx = visibleFrames.findIndex((entry) => Array.isArray(entry.frame?.resources) && entry.frame.resources.includes(rid));
-              if (idx >= 0) {
-                handleSeek(idx);
-              }
-            }}
-            onRequestFullscreen={() => setFullscreenPanel('resources')}
-          />
         </section>
       </div>
       {fullscreenPanel && (
@@ -343,22 +343,6 @@ export default function App() {
                 <FrameDetails
                   frame={selectedFrame?.frame || null}
                   resourceCatalog={resourceCatalog}
-                  isFullscreen
-                  onRequestFullscreen={() => setFullscreenPanel(null)}
-                />
-              )}
-              {fullscreenPanel === 'resources' && (
-                <ResourcePanel
-                  resources={resources}
-                  onSelect={(resource) => {
-                    const rid = resource?.id;
-                    if (!rid) return;
-                    const idx = visibleFrames.findIndex((entry) => Array.isArray(entry.frame?.resources) && entry.frame.resources.includes(rid));
-                    if (idx >= 0) {
-                      handleSeek(idx);
-                      setFullscreenPanel(null);
-                    }
-                  }}
                   isFullscreen
                   onRequestFullscreen={() => setFullscreenPanel(null)}
                 />
