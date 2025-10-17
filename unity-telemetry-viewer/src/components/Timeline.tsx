@@ -121,6 +121,7 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
   const previousMaxRef = useRef(-1);
   const rangeStartRef = useRef(0);
   const rangeEndRef = useRef(0);
+  const rangeContainerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setLocalIndex(currentIndex);
@@ -287,9 +288,6 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
   const clampedIndex = clampToRange(localIndex >= 0 ? localIndex : rangeEnd);
   const effectiveIndex = entries.length === 0 ? -1 : (clampedIndex >= 0 ? clampedIndex : rangeEnd);
   const activeIndex = hoverIndex !== null ? clampToRange(hoverIndex) : effectiveIndex;
-  const currentEntry = activeIndex >= 0 ? entries[activeIndex] : null;
-  const currentStats = currentEntry ? currentEntry.stats.slice(0, 5) : [];
-
   const chartEntries = useMemo<ChartEntry[]>(() => {
     return entries.map((entry, idx) => {
       const data: ChartEntry = {
@@ -327,6 +325,14 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
   }, [windowEntries]);
 
   const hasFpsData = useMemo(() => fpsMax > 0, [fpsMax]);
+
+  const fpsUpperBound = useMemo(() => {
+    if (!hasFpsData) return 60;
+    const base = fpsMax <= 0 ? 60 : Math.max(fpsMax, 30);
+    const padded = Math.ceil(base * 1.15);
+    const rounded = Math.ceil(padded / 5) * 5;
+    return Math.max(30, rounded);
+  }, [fpsMax, hasFpsData]);
 
   const xTicks = useMemo(() => {
     if (windowEntries.length <= 1) return windowEntries.map((entry) => Number(entry.index));
@@ -437,6 +443,22 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
   const startFrameIndex = entries[rangeStart]?.frameIndex ?? rangeStart;
   const endFrameIndex = entries[rangeEnd]?.frameIndex ?? rangeEnd;
 
+  const handleRangeClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    if ((event.target as HTMLElement).tagName.toLowerCase() === 'input') return;
+    const container = rangeContainerRef.current;
+    if (!container || max <= 0) return;
+    const rect = container.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const percent = (event.clientX - rect.left) / rect.width;
+    if (!Number.isFinite(percent)) return;
+    const rawIndex = Math.round(percent * max);
+    const targetIndex = clampToRange(rawIndex);
+    if (targetIndex < 0) return;
+    setLocalIndex(targetIndex);
+    setHoverIndex(null);
+    if (onSeek) onSeek(targetIndex);
+  };
+
   return (
     <div className="panel timeline-panel">
       <div className="panel-header">
@@ -499,7 +521,7 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
                     width={60}
                     tickLine={false}
                     axisLine={false}
-                    domain={[0, Math.ceil(fpsMax)]}
+                    domain={[0, fpsUpperBound]}
                   />
                 )}
                 <Tooltip
@@ -626,7 +648,11 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
       )}
 
       <div className="timeline-panel__slider">
-        <div className="timeline-panel__range">
+        <div
+          className="timeline-panel__range"
+          ref={rangeContainerRef}
+          onClick={handleRangeClick}
+        >
           <div className="timeline-panel__range-track">
             <div
               className="timeline-panel__range-progress"
@@ -646,9 +672,9 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
             max={max}
             value={rangeStart}
             onChange={(event) => handleRangeChange('start', parseInt(event.target.value, 10))}
-            className="timeline-panel__range-input timeline-panel__range-input--start"
-            aria-label="起始帧"
-          />
+                className="timeline-panel__range-input timeline-panel__range-input--start"
+                aria-label="起始帧"
+              />
           <input
             type="range"
             min={0}
@@ -676,42 +702,6 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
           )}
         </div>
       </div>
-
-      {currentEntry && (
-        <div className="timeline-panel__details">
-          <div className="timeline-panel__details-grid">
-            <div>
-              <span className="timeline-panel__details-label">帧序号</span>
-              <span className="timeline-panel__details-value">{formatNumber(currentEntry.frameIndex)}</span>
-            </div>
-            <div>
-              <span className="timeline-panel__details-label">资源内存</span>
-              <span className="timeline-panel__details-value">{formatMemoryFromKB(currentEntry.totalKB)}</span>
-            </div>
-            <div>
-              <span className="timeline-panel__details-label">资源数量</span>
-              <span className="timeline-panel__details-value">{formatNumber(currentEntry.totalCount)}</span>
-            </div>
-            <div>
-              <span className="timeline-panel__details-label">FPS</span>
-              <span className="timeline-panel__details-value">{currentEntry.fps ? currentEntry.fps.toFixed(1) : '-'}</span>
-            </div>
-            <div>
-              <span className="timeline-panel__details-label">平均 FPS</span>
-              <span className="timeline-panel__details-value">{averageFps ? averageFps.toFixed(1) : '-'}</span>
-            </div>
-          </div>
-          <ul className="timeline-panel__details-list">
-            {currentStats.map((stat) => (
-              <li key={stat.category}>
-                <span>{stat.category}</span>
-                <span>{formatMemoryFromKB(stat.sizeKB)}</span>
-                <span>{formatNumber(stat.count)} 个</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
     </div>
   );
 };

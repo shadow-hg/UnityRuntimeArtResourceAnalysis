@@ -168,6 +168,55 @@ const ResourcePanel: React.FC<Props> = ({ resources, onSelect, onRequestFullscre
                       const showCompressedMeta = showCompressed && compressedMemoryKB !== displayMemoryKB;
                       const runtimeMemoryKB = summaryInfo.runtimeKB || summaryInfo.originalKB;
                       const showRuntimeDetail = runtimeMemoryKB > 0 && runtimeMemoryKB !== displayMemoryKB;
+                      const showOriginalFallback =
+                        !showCompressed &&
+                        summaryInfo.originalKB > 0 &&
+                        summaryInfo.runtimeKB > 0 &&
+                        summaryInfo.runtimeKB !== summaryInfo.originalKB;
+                      const resourceId =
+                        resource.id && resource.id !== resource.name ? String(resource.id) : null;
+
+                      const collapsedMetrics: { key: string; label: string; value: string }[] = [
+                        { key: 'memory', label: '内存', value: formatMemoryFromKB(displayMemoryKB) }
+                      ];
+
+                      if (showCompressedMeta) {
+                        collapsedMetrics.push({
+                          key: 'compressed',
+                          label: '压缩',
+                          value: formatMemoryFromKB(compressedMemoryKB)
+                        });
+                      } else if (showOriginalFallback) {
+                        collapsedMetrics.push({
+                          key: 'original',
+                          label: '原始',
+                          value: formatMemoryFromKB(summaryInfo.originalKB)
+                        });
+                      }
+
+                      if (showRuntimeDetail) {
+                        collapsedMetrics.push({
+                          key: 'runtime',
+                          label: '运行时',
+                          value: formatMemoryFromKB(runtimeMemoryKB)
+                        });
+                      }
+
+                      if (summaryInfo.dimensions) {
+                        collapsedMetrics.push({
+                          key: 'dimensions',
+                          label: '分辨率',
+                          value: summaryInfo.dimensions
+                        });
+                      }
+
+                      if (summaryInfo.format) {
+                        collapsedMetrics.push({
+                          key: 'format',
+                          label: '格式',
+                          value: summaryInfo.format
+                        });
+                      }
 
                       return (
                         <div key={key} className={`resource-panel__item ${isExpanded ? 'resource-panel__item--expanded' : ''}`}>
@@ -177,28 +226,39 @@ const ResourcePanel: React.FC<Props> = ({ resources, onSelect, onRequestFullscre
                             onClick={() => toggleResource(key)}
                             aria-expanded={isExpanded}
                           >
-                            <div className="resource-panel__item-title">{resource.name || resource.id || '未命名资源'}</div>
-                            <div className="resource-panel__item-meta">
-                              <span>{formatMemoryFromKB(displayMemoryKB)}</span>
-                              {showCompressedMeta && (
-                                <span className="resource-panel__item-meta-secondary">压缩 {formatMemoryFromKB(compressedMemoryKB)}</span>
+                            <div className="resource-panel__item-header">
+                              <div className="resource-panel__item-primary">
+                                <div className="resource-panel__item-title">{resource.name || resource.id || '未命名资源'}</div>
+                                {resourceId && <div className="resource-panel__item-subtitle">{resourceId}</div>}
+                                <div className="resource-panel__item-tags">
+                                  <span className="resource-panel__badge">{category}</span>
+                                  {resource.type && resource.type !== category && (
+                                    <span className="resource-panel__tag">{resource.type}</span>
+                                  )}
+                                  {textureCount > 0 && <span className="resource-panel__tag">纹理×{formatNumber(textureCount)}</span>}
+                                  {Array.isArray(resource.variants) && resource.variants.length > 0 && (
+                                    <span className="resource-panel__tag">变体×{formatNumber(resource.variants.length)}</span>
+                                  )}
+                                </div>
+                              </div>
+                              {collapsedMetrics.length > 0 && (
+                                <div className="resource-panel__item-metrics">
+                                  {collapsedMetrics.map((metric) => (
+                                    <div key={`${key}-${metric.key}`} className="resource-panel__metric">
+                                      <span className="resource-panel__metric-label">{metric.label}</span>
+                                      <span className="resource-panel__metric-value">{metric.value}</span>
+                                    </div>
+                                  ))}
+                                </div>
                               )}
-                              {!showCompressed && summaryInfo.originalKB > 0 && summaryInfo.runtimeKB > 0 && summaryInfo.runtimeKB !== summaryInfo.originalKB && (
-                                <span className="resource-panel__item-meta-secondary">原始 {formatMemoryFromKB(summaryInfo.originalKB)}</span>
-                              )}
-                              {summaryInfo.dimensions && <span>{summaryInfo.dimensions}</span>}
-                              {summaryInfo.format && <span>{summaryInfo.format}</span>}
                             </div>
-                            <div className="resource-panel__item-tags">
-                              <span className="resource-panel__badge">{category}</span>
-                              {resource.type && resource.type !== category && (
-                                <span className="resource-panel__tag">{resource.type}</span>
-                              )}
-                              {textureCount > 0 && <span className="resource-panel__tag">纹理×{formatNumber(textureCount)}</span>}
-                              {Array.isArray(resource.variants) && resource.variants.length > 0 && (
-                                <span className="resource-panel__tag">变体×{formatNumber(resource.variants.length)}</span>
-                              )}
-                            </div>
+                            {keywordPreview.length > 0 && (
+                              <div className="resource-panel__item-keywords">
+                                {keywordPreview.map((keyword) => (
+                                  <span key={keyword} className="resource-panel__chip">{keyword}</span>
+                                ))}
+                              </div>
+                            )}
                           </button>
                           {isExpanded && (
                             <div className="resource-panel__item-details">

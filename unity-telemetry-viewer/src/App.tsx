@@ -28,6 +28,7 @@ export default function App() {
   const [speed, setSpeed] = useState(1);
   const playIndexRef = useRef<number>(-1);
   const [currentIndex, setCurrentIndex] = useState<number>(-1);
+  const captureToggleRef = useRef<HTMLButtonElement | null>(null);
   const [autoFollow, setAutoFollow] = useState(false);
   const [livePinned, setLivePinned] = useState(false);
   const [displayFrames, setDisplayFrames] = useState<Frame[]>(frames);
@@ -270,6 +271,7 @@ export default function App() {
         onSpeedChange={(value) => setSpeed(value)}
         captureControlsExpanded={captureControlsExpanded}
         onToggleCaptureControls={() => setCaptureControlsExpanded((prev) => !prev)}
+        captureToggleRef={captureToggleRef}
       />
       <section className={`timeline-section ${fullscreenPanel ? 'timeline-section--dimmed' : ''}`}>
         <Timeline
@@ -305,6 +307,7 @@ export default function App() {
             <FrameViewer
               frame={selectedFrame?.frame || null}
               resourceCatalog={resourceCatalog}
+              clientId={selectedFrame?.clientId || null}
             />
             <CaptureControlOverlay
               clientId={selectedClientId}
@@ -317,6 +320,7 @@ export default function App() {
               connectionState={connectionState}
               expanded={captureControlsExpanded}
               onExpandChange={setCaptureControlsExpanded}
+              anchorRef={captureToggleRef}
             />
           </div>
           <ResourcePanel

@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ControlState, ConnectionState } from '../hooks/useTelemetry';
 
 type ControlPatch = Partial<
@@ -16,6 +17,7 @@ type Props = {
   connectionState: ConnectionState;
   expanded: boolean;
   onExpandChange: (expanded: boolean) => void;
+  anchorRef?: React.RefObject<HTMLElement>;
 };
 
 function formatTimeAgo(timestamp: number | null) {
@@ -39,7 +41,8 @@ const CaptureControlOverlay: React.FC<Props> = ({
   latestFrameTimestamp,
   connectionState,
   expanded,
-  onExpandChange
+  onExpandChange,
+  anchorRef
 }) => {
   const [captureEnabled, setCaptureEnabled] = useState(controlState?.captureEnabled ?? true);
   const initialIntervalUnit: 'ms' | 's' = (controlState?.captureIntervalMs ?? 0) >= 1000 ? 's' : 'ms';
@@ -51,6 +54,8 @@ const CaptureControlOverlay: React.FC<Props> = ({
   const [sendThumbnail, setSendThumbnail] = useState(controlState?.sendThumbnail ?? false);
   const [thumbnailInterval, setThumbnailInterval] = useState(controlState?.thumbnailIntervalFrames ?? 30);
   const [sendResourceSnapshots, setSendResourceSnapshots] = useState(controlState?.sendResourceSnapshots ?? true);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
 
   useEffect(() => {
     const enabled = controlState?.captureEnabled ?? true;
@@ -137,10 +142,82 @@ const CaptureControlOverlay: React.FC<Props> = ({
 
   const handleClosePanel = () => onExpandChange(false);
 
-  return (
-    <div className={`capture-overlay ${expanded ? 'capture-overlay--expanded' : ''}`}>
-      {expanded && (
-        <div className="capture-overlay__panel">
+  useLayoutEffect(() => {
+    if (!expanded) {
+      setPosition(null);
+      return;
+    }
+
+    const updatePosition = () => {
+      const anchor = anchorRef?.current || null;
+      const panel = panelRef.current;
+      const viewportPadding = 16;
+      const anchorOffset = 12;
+      const scrollX = window.scrollX || window.pageXOffset;
+      const scrollY = window.scrollY || window.pageYOffset;
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+      const panelWidth = panel?.offsetWidth ?? 320;
+      const panelHeight = panel?.offsetHeight ?? 0;
+
+      if (anchor) {
+        const rect = anchor.getBoundingClientRect();
+        let left = rect.right + scrollX - panelWidth;
+        if (!Number.isFinite(left)) {
+          left = rect.left + scrollX;
+        }
+        let top = rect.bottom + scrollY + anchorOffset;
+
+        if (left + panelWidth > scrollX + viewportWidth - viewportPadding) {
+          left = Math.max(scrollX + viewportPadding, rect.left + scrollX);
+        }
+        if (left < scrollX + viewportPadding) {
+          left = scrollX + viewportPadding;
+        }
+
+        if (panelHeight > 0 && top + panelHeight > scrollY + viewportHeight - viewportPadding) {
+          top = rect.top + scrollY - panelHeight - anchorOffset;
+          if (top < scrollY + viewportPadding) {
+            top = Math.min(rect.bottom + scrollY + anchorOffset, scrollY + viewportHeight - panelHeight - viewportPadding);
+          }
+        }
+
+        setPosition({ top, left });
+      } else {
+        const fallbackLeft = scrollX + viewportPadding;
+        let fallbackTop = scrollY + viewportHeight - panelHeight - viewportPadding;
+        if (fallbackTop < scrollY + viewportPadding) {
+          fallbackTop = scrollY + viewportPadding;
+        }
+        setPosition({ top: fallbackTop, left: fallbackLeft });
+      }
+    };
+
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [anchorRef, expanded]);
+
+  if (!expanded) {
+    return null;
+  }
+
+  const portalTarget = typeof document !== 'undefined' ? document.body : null;
+  if (!portalTarget) {
+    return null;
+  }
+
+  const overlayStyle: React.CSSProperties = position
+    ? { top: position.top, left: position.left, visibility: 'visible' }
+    : { visibility: 'hidden' };
+
+  return createPortal(
+    <div className="capture-overlay" style={overlayStyle}>
+      <div ref={panelRef} className="capture-overlay__panel">
           <div className="capture-overlay__panel-header">
             <div>
               <div className="capture-overlay__title">采集控制</div>
@@ -277,9 +354,9 @@ const CaptureControlOverlay: React.FC<Props> = ({
               刷新状态
             </button>
           </div>
-        </div>
-      )}
-    </div>
+      </div>
+    </div>,
+    portalTarget
   );
 };
 
