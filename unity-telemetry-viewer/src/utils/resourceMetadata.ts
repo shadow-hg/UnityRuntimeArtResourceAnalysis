@@ -1,5 +1,7 @@
 import { formatNumber } from './format';
 
+const TEXTURE_CATEGORY_PATTERN = /texture|纹理/i;
+
 export type TextureReference = {
   id?: string | null;
   name?: string | null;
@@ -7,6 +9,11 @@ export type TextureReference = {
 
 export function getResourceCategory(resource: any): string {
   return resource?.category || resource?.type || '未分类';
+}
+
+export function isTextureCategory(category: string | null | undefined): boolean {
+  if (!category) return false;
+  return TEXTURE_CATEGORY_PATTERN.test(category);
 }
 
 export function coerceSize(value: any): number {
@@ -68,15 +75,20 @@ export function gatherTextureReferences(resource: any): TextureReference[] {
 
 export function buildResourceSummary(resource: any) {
   const originalKB = coerceSize(resource?.sizeKB ?? resource?.size);
+  const compressedKB = coerceSize(
+    resource?.sizeAfterCompressionKB ??
+      resource?.sizeAfterCompression ??
+      resource?.compressedSizeKB ??
+      resource?.compressedSize ??
+      resource?.platformData?.compressedSizeKB ??
+      resource?.platformData?.compressedSize
+  );
   const runtimeKB = coerceSize(
     resource?.runtimeSizeKB ??
       resource?.runtimeSize ??
       resource?.memorySizeKB ??
       resource?.memoryKB ??
-      resource?.compressedSizeKB ??
-      resource?.compressedSize ??
-      resource?.sizeAfterCompressionKB ??
-      resource?.sizeAfterCompression
+      (compressedKB > 0 ? compressedKB : originalKB)
   );
 
   const thumbnail = resource?.thumbnailUrl || resource?.thumbnail || resource?.previewUrl || resource?.preview || null;
@@ -88,12 +100,52 @@ export function buildResourceSummary(resource: any) {
   return {
     originalKB,
     runtimeKB,
+    compressedKB,
     thumbnail,
     dimensions,
     keywords,
     textureRefs,
     format
   };
+}
+
+export type ResourceSummary = ReturnType<typeof buildResourceSummary>;
+
+export function getDisplayMemoryKB(resource: any, summary?: ResourceSummary): number {
+  const resourceSummary = summary ?? buildResourceSummary(resource);
+  const category = getResourceCategory(resource);
+
+  if (isTextureCategory(category)) {
+    if (resourceSummary.compressedKB > 0) {
+      return resourceSummary.compressedKB;
+    }
+  }
+
+  if (resourceSummary.runtimeKB > 0) {
+    return resourceSummary.runtimeKB;
+  }
+
+  if (resourceSummary.originalKB > 0) {
+    return resourceSummary.originalKB;
+  }
+
+  return coerceSize(resource?.sizeKB ?? resource?.size ?? 0);
+}
+
+export function getStatDisplaySizeKB(stat: any): number {
+  return coerceSize(
+    stat?.compressedKB ??
+      stat?.compressedSizeKB ??
+      stat?.sizeAfterCompressionKB ??
+      stat?.sizeAfterCompression ??
+      stat?.runtimeKB ??
+      stat?.runtimeSizeKB ??
+      stat?.sizeKB ??
+      stat?.size ??
+      stat?.totalKB ??
+      stat?.totalSize ??
+      stat?.memoryKB
+  );
 }
 
 export function buildMaterialSummary(resource: any) {

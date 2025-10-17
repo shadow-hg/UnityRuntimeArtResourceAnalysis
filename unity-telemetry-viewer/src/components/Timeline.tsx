@@ -1,5 +1,18 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import {
+  Area,
+  CartesianGrid,
+  ComposedChart,
+  ReferenceDot,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis
+} from 'recharts';
+import type { TooltipProps as RechartsTooltipProps } from 'recharts';
 import { formatMemoryFromKB, formatNumber } from '../utils/format';
+import { getStatDisplaySizeKB } from '../utils/resourceMetadata';
 
 type Props = {
   telemetryData: any[];
@@ -18,6 +31,70 @@ type TimelineEntry = {
   fps: number | null;
 };
 
+type ChartEntry = {
+  index: number;
+  frameIndex: number;
+  totalKB: number;
+  fps: number | null;
+} & Record<string, number | null>;
+
+type TimelineTooltipExtraProps = {
+  entries: TimelineEntry[];
+  colors: Record<string, string>;
+  categories: string[];
+  showTotal: boolean;
+  showFps: boolean;
+};
+
+const TimelineTooltip: React.FC<RechartsTooltipProps<number, string> & TimelineTooltipExtraProps> = ({
+  active,
+  payload,
+  label,
+  entries,
+  colors,
+  categories,
+  showTotal,
+  showFps
+}) => {
+  if (!active || !payload || payload.length === 0 || typeof label !== 'number') {
+    return null;
+  }
+
+  const entry = entries[Math.round(label)];
+  if (!entry) return null;
+
+  const items: { label: string; value: string; color?: string }[] = [];
+
+  if (showTotal) {
+    items.push({ label: '资源内存', value: formatMemoryFromKB(entry.totalKB), color: '#38bdf8' });
+  }
+
+  categories.forEach((category) => {
+    const stat = entry.statMap[category];
+    if (!stat || !Number.isFinite(stat.sizeKB)) return;
+    items.push({ label: category, value: formatMemoryFromKB(stat.sizeKB), color: colors[category] || '#94a3b8' });
+  });
+
+  if (showFps && entry.fps !== null) {
+    items.push({ label: 'FPS', value: entry.fps.toFixed(1), color: '#facc15' });
+  }
+
+  return (
+    <div className="timeline-panel__tooltip">
+      <div className="timeline-panel__tooltip-header">帧 {formatNumber(entry.frameIndex ?? entry.index)}</div>
+      <div className="timeline-panel__tooltip-list">
+        {items.map((item) => (
+          <div key={item.label} className="timeline-panel__tooltip-item">
+            <span className="timeline-panel__tooltip-dot" style={{ backgroundColor: item.color || '#94a3b8' }} />
+            <span>{item.label}</span>
+            <span>{item.value}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 const CATEGORY_COLOR_OVERRIDES: Record<string, string> = {
   Texture: '#38bdf8',
   RenderTexture: '#6366f1',
@@ -34,6 +111,9 @@ const MAX_STACK_CATEGORIES = 5;
 const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek }) => {
   const [localIndex, setLocalIndex] = useState<number>(currentIndex);
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  const [visibleCategories, setVisibleCategories] = useState<string[]>([]);
+  const [showTotal, setShowTotal] = useState(true);
+  const [showFps, setShowFps] = useState(true);
 
   useEffect(() => {
     setLocalIndex(currentIndex);
@@ -47,7 +127,7 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
         .map((stat) => ({
           category: stat?.category || '未分类',
           count: Number(stat?.count ?? 0),
-          sizeKB: Number(stat?.sizeKB ?? 0)
+          sizeKB: getStatDisplaySizeKB(stat)
         }))
         .sort((a, b) => b.sizeKB - a.sizeKB);
 
@@ -107,6 +187,16 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
       .map(([category]) => category);
   }, [entries]);
 
+  useEffect(() => {
+    setVisibleCategories((prev) => {
+      if (topCategories.length === 0) return [];
+      if (prev.length === 0) return topCategories;
+      const next = prev.filter((category) => topCategories.includes(category));
+      const missing = topCategories.filter((category) => !next.includes(category));
+      return [...next, ...missing];
+    });
+  }, [topCategories]);
+
   const max = Math.max(0, entries.length - 1);
   const clampedIndex = Math.min(localIndex, max);
   const effectiveIndex = entries.length === 0 ? -1 : (clampedIndex >= 0 ? clampedIndex : max);
@@ -114,101 +204,49 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
   const currentEntry = activeIndex >= 0 ? entries[activeIndex] : null;
   const currentStats = currentEntry ? currentEntry.stats.slice(0, 5) : [];
 
-  const chartData = useMemo(() => {
-    if (entries.length === 0) {
-      return {
-        totalPath: '',
-        areas: [] as { category: string; path: string }[],
-        points: [] as { x: number; y: number }[],
-        maxValue: 0,
-        fpsPath: '',
-        fpsPoints: [] as { x: number; y: number; value: number | null }[],
-        fpsMax: 0
+  const chartEntries = useMemo<ChartEntry[]>(() => {
+    return entries.map((entry, idx) => {
+      const data: ChartEntry = {
+        index: idx,
+        frameIndex: typeof entry.frameIndex === 'number' ? entry.frameIndex : idx,
+        totalKB: Math.max(0, entry.totalKB),
+        fps: entry.fps !== null && Number.isFinite(entry.fps) ? entry.fps : null
       };
-    }
 
-    const step = entries.length > 1 ? 100 / (entries.length - 1) : 0;
-    const totals = entries.map((entry) => Math.max(0, entry.totalKB));
-    const fpsValues = entries.map((entry) => (entry.fps !== null && Number.isFinite(entry.fps) ? entry.fps : null));
-    const base = new Array(entries.length).fill(0);
-
-    const stackedData = topCategories.map((category) => {
-      const areaPoints = entries.map((entry, idx) => {
-        const value = Math.max(0, entry.statMap[category]?.sizeKB ?? 0);
-        const start = base[idx];
-        const end = start + value;
-        base[idx] = end;
-        return { idx, start, end };
-      });
-      return { category, areaPoints };
-    });
-
-    const chartMax = Math.max(1, ...totals, ...base);
-    const fpsMax = Math.max(1, ...fpsValues.filter((value): value is number => value !== null));
-
-    const points = entries.map((entry, idx) => {
-      const x = idx === 0 ? 0 : step * idx;
-      const y = 100 - (Math.max(0, entry.totalKB) / chartMax) * 100;
-      return { x, y };
-    });
-
-    const fpsPoints = entries.map((entry, idx) => {
-      const x = idx === 0 ? 0 : step * idx;
-      const value = fpsValues[idx];
-      const y = value !== null && fpsMax > 0 ? 100 - (value / fpsMax) * 100 : 100;
-      return { x, y, value };
-    });
-
-    const totalPath = points
-      .map((pt, idx) => `${idx === 0 ? 'M' : 'L'} ${pt.x.toFixed(3)} ${pt.y.toFixed(3)}`)
-      .join(' ');
-
-    let fpsPath = '';
-    let hasStarted = false;
-    fpsPoints.forEach((pt) => {
-      if (pt.value === null) {
-        hasStarted = false;
-        return;
-      }
-      if (!hasStarted) {
-        fpsPath += `M ${pt.x.toFixed(3)} ${pt.y.toFixed(3)} `;
-        hasStarted = true;
-      } else {
-        fpsPath += `L ${pt.x.toFixed(3)} ${pt.y.toFixed(3)} `;
-      }
-    });
-    fpsPath = fpsPath.trim();
-
-    const areas = stackedData.map(({ category, areaPoints }) => {
-      const pointsTop = areaPoints.map((pt) => {
-        const x = pt.idx === 0 ? 0 : step * pt.idx;
-        return { x, y: 100 - (pt.end / chartMax) * 100 };
-      });
-      const pointsBottom = areaPoints.map((pt) => {
-        const x = pt.idx === 0 ? 0 : step * pt.idx;
-        return { x, y: 100 - (pt.start / chartMax) * 100 };
+      topCategories.forEach((category) => {
+        data[category] = Math.max(0, entry.statMap[category]?.sizeKB ?? 0);
       });
 
-      const topSegment = pointsTop
-        .map((pt, idx) => `${idx === 0 ? 'M' : 'L'} ${pt.x.toFixed(3)} ${pt.y.toFixed(3)}`)
-        .join(' ');
-      const bottomSegment = pointsBottom
-        .slice()
-        .reverse()
-        .map((pt, idx) => {
-          const originalIdx = pointsBottom.length - 1 - idx;
-          const x = originalIdx === 0 ? 0 : step * originalIdx;
-          return `L ${x.toFixed(3)} ${pt.y.toFixed(3)}`;
-        })
-        .join(' ');
-
-      return { category, path: `${topSegment} ${bottomSegment} Z` };
+      return data;
     });
-
-    return { totalPath, areas, points, maxValue: chartMax, fpsPath, fpsPoints, fpsMax };
   }, [entries, topCategories]);
 
-  const hasFpsData = useMemo(() => chartData.fpsPoints.some((pt) => pt.value !== null), [chartData.fpsPoints]);
+  const memoryMax = useMemo(() => {
+    return chartEntries.reduce((maxValue, entry) => {
+      return Math.max(maxValue, Number(entry.totalKB) || 0);
+    }, 0);
+  }, [chartEntries]);
+
+  const fpsMax = useMemo(() => {
+    return chartEntries.reduce((maxValue, entry) => {
+      return Math.max(maxValue, typeof entry.fps === 'number' ? entry.fps : 0);
+    }, 0);
+  }, [chartEntries]);
+
+  const hasFpsData = useMemo(() => fpsMax > 0, [fpsMax]);
+
+  const xTicks = useMemo(() => {
+    if (chartEntries.length <= 1) return chartEntries.map((entry) => Number(entry.index));
+    const lastIndex = Number(chartEntries[chartEntries.length - 1]?.index ?? 0);
+    const tickCount = Math.min(6, chartEntries.length);
+    const step = Math.max(1, Math.floor(lastIndex / Math.max(1, tickCount - 1)));
+    const ticks: number[] = [];
+    for (let i = 0; i <= lastIndex; i += step) {
+      ticks.push(i);
+    }
+    if (!ticks.includes(lastIndex)) ticks.push(lastIndex);
+    return ticks;
+  }, [chartEntries]);
 
   const averageFps = useMemo(() => {
     if (entries.length <= 1) return null;
@@ -233,6 +271,33 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
     return (entries.length - 1) / totalDuration;
   }, [entries, telemetryData]);
 
+  const toggleCategory = (category: string) => {
+    setVisibleCategories((prev) => {
+      if (prev.includes(category)) {
+        return prev.filter((item) => item !== category);
+      }
+      const next = [...prev, category];
+      return topCategories.filter((item) => next.includes(item));
+    });
+  };
+
+  const handleChartClick = (state: any) => {
+    const idx = typeof state?.activeTooltipIndex === 'number' ? state.activeTooltipIndex : null;
+    if (idx === null || idx < 0 || idx >= entries.length) return;
+    setLocalIndex(idx);
+    setHoverIndex(null);
+    if (onSeek) onSeek(idx);
+  };
+
+  const handleChartHover = (state: any) => {
+    const idx = typeof state?.activeTooltipIndex === 'number' ? state.activeTooltipIndex : null;
+    if (idx === null) {
+      setHoverIndex(null);
+      return;
+    }
+    setHoverIndex(idx);
+  };
+
   return (
     <div className="panel timeline-panel">
       <div className="panel-header">
@@ -245,113 +310,176 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
           <div className="empty-state">等待帧数据</div>
         ) : (
           <div className="timeline-panel__chart-area">
-          <svg viewBox="0 0 100 100" preserveAspectRatio="none">
-            <defs>
-              <linearGradient id="timeline-fill" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="rgba(99, 102, 241, 0.45)" />
-                <stop offset="100%" stopColor="rgba(14, 165, 233, 0.05)" />
-              </linearGradient>
-            </defs>
-            <g className="timeline-panel__grid">
-              {[0, 25, 50, 75, 100].map((y) => (
-                <line key={y} x1="0" y1={y} x2="100" y2={y} stroke="rgba(148, 163, 184, 0.14)" strokeWidth="0.4" />
-              ))}
-            </g>
-            {chartData.areas.map((area) => (
-              <path
-                key={area.category}
-                d={area.path}
-                fill={categoryColors[area.category] || 'url(#timeline-fill)'}
-                fillOpacity={0.18}
-                stroke="none"
-              />
-            ))}
-            <path d={chartData.totalPath} fill="none" stroke="url(#timeline-fill)" strokeWidth="2.2" />
-            {chartData.fpsPath && (
-              <path d={chartData.fpsPath} fill="none" stroke="#facc15" strokeWidth="1.8" strokeDasharray="4 3" strokeLinecap="round" />
-            )}
-            {chartData.points.map((pt, idx) => (
-              <circle
-                key={`pt-${idx}`}
-                cx={pt.x}
-                cy={pt.y}
-                r={idx === activeIndex ? 2.8 : 1.6}
-                fill="#38bdf8"
-                fillOpacity={idx === activeIndex ? 1 : 0.5}
-                stroke="rgba(15, 23, 42, 0.6)"
-                strokeWidth={0.6}
-              />
-            ))}
-            {chartData.fpsPoints.map((pt, idx) => (
-              <circle
-                key={`fps-${idx}`}
-                cx={pt.x}
-                cy={pt.y}
-                r={pt.value !== null ? 1.4 : 0}
-                fill="#facc15"
-                fillOpacity={idx === activeIndex ? 0.95 : 0.55}
-                stroke="rgba(15, 23, 42, 0.4)"
-                strokeWidth={pt.value !== null ? 0.5 : 0}
-              />
-            ))}
-          </svg>
-            <div
-              className="timeline-panel__chart-overlay"
-              onMouseLeave={() => setHoverIndex(null)}
-            >
-            {chartData.points.map((pt, idx) => {
-              const left = pt.x;
-              const isActive = idx === activeIndex;
-              const entry = entries[idx];
-              const fpsValue = chartData.fpsPoints[idx]?.value ?? null;
-              return (
-                <button
-                  key={entry.index}
-                  type="button"
-                  className={`timeline-panel__chart-hit ${isActive ? 'timeline-panel__chart-hit--active' : ''}`}
-                  style={{ left: `${left}%` }}
-                  onClick={() => {
-                    setLocalIndex(idx);
-                    setHoverIndex(null);
-                    if (onSeek) onSeek(idx);
+            <ResponsiveContainer>
+              <ComposedChart
+                data={chartEntries as any[]}
+                margin={{ top: 18, right: showFps && hasFpsData ? 48 : 24, bottom: 12, left: 0 }}
+                onClick={handleChartClick}
+                onMouseMove={handleChartHover}
+                onMouseLeave={() => setHoverIndex(null)}
+              >
+                <defs>
+                  <linearGradient id="timeline-area-fill" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="rgba(99, 102, 241, 0.45)" />
+                    <stop offset="100%" stopColor="rgba(14, 165, 233, 0.05)" />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid stroke="rgba(148, 163, 184, 0.18)" strokeDasharray="3 6" vertical={false} />
+                <XAxis
+                  dataKey="index"
+                  type="number"
+                  domain={[0, Math.max(0, chartEntries.length - 1)]}
+                  ticks={xTicks}
+                  tickFormatter={(value: number) => {
+                    const entry = chartEntries[Math.round(value)];
+                    const frameValue = typeof entry?.frameIndex === 'number' ? entry.frameIndex : value;
+                    return formatNumber(frameValue);
                   }}
-                  onMouseEnter={() => setHoverIndex(idx)}
-                  onMouseLeave={() => setHoverIndex(null)}
-                  onFocus={() => setHoverIndex(idx)}
-                  onBlur={() => setHoverIndex(null)}
-                  title={`#${entry.frameIndex ?? idx} · ${formatMemoryFromKB(entry.totalKB)} · ${formatNumber(entry.totalCount)} 资源 · FPS ${fpsValue ? fpsValue.toFixed(1) : '-'}`}
-                >
-                  <span className="sr-only">跳转到帧 {entry.frameIndex ?? idx}</span>
-                </button>
-              );
-            })}
-            </div>
+                  stroke="rgba(148, 163, 184, 0.55)"
+                  tickLine={false}
+                  axisLine={false}
+                  padding={{ left: 0, right: 0 }}
+                />
+                <YAxis
+                  yAxisId="memory"
+                  stroke="rgba(148, 163, 184, 0.55)"
+                  tickFormatter={(value: number) => formatMemoryFromKB(value)}
+                  width={86}
+                  tickLine={false}
+                  axisLine={false}
+                />
+                {showFps && hasFpsData && (
+                  <YAxis
+                    yAxisId="fps"
+                    orientation="right"
+                    stroke="rgba(250, 204, 21, 0.65)"
+                    tickFormatter={(value: number) => formatNumber(value)}
+                    width={60}
+                    tickLine={false}
+                    axisLine={false}
+                    domain={[0, Math.ceil(fpsMax)]}
+                  />
+                )}
+                <Tooltip
+                  cursor={false}
+                  content={(
+                    <TimelineTooltip
+                      entries={entries}
+                      colors={categoryColors}
+                      categories={visibleCategories}
+                      showTotal={showTotal}
+                      showFps={showFps && hasFpsData}
+                    />
+                  )}
+                />
+                {visibleCategories.map((category) => (
+                  <Area
+                    key={category}
+                    yAxisId="memory"
+                    type="monotone"
+                    dataKey={category}
+                    stackId="memory"
+                    stroke="none"
+                    fill={categoryColors[category] || 'url(#timeline-area-fill)'}
+                    fillOpacity={0.25}
+                    isAnimationActive={false}
+                  />
+                ))}
+                {showTotal && (
+                  <Line
+                    yAxisId="memory"
+                    type="monotone"
+                    dataKey="totalKB"
+                    stroke="#38bdf8"
+                    strokeWidth={2.4}
+                    dot={false}
+                    isAnimationActive={false}
+                    connectNulls
+                  />
+                )}
+                {showFps && hasFpsData && (
+                  <Line
+                    yAxisId="fps"
+                    type="monotone"
+                    dataKey="fps"
+                    stroke="#facc15"
+                    strokeWidth={1.8}
+                    dot={false}
+                    isAnimationActive={false}
+                    connectNulls
+                    strokeDasharray="4 3"
+                  />
+                )}
+                {activeIndex >= 0 && showTotal && (
+                  <ReferenceDot
+                    yAxisId="memory"
+                    x={chartEntries[activeIndex]?.index as number}
+                    y={chartEntries[activeIndex]?.totalKB as number}
+                    r={5}
+                    stroke="#0f172a"
+                    strokeWidth={1.2}
+                    fill="#38bdf8"
+                    fillOpacity={0.92}
+                    isFront
+                  />
+                )}
+                {activeIndex >= 0 && (
+                  <ReferenceLine
+                    x={chartEntries[activeIndex]?.index as number}
+                    stroke="rgba(56, 189, 248, 0.45)"
+                    strokeDasharray="3 3"
+                  />
+                )}
+              </ComposedChart>
+            </ResponsiveContainer>
             <div className="timeline-panel__chart-scale">
               <span>0</span>
-              <span>{formatMemoryFromKB(chartData.maxValue)}</span>
+              <span>{formatMemoryFromKB(memoryMax)}</span>
             </div>
           </div>
         )}
       </div>
 
-      {(topCategories.length > 0 || chartData.fpsPath) && (
+      {(topCategories.length > 0 || hasFpsData) && (
         <div className="timeline-panel__legend">
-          <div className="timeline-panel__legend-item">
+          <button
+            type="button"
+            className={`timeline-panel__legend-toggle ${showTotal ? 'timeline-panel__legend-toggle--active' : ''}`}
+            onClick={() => setShowTotal((prev) => !prev)}
+            aria-pressed={showTotal}
+          >
             <span className="timeline-panel__legend-swatch timeline-panel__legend-swatch--memory" />
-            <span>资源内存</span>
-          </div>
-          {chartData.fpsPath && hasFpsData && (
-            <div className="timeline-panel__legend-item">
+            <span>总内存</span>
+          </button>
+          {hasFpsData && (
+            <button
+              type="button"
+              className={`timeline-panel__legend-toggle ${showFps ? 'timeline-panel__legend-toggle--active' : ''}`}
+              onClick={() => setShowFps((prev) => !prev)}
+              aria-pressed={showFps}
+            >
               <span className="timeline-panel__legend-swatch timeline-panel__legend-swatch--fps" />
               <span>FPS</span>
-            </div>
+            </button>
           )}
-          {topCategories.map((category) => (
-            <div key={category} className="timeline-panel__legend-item">
-              <span className="timeline-panel__legend-swatch" style={{ backgroundColor: categoryColors[category] || '#94a3b8' }} />
-              <span>{category}</span>
-            </div>
-          ))}
+          {topCategories.map((category) => {
+            const isActive = visibleCategories.includes(category);
+            return (
+              <button
+                key={category}
+                type="button"
+                className={`timeline-panel__legend-toggle ${isActive ? 'timeline-panel__legend-toggle--active' : ''}`}
+                onClick={() => toggleCategory(category)}
+                aria-pressed={isActive}
+              >
+                <span
+                  className="timeline-panel__legend-swatch"
+                  style={{ backgroundColor: categoryColors[category] || '#94a3b8' }}
+                />
+                <span>{category}</span>
+              </button>
+            );
+          })}
         </div>
       )}
 
@@ -380,7 +508,7 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
           {hasFpsData && (
             <div>
               <span className="timeline-panel__stats-label">峰值 FPS</span>
-              <span className="timeline-panel__stats-value">{chartData.fpsMax.toFixed(1)}</span>
+              <span className="timeline-panel__stats-value">{fpsMax.toFixed(1)}</span>
             </div>
           )}
         </div>

@@ -25,6 +25,7 @@ const clients = new Map();
 const timelines = {};
 // per-client resource catalog: clientId -> {resourceId -> resourceMeta}
 const resourceCatalog = {};
+const MAX_TIMELINE_LENGTH = 10000;
 
 function broadcastToBrowsers(obj) {
   const str = JSON.stringify(obj);
@@ -33,6 +34,24 @@ function broadcastToBrowsers(obj) {
       ws.send(str);
     }
   }
+}
+
+function sendToUnity(targetIds, obj) {
+  const payload = JSON.stringify(obj);
+  const targetSet = Array.isArray(targetIds) && targetIds.length > 0 ? new Set(targetIds) : null;
+  let delivered = 0;
+  for (const [ws, info] of clients) {
+    if (info.type !== 'unity') continue;
+    if (targetSet && !targetSet.has(info.id)) continue;
+    if (ws.readyState !== WebSocket.OPEN) continue;
+    try {
+      ws.send(payload);
+      delivered += 1;
+    } catch (error) {
+      console.warn('control forward failed', info.id, error);
+    }
+  }
+  return delivered;
 }
 
 wss.on('connection', (ws, req) => {
@@ -52,14 +71,47 @@ wss.on('connection', (ws, req) => {
     if (!timelines[clientId]) timelines[clientId] = [];
     if (!resourceCatalog[clientId]) resourceCatalog[clientId] = {};
 
-    ws.on('message', (m) => handleWsMessage(ws, m, clientId));
+    ws.on('message', (m) => handleWsMessage(ws, m));
     ws.on('close', () => { clients.delete(ws); console.log('[ws] closed', clientId); });
   });
 });
 
-function handleWsMessage(ws, msg, clientId) {
+function handleWsMessage(ws, msg) {
+  const info = clients.get(ws);
+  if (!info) return;
+  const clientId = info.id;
+  const role = info.type;
   let obj;
-  try { obj = JSON.parse(msg); } catch (e) { console.warn('invalid json from', clientId); return; }
+  try { obj = JSON.parse(msg); } catch (e) { console.warn('invalid json from', clientId || 'unknown'); return; }
+
+  if (role === 'browser') {
+    if (obj.type === 'control') {
+      const targets = [];
+      if (typeof obj.targetClientId === 'string' && obj.targetClientId) targets.push(obj.targetClientId);
+      if (Array.isArray(obj.targetClientIds)) {
+        for (const id of obj.targetClientIds) {
+          if (typeof id === 'string' && id) targets.push(id);
+        }
+      }
+      const uniqueTargets = Array.from(new Set(targets));
+      const forwarded = { ...obj, sourceClientId: clientId, serverTime: Date.now() };
+      const delivered = sendToUnity(uniqueTargets, forwarded);
+      broadcastToBrowsers({
+        type: 'control_forwarded',
+        clientId,
+        command: obj.command || null,
+        payload: obj.payload ?? null,
+        targetClientIds: uniqueTargets,
+        delivered,
+        serverTime: Date.now()
+      });
+      return;
+    }
+    if (obj.type === 'ping') {
+      ws.send(JSON.stringify({ type: 'pong', pongTime: Date.now() }));
+    }
+    return;
+  }
 
   if (obj.type === 'frame') {
     const thumb = obj.thumbnailUrl || obj.thumbnail || null;
@@ -94,10 +146,8 @@ function handleWsMessage(ws, msg, clientId) {
       if (obj[key] !== undefined) frameEntry[key] = obj[key];
     }
     timelines[clientId].push(frameEntry);
-    // cap length
-    if (timelines[clientId].length > 20000) timelines[clientId].shift();
+    if (timelines[clientId].length > MAX_TIMELINE_LENGTH) timelines[clientId].shift();
 
-    // if resources included as snapshot, merge into catalog
     if (obj.resourceSnapshot) {
       for (const r of obj.resourceSnapshot) {
         if (!r || !r.id) continue;
@@ -106,9 +156,6 @@ function handleWsMessage(ws, msg, clientId) {
       }
     }
 
-    // attach per-frame active resource ids -> we already did
-
-    // broadcast to browsers
     broadcastToBrowsers({ type: 'frame', clientId, frame: frameEntry });
   } else if (obj.type === 'resource_snapshot') {
     const shouldReplace = obj.replace !== false;
@@ -125,8 +172,10 @@ function handleWsMessage(ws, msg, clientId) {
     broadcastToBrowsers({ type: 'resource_snapshot', clientId, resources: obj.resources, replace: shouldReplace });
   } else if (obj.type === 'ping') {
     ws.send(JSON.stringify({ type: 'pong', pongTime: Date.now() }));
+  } else if (obj.type === 'control_ack') {
+    const ack = { ...obj, clientId: obj.clientId || clientId, serverTime: Date.now() };
+    broadcastToBrowsers(ack);
   } else {
-    // pass-through
     broadcastToBrowsers({ type: 'message', clientId, payload: obj });
   }
 }

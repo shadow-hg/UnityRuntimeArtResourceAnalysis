@@ -2,8 +2,10 @@ import React, { useMemo, useState } from 'react';
 import { formatMemoryFromKB, formatNumber } from '../utils/format';
 import {
   buildResourceSummary,
-  coerceSize,
-  getResourceCategory
+  getDisplayMemoryKB,
+  getResourceCategory,
+  isTextureCategory,
+  ResourceSummary
 } from '../utils/resourceMetadata';
 
 type Props = {
@@ -27,6 +29,8 @@ const ResourcePanel: React.FC<Props> = ({ resources, onSelect, onRequestFullscre
 
   const list = resources || [];
 
+  const summaryCache = useMemo(() => new WeakMap<any, ResourceSummary>(), []);
+
   const filtered = useMemo(() => {
     if (!filter) return list;
     const query = filter.toLowerCase();
@@ -44,19 +48,27 @@ const ResourcePanel: React.FC<Props> = ({ resources, onSelect, onRequestFullscre
     for (const resource of filtered) {
       const category = getResourceCategory(resource);
       const existing = result.get(category) || { category, totalKB: 0, count: 0, resources: [] };
-      existing.totalKB += coerceSize(resource?.sizeKB ?? resource?.size ?? 0);
+      const summaryInfo = summaryCache.get(resource) || buildResourceSummary(resource);
+      if (!summaryCache.has(resource)) {
+        summaryCache.set(resource, summaryInfo);
+      }
+      existing.totalKB += getDisplayMemoryKB(resource, summaryInfo);
       existing.count += 1;
       existing.resources.push(resource);
       result.set(category, existing);
     }
     return Array.from(result.values()).sort((a, b) => b.totalKB - a.totalKB);
-  }, [filtered]);
+  }, [filtered, summaryCache]);
 
   const summary = useMemo(() => {
     let totalKB = 0;
     const typeCount: Record<string, number> = {};
     for (const resource of filtered) {
-      totalKB += coerceSize(resource?.sizeKB ?? resource?.size ?? 0);
+      const summaryInfo = summaryCache.get(resource) || buildResourceSummary(resource);
+      if (!summaryCache.has(resource)) {
+        summaryCache.set(resource, summaryInfo);
+      }
+      totalKB += getDisplayMemoryKB(resource, summaryInfo);
       const type = getResourceCategory(resource);
       typeCount[type] = (typeCount[type] || 0) + 1;
     }
@@ -141,10 +153,21 @@ const ResourcePanel: React.FC<Props> = ({ resources, onSelect, onRequestFullscre
                   <div className="resource-panel__items">
                     {group.resources.map((resource) => {
                       const key = resource.id || `${resource.name || 'resource'}-${resource.type || 'unknown'}`;
-                      const summaryInfo = buildResourceSummary(resource);
+                      const summaryInfo = summaryCache.get(resource) || buildResourceSummary(resource);
+                      if (!summaryCache.has(resource)) {
+                        summaryCache.set(resource, summaryInfo);
+                      }
                       const isExpanded = !!expandedResourceIds[key];
                       const textureCount = summaryInfo.textureRefs.length;
                       const keywordPreview = summaryInfo.keywords.slice(0, 6);
+                      const category = getResourceCategory(resource);
+                      const displayMemoryKB = getDisplayMemoryKB(resource, summaryInfo);
+                      const compressedMemoryKB = summaryInfo.compressedKB;
+                      const hasCompressedValue = compressedMemoryKB > 0;
+                      const showCompressed = isTextureCategory(category) && hasCompressedValue;
+                      const showCompressedMeta = showCompressed && compressedMemoryKB !== displayMemoryKB;
+                      const runtimeMemoryKB = summaryInfo.runtimeKB || summaryInfo.originalKB;
+                      const showRuntimeDetail = runtimeMemoryKB > 0 && runtimeMemoryKB !== displayMemoryKB;
 
                       return (
                         <div key={key} className={`resource-panel__item ${isExpanded ? 'resource-panel__item--expanded' : ''}`}>
@@ -156,16 +179,19 @@ const ResourcePanel: React.FC<Props> = ({ resources, onSelect, onRequestFullscre
                           >
                             <div className="resource-panel__item-title">{resource.name || resource.id || '未命名资源'}</div>
                             <div className="resource-panel__item-meta">
-                              <span>{formatMemoryFromKB(summaryInfo.runtimeKB || summaryInfo.originalKB)}</span>
-                              {summaryInfo.originalKB > 0 && summaryInfo.runtimeKB > 0 && summaryInfo.runtimeKB !== summaryInfo.originalKB && (
+                              <span>{formatMemoryFromKB(displayMemoryKB)}</span>
+                              {showCompressedMeta && (
+                                <span className="resource-panel__item-meta-secondary">压缩 {formatMemoryFromKB(compressedMemoryKB)}</span>
+                              )}
+                              {!showCompressed && summaryInfo.originalKB > 0 && summaryInfo.runtimeKB > 0 && summaryInfo.runtimeKB !== summaryInfo.originalKB && (
                                 <span className="resource-panel__item-meta-secondary">原始 {formatMemoryFromKB(summaryInfo.originalKB)}</span>
                               )}
                               {summaryInfo.dimensions && <span>{summaryInfo.dimensions}</span>}
                               {summaryInfo.format && <span>{summaryInfo.format}</span>}
                             </div>
                             <div className="resource-panel__item-tags">
-                              <span className="resource-panel__badge">{getResourceCategory(resource)}</span>
-                              {resource.type && resource.type !== getResourceCategory(resource) && (
+                              <span className="resource-panel__badge">{category}</span>
+                              {resource.type && resource.type !== category && (
                                 <span className="resource-panel__tag">{resource.type}</span>
                               )}
                               {textureCount > 0 && <span className="resource-panel__tag">纹理×{formatNumber(textureCount)}</span>}
@@ -188,9 +214,27 @@ const ResourcePanel: React.FC<Props> = ({ resources, onSelect, onRequestFullscre
                                   <dl>
                                     <div>
                                       <dt>内存占用</dt>
-                                      <dd>{formatMemoryFromKB(summaryInfo.runtimeKB || summaryInfo.originalKB)}</dd>
+                                      <dd>{formatMemoryFromKB(displayMemoryKB)}</dd>
                                     </div>
-                                    {summaryInfo.originalKB > 0 && summaryInfo.runtimeKB > 0 && summaryInfo.runtimeKB !== summaryInfo.originalKB && (
+                                    {showCompressed && (
+                                      <div>
+                                        <dt>Unity 压缩</dt>
+                                        <dd>{formatMemoryFromKB(compressedMemoryKB)}</dd>
+                                      </div>
+                                    )}
+                                    {showRuntimeDetail && (
+                                      <div>
+                                        <dt>运行时内存</dt>
+                                        <dd>{formatMemoryFromKB(runtimeMemoryKB)}</dd>
+                                      </div>
+                                    )}
+                                    {(!showCompressed && summaryInfo.originalKB > 0 && summaryInfo.runtimeKB > 0 && summaryInfo.runtimeKB !== summaryInfo.originalKB) && (
+                                      <div>
+                                        <dt>原始大小</dt>
+                                        <dd>{formatMemoryFromKB(summaryInfo.originalKB)}</dd>
+                                      </div>
+                                    )}
+                                    {showCompressed && summaryInfo.originalKB > 0 && compressedMemoryKB !== summaryInfo.originalKB && (
                                       <div>
                                         <dt>原始大小</dt>
                                         <dd>{formatMemoryFromKB(summaryInfo.originalKB)}</dd>
