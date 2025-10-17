@@ -26,7 +26,7 @@ public static class RuntimeResourceCollector
         var shaderAggregates = new Dictionary<Shader, ShaderAggregate>();
 
         // Collect from Renderers' materials
-        var renderers = Object.FindObjectsOfType<Renderer>(true);
+        var renderers = UnityEngine.Object.FindObjectsOfType<Renderer>(true);
         foreach (var r in renderers)
         {
             var mats = r.sharedMaterials;
@@ -69,7 +69,7 @@ public static class RuntimeResourceCollector
         }
 
         // Cameras target RenderTexture
-        var cams = Object.FindObjectsOfType<Camera>(true);
+        var cams = UnityEngine.Object.FindObjectsOfType<Camera>(true);
         foreach (var c in cams)
         {
             var rt = c.targetTexture;
@@ -77,7 +77,7 @@ public static class RuntimeResourceCollector
         }
 
         // Optionally, include any loaded RenderTextures (may include temporary RTs)
-        var allRTs = Object.FindObjectsOfType<RenderTexture>(true);
+        var allRTs = UnityEngine.Object.FindObjectsOfType<RenderTexture>(true);
         foreach (var r in allRTs)
         {
             AddTextureEntry(r, list, textureSeen, "RenderTexture");
@@ -85,13 +85,13 @@ public static class RuntimeResourceCollector
 
         // Materials referenced by renderers
         // Meshes referenced by MeshFilter / SkinnedMeshRenderer
-        var meshFilters = Object.FindObjectsOfType<MeshFilter>(true);
+        var meshFilters = UnityEngine.Object.FindObjectsOfType<MeshFilter>(true);
         foreach (var mf in meshFilters)
         {
             AddMeshEntry(mf.sharedMesh, list, meshSeen);
         }
 
-        var skinnedRenderers = Object.FindObjectsOfType<SkinnedMeshRenderer>(true);
+        var skinnedRenderers = UnityEngine.Object.FindObjectsOfType<SkinnedMeshRenderer>(true);
         foreach (var smr in skinnedRenderers)
         {
             AddMeshEntry(smr.sharedMesh, list, meshSeen);
@@ -122,7 +122,7 @@ public static class RuntimeResourceCollector
         var list = new List<ResourceWithTexture>();
         var seen = new HashSet<int>();
 
-        var renderers = Object.FindObjectsOfType<Renderer>(true);
+        var renderers = UnityEngine.Object.FindObjectsOfType<Renderer>(true);
         foreach (var r in renderers)
         {
             var mats = r.sharedMaterials;
@@ -157,13 +157,13 @@ public static class RuntimeResourceCollector
             }
         }
 
-        var cams = Object.FindObjectsOfType<Camera>(true);
+        var cams = UnityEngine.Object.FindObjectsOfType<Camera>(true);
         foreach (var c in cams)
         {
             AddTextureEntryWithTex(c.targetTexture, list, seen, $"{c.name}.targetTexture");
         }
 
-        var allRTs = Object.FindObjectsOfType<RenderTexture>(true);
+        var allRTs = UnityEngine.Object.FindObjectsOfType<RenderTexture>(true);
         foreach (var r in allRTs)
         {
             AddTextureEntryWithTex(r, list, seen, "RenderTexture");
@@ -527,7 +527,7 @@ public static class RuntimeResourceCollector
 
     private static int GetGraphicsFormatBytes(GraphicsFormat format)
     {
-        return GraphicsFormatUtility.GetBlockSize(format);
+        return (int)GraphicsFormatUtility.GetBlockSize(format);
     }
 
     private static int EstimateMaterialMemoryKB(Material mat)
