@@ -69,6 +69,18 @@ function normaliseAssetUrl(url: unknown, baseUrl: string | null) {
   }
 }
 
+function getResourceSortSize(resource: any): number {
+  if (!resource || typeof resource !== 'object') return 0;
+  const value =
+    resource.sizeAfterCompressionKB ??
+    resource.compressedSizeKB ??
+    resource.runtimeSizeKB ??
+    resource.sizeKB ??
+    resource.size;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : 0;
+}
+
 function normaliseResourceEntry(resource: any, baseUrl: string | null) {
   if (!resource || typeof resource !== 'object') return resource;
   const next = { ...resource };
@@ -434,8 +446,8 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
     const result: Record<string, ResourceEntry[]> = {};
     for (const [clientId, resources] of Object.entries(catalogMap)) {
       const array = Object.values(resources).sort((a, b) => {
-        const sizeA = Number(a?.sizeKB ?? a?.size ?? 0);
-        const sizeB = Number(b?.sizeKB ?? b?.size ?? 0);
+        const sizeA = getResourceSortSize(a);
+        const sizeB = getResourceSortSize(b);
         return sizeB - sizeA;
       });
       result[clientId] = array;

@@ -8,7 +8,7 @@ type Props = {
   onStepForward?: () => void;
   onStepBack?: () => void;
   className?: string;
-  appearance?: 'panel' | 'floating';
+  appearance?: 'panel' | 'floating' | 'inline';
 };
 
 const PlaybackControls: React.FC<Props> = ({
@@ -70,6 +70,47 @@ const PlaybackControls: React.FC<Props> = ({
         >
           ›
         </button>
+      </div>
+    );
+  }
+
+  if (appearance === 'inline') {
+    return (
+      <div className={`playback-panel playback-panel--inline ${className ?? ''}`}>
+        <button
+          type="button"
+          className="icon-button"
+          onClick={() => onStepBack && onStepBack()}
+          disabled={!onStepBack}
+          aria-label="上一帧"
+        >
+          ‹
+        </button>
+        <button type="button" className={`button ${playing ? 'button--ghost' : 'button--primary'}`} onClick={onPlayPause} aria-label={playing ? '暂停' : '播放'}>
+          {playing ? '暂停' : '播放'}
+        </button>
+        <button
+          type="button"
+          className="icon-button"
+          onClick={() => onStepForward && onStepForward()}
+          disabled={!onStepForward}
+          aria-label="下一帧"
+        >
+          ›
+        </button>
+        <div className="playback-panel__speed">
+          <span className="playback-panel__label">速度</span>
+          <input
+            aria-label="播放速度"
+            type="range"
+            min="0.25"
+            max="2"
+            step="0.25"
+            value={speed}
+            onChange={handleSpeedChange}
+          />
+          <span className="playback-panel__value">×{speed.toFixed(2)}</span>
+        </div>
       </div>
     );
   }

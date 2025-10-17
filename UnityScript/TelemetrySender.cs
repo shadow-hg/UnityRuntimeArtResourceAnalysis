@@ -229,6 +229,23 @@ public class TelemetrySender : MonoBehaviour
         return ids;
     }
 
+    private static int GetResourceContributionSizeKB(ResourceEntry entry)
+    {
+        if (entry == null) return 0;
+        string category = !string.IsNullOrEmpty(entry.category) ? entry.category : entry.type;
+        bool isTexture = !string.IsNullOrEmpty(category) && category.IndexOf("texture", StringComparison.OrdinalIgnoreCase) >= 0;
+
+        if (isTexture)
+        {
+            if (entry.sizeAfterCompressionKB > 0) return entry.sizeAfterCompressionKB;
+            if (entry.compressedSizeKB > 0) return entry.compressedSizeKB;
+        }
+
+        if (entry.runtimeSizeKB > 0) return entry.runtimeSizeKB;
+        if (entry.sizeKB > 0) return entry.sizeKB;
+        return 0;
+    }
+
     private List<ResourceCategoryStat> SummarizeResourceStats(List<ResourceEntry> resources, out int totalKB, out int totalCount)
     {
         totalKB = 0;
@@ -247,7 +264,7 @@ public class TelemetrySender : MonoBehaviour
                     stats[category] = stat;
                 }
                 stat.count++;
-                var size = Mathf.Max(0, r.sizeKB);
+                var size = Mathf.Max(0, GetResourceContributionSizeKB(r));
                 stat.sizeKB += size;
                 totalKB += size;
             }
@@ -269,53 +286,180 @@ public class TelemetrySender : MonoBehaviour
     {
         yield return new WaitForEndOfFrame();
 
-        var cam = Camera.main;
-        if (cam == null) { onComplete(null); yield break; }
+        Texture2D tex = null;
+        RenderTexture initialActive = RenderTexture.active;
+        RenderTexture tempRt = null;
+        RenderTexture scaleRt = null;
+        Camera captureCamera = null;
+        RenderTexture originalTarget = null;
 
-        int w = thumbnailWidth;
-        int h = Mathf.RoundToInt(thumbnailWidth * ( (float)Screen.height / Screen.width ));
-        var rt = new RenderTexture(w, h, 24);
-        cam.targetTexture = rt;
-        Texture2D tex = new Texture2D(w, h, TextureFormat.RGB24, false);
-        cam.Render();
-        RenderTexture.active = rt;
-        tex.ReadPixels(new Rect(0, 0, w, h), 0, 0);
-        tex.Apply();
-        cam.targetTexture = null;
-        RenderTexture.active = null;
-        Destroy(rt);
-
-        byte[] jpg = tex.EncodeToJPG(jpegQuality);
-        Destroy(tex);
-
-        // upload via WWWForm
-        if (jpg != null && jpg.Length > 0) {
-            var form = new WWWForm();
-            form.AddBinaryData("thumb", jpg, "thumb.jpg", "image/jpeg");
-            form.AddField("clientId", clientId);
-            form.AddField("frameIndex", frameIndex.ToString());
-
-            using (var uwr = UnityWebRequest.Post(serverHttpUrl + "/upload/thumb", form))
+        try
+        {
+#if UNITY_2018_2_OR_NEWER
+            try
             {
-                yield return uwr.SendWebRequest();
-                if (uwr.result == UnityWebRequest.Result.Success)
+                tex = ScreenCapture.CaptureScreenshotAsTexture();
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning("Thumbnail screen capture failed, falling back to camera render: " + ex.Message);
+                tex = null;
+            }
+#endif
+
+            if (tex == null)
+            {
+                captureCamera = FindBestCamera();
+                if (captureCamera == null)
                 {
-                    var resp = uwr.downloadHandler.text;
-                    try
+                    onComplete(null);
+                    yield break;
+                }
+
+                int w = Mathf.Clamp(thumbnailWidth, 32, 4096);
+                float aspect = Screen.width > 0 ? (float)Screen.height / Screen.width : 1f;
+                int h = Mathf.Max(1, Mathf.RoundToInt(w * aspect));
+
+                tempRt = RenderTexture.GetTemporary(w, h, 24, RenderTextureFormat.ARGB32);
+                originalTarget = captureCamera.targetTexture;
+
+                captureCamera.targetTexture = tempRt;
+                captureCamera.Render();
+
+                RenderTexture.active = tempRt;
+                tex = new Texture2D(w, h, TextureFormat.RGB24, false);
+                tex.ReadPixels(new Rect(0, 0, w, h), 0, 0);
+                tex.Apply();
+                RenderTexture.active = initialActive;
+            }
+
+            if (tex == null)
+            {
+                onComplete(null);
+                yield break;
+            }
+
+            if (thumbnailWidth > 0 && tex.width > thumbnailWidth)
+            {
+                float aspect = tex.width > 0 ? (float)tex.height / tex.width : 1f;
+                int targetW = Mathf.Clamp(thumbnailWidth, 32, 4096);
+                int targetH = Mathf.Max(1, Mathf.RoundToInt(targetW * aspect));
+                var scaled = new Texture2D(targetW, targetH, TextureFormat.RGB24, false);
+                scaleRt = RenderTexture.GetTemporary(targetW, targetH, 0, RenderTextureFormat.ARGB32);
+                Graphics.Blit(tex, scaleRt);
+                RenderTexture.active = scaleRt;
+                scaled.ReadPixels(new Rect(0, 0, targetW, targetH), 0, 0);
+                scaled.Apply();
+                RenderTexture.active = initialActive;
+                RenderTexture.ReleaseTemporary(scaleRt);
+                scaleRt = null;
+                UnityEngine.Object.Destroy(tex);
+                tex = scaled;
+            }
+
+            byte[] jpg = tex.EncodeToJPG(Mathf.Clamp(jpegQuality, 10, 90));
+            UnityEngine.Object.Destroy(tex);
+
+            if (jpg != null && jpg.Length > 0)
+            {
+                var form = new WWWForm();
+                form.AddBinaryData("thumb", jpg, "thumb.jpg", "image/jpeg");
+                form.AddField("clientId", clientId);
+                form.AddField("frameIndex", frameIndex.ToString());
+
+                using (var uwr = UnityWebRequest.Post(serverHttpUrl + "/upload/thumb", form))
+                {
+                    yield return uwr.SendWebRequest();
+                    if (uwr.result == UnityWebRequest.Result.Success)
                     {
-                        var respObj = JsonConvert.DeserializeObject<ThumbUploadResponse>(resp);
-                        if (!string.IsNullOrEmpty(respObj.url)) { onComplete(respObj.url); yield break; }
+                        var resp = uwr.downloadHandler.text;
+                        try
+                        {
+                            var respObj = JsonConvert.DeserializeObject<ThumbUploadResponse>(resp);
+                            if (!string.IsNullOrEmpty(respObj.url))
+                            {
+                                onComplete(respObj.url);
+                                yield break;
+                            }
+                        }
+                        catch { }
                     }
-                    catch { }
+                    else
+                    {
+                        Debug.LogWarning("Thumb upload failed: " + uwr.error);
+                    }
                 }
-                else
-                {
-                    Debug.LogWarning("Thumb upload failed: " + uwr.error);
-                }
+            }
+        }
+        finally
+        {
+            if (captureCamera != null)
+            {
+                captureCamera.targetTexture = originalTarget;
+            }
+            RenderTexture.active = initialActive;
+            if (tempRt != null)
+            {
+                RenderTexture.ReleaseTemporary(tempRt);
+            }
+            if (scaleRt != null)
+            {
+                RenderTexture.ReleaseTemporary(scaleRt);
             }
         }
 
         onComplete(null);
+    }
+
+    private Camera FindBestCamera()
+    {
+        var cam = Camera.main;
+        if (cam != null && cam.isActiveAndEnabled)
+        {
+            return cam;
+        }
+
+        Camera[] cameras = null;
+        if (Camera.allCamerasCount > 0)
+        {
+            cameras = Camera.allCameras;
+        }
+
+        Camera best = null;
+        if (cameras != null)
+        {
+            foreach (var c in cameras)
+            {
+                if (c == null || !c.isActiveAndEnabled)
+                {
+                    continue;
+                }
+
+                if (best == null || c.depth > best.depth)
+                {
+                    best = c;
+                }
+            }
+        }
+
+        if (best != null)
+        {
+            return best;
+        }
+
+        // fallback: any enabled camera
+        if (cameras != null)
+        {
+            foreach (var c in cameras)
+            {
+                if (c != null && c.isActiveAndEnabled)
+                {
+                    return c;
+                }
+            }
+        }
+
+        return null;
     }
 
     // upload thumbnails for resource list when available (uses RuntimeResourceCollector.GetSnapshotWithTextures)

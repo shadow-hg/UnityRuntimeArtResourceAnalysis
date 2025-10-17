@@ -1,15 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './styles/app.css';
 import Toolbar from './components/Toolbar';
-import ConnectionPanel from './components/ConnectionPanel';
 import FrameList from './components/FrameList';
 import ResourcePanel from './components/ResourcePanel';
 import FrameViewer from './components/FrameViewer';
 import Timeline from './components/Timeline';
-import PlaybackControls from './components/PlaybackControls';
 import FrameDetails from './components/FrameDetails';
 import CaptureControlOverlay from './components/CaptureControlOverlay';
 import { ControlState, Frame, useTelemetry } from './hooks/useTelemetry';
+import SessionControls from './components/SessionControls';
 
 function frameKey(entry: Frame | null) {
   if (!entry) return '';
@@ -29,7 +28,7 @@ export default function App() {
   const [speed, setSpeed] = useState(1);
   const playIndexRef = useRef<number>(-1);
   const [currentIndex, setCurrentIndex] = useState<number>(-1);
-  const [autoFollow, setAutoFollow] = useState(true);
+  const [autoFollow, setAutoFollow] = useState(false);
   const [livePinned, setLivePinned] = useState(false);
   const [displayFrames, setDisplayFrames] = useState<Frame[]>(frames);
   const [displayCatalog, setDisplayCatalog] = useState(catalog);
@@ -82,7 +81,8 @@ export default function App() {
     }
     if (!selectedClientId || !clients.includes(selectedClientId)) {
       setSelectedClientId(clients[0]);
-      setAutoFollow(true);
+      setAutoFollow(false);
+      setPlaying(false);
     }
   }, [clients, selectedClientId]);
 
@@ -202,6 +202,20 @@ export default function App() {
     handleSeek(nextIndex);
   };
 
+  const handleTogglePlay = useCallback(() => {
+    setPlaying((prev) => {
+      const next = !prev;
+      if (next) {
+        resumeLiveView();
+        setAutoFollow(true);
+      } else {
+        freezeLiveView();
+        setAutoFollow(false);
+      }
+      return next;
+    });
+  }, [freezeLiveView, resumeLiveView]);
+
   return (
     <div className="app-shell">
       <Toolbar
@@ -209,9 +223,41 @@ export default function App() {
         endpoint={wsUrl}
         onDisconnect={() => {
           setWsUrl(null);
-          setAutoFollow(true);
+          setPlaying(false);
+          setAutoFollow(false);
           resumeLiveView();
         }}
+      />
+      <SessionControls
+        className={fullscreenPanel ? 'session-controls--dimmed' : ''}
+        connectionState={connectionState}
+        activeUrl={wsUrl}
+        onConnect={(ip: string, port: string) => {
+          setWsUrl(`ws://${ip}:${port}`);
+          setPlaying(false);
+          setAutoFollow(false);
+          resumeLiveView();
+        }}
+        onDisconnect={() => {
+          setWsUrl(null);
+          setPlaying(false);
+          setAutoFollow(false);
+          resumeLiveView();
+        }}
+        clients={clients}
+        selectedClientId={selectedClientId}
+        onSelectClient={(clientId) => {
+          setSelectedClientId(clientId);
+          setPlaying(false);
+          setAutoFollow(false);
+          resumeLiveView();
+        }}
+        playing={playing}
+        onTogglePlay={handleTogglePlay}
+        onStepForward={() => handleStep(1)}
+        onStepBack={() => handleStep(-1)}
+        speed={speed}
+        onSpeedChange={(value) => setSpeed(value)}
       />
       <section className={`timeline-section ${fullscreenPanel ? 'timeline-section--dimmed' : ''}`}>
         <Timeline
@@ -222,27 +268,6 @@ export default function App() {
       </section>
       <div className="app-body">
         <aside className="sidebar sidebar--left">
-          <ConnectionPanel
-            onConnect={(ip: string, port: string) => {
-              setWsUrl(`ws://${ip}:${port}`);
-              setAutoFollow(true);
-              resumeLiveView();
-            }}
-            onDisconnect={() => {
-              setWsUrl(null);
-              setAutoFollow(true);
-              resumeLiveView();
-            }}
-            connectionState={connectionState}
-            activeUrl={wsUrl}
-            clients={clients}
-            selectedClientId={selectedClientId}
-            onSelectClient={(clientId) => {
-              setSelectedClientId(clientId);
-              setAutoFollow(true);
-              resumeLiveView();
-            }}
-          />
           <FrameList
             frames={visibleFrames}
             selectedFrameKey={frameKey(selectedFrame)}
@@ -271,36 +296,7 @@ export default function App() {
                 latestFrameTimestamp={latestFrameTimestamp}
                 connectionState={connectionState}
               />
-              <PlaybackControls
-                appearance="floating"
-                className="frame-viewer__playback"
-                playing={playing}
-                onPlayPause={() => {
-                  setPlaying((prev) => {
-                    const next = !prev;
-                    if (next) {
-                      resumeLiveView();
-                      setAutoFollow(true);
-                    } else {
-                      freezeLiveView();
-                      setAutoFollow(false);
-                    }
-                    return next;
-                  });
-                }}
-                speed={speed}
-                setSpeed={setSpeed}
-                onStepForward={() => handleStep(1)}
-                onStepBack={() => handleStep(-1)}
-              />
             </div>
-          </section>
-          <section className="main-bottom">
-            <FrameDetails
-              frame={selectedFrame?.frame || null}
-              resourceCatalog={resourceCatalog}
-              onRequestFullscreen={() => setFullscreenPanel('details')}
-            />
           </section>
         </main>
         <aside className="sidebar sidebar--right">
@@ -315,6 +311,11 @@ export default function App() {
               }
             }}
             onRequestFullscreen={() => setFullscreenPanel('resources')}
+          />
+          <FrameDetails
+            frame={selectedFrame?.frame || null}
+            resourceCatalog={resourceCatalog}
+            onRequestFullscreen={() => setFullscreenPanel('details')}
           />
         </aside>
       </div>
