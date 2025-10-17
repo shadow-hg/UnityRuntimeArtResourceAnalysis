@@ -1,17 +1,9 @@
-import React, { useMemo } from 'react';
-import { formatMemoryFromKB } from '../utils/format';
-import {
-  buildResourceSummary,
-  getDisplayMemoryKB,
-  getResourceCategory,
-  isTextureCategory,
-  ResourceSummary
-} from '../utils/resourceMetadata';
-import { collectActiveFrameResources } from '../utils/frameResources';
+import React, { useEffect, useMemo, useState } from 'react';
 
 type Props = {
   frame: any | null;
   resourceCatalog?: Record<string, any> | undefined;
+  clientId?: string | null;
 };
 
 function pickCameraImage(camera: any): string | null {
@@ -93,56 +85,75 @@ function pickThumbnail(frame: any | null, resourceCatalog?: Record<string, any>)
   return null;
 }
 
-const FrameViewer: React.FC<Props> = ({ frame, resourceCatalog }) => {
+type LastPreview = {
+  clientId: string | null;
+  image: string;
+  frameIndex: number | null;
+  timestamp: number | null;
+};
+
+function parseTimestamp(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return null;
+}
+
+const FrameViewer: React.FC<Props> = ({ frame, resourceCatalog, clientId = null }) => {
   const hasFrame = !!frame;
   const image = pickThumbnail(frame, resourceCatalog) || null;
   const frameIndex = typeof frame?.frameIndex === 'number' ? `#${frame.frameIndex}` : '';
   const scene = frame?.sceneName || frame?.state || '未命名场景';
   const timestamp = frame?.timestamp ? new Date(frame.timestamp) : null;
-  const activeResources = useMemo(
-    () => collectActiveFrameResources(frame, resourceCatalog),
-    [frame, resourceCatalog]
-  );
+  const [lastPreview, setLastPreview] = useState<LastPreview | null>(null);
 
-  const textureSummaries = useMemo(() => {
-    if (!activeResources || activeResources.length === 0) return [] as {
-      key: string;
-      name: string;
-      displayMemoryKB: number;
-      compressedKB: number;
-      dimensions: string | null;
-      format: string | null;
-    }[];
+  useEffect(() => {
+    setLastPreview((prev) => {
+      if (!clientId || !frame) {
+        return null;
+      }
 
-    const cache = new WeakMap<any, ResourceSummary>();
-
-    return activeResources
-      .map((resource, index) => {
-        const category = getResourceCategory(resource);
-        if (!isTextureCategory(category)) return null;
-
-        const summary = cache.get(resource) || buildResourceSummary(resource);
-        if (!cache.has(resource)) {
-          cache.set(resource, summary);
-        }
-
-        const displayMemoryKB = getDisplayMemoryKB(resource, summary);
-        const compressedKB = summary.compressedKB;
-        const name = resource.name || resource.id || `纹理 ${index + 1}`;
-        const key = resource.id || resource.guid || name || `texture-${index}`;
-
+      if (image) {
         return {
-          key,
-          name,
-          displayMemoryKB,
-          compressedKB,
-          dimensions: summary.dimensions || null,
-          format: summary.format || null
+          clientId,
+          image,
+          frameIndex: typeof frame.frameIndex === 'number' ? frame.frameIndex : null,
+          timestamp: parseTimestamp(frame.timestamp)
         };
-      })
-      .filter((item): item is NonNullable<typeof item> => item !== null)
-      .sort((a, b) => b.displayMemoryKB - a.displayMemoryKB);
-  }, [activeResources]);
+      }
+
+      if (prev && prev.clientId === clientId) {
+        return prev;
+      }
+
+      return null;
+    });
+  }, [clientId, frame, image]);
+
+  const displayPreview = image || (lastPreview && lastPreview.clientId === clientId ? lastPreview.image : null);
+
+  const fallbackFrameIndex = useMemo(() => {
+    if (!displayPreview) return null;
+    if (image) return typeof frame?.frameIndex === 'number' ? frame.frameIndex : null;
+    if (lastPreview && lastPreview.clientId === clientId) {
+      return lastPreview.frameIndex;
+    }
+    return null;
+  }, [clientId, displayPreview, frame, image, lastPreview]);
+
+  const fallbackTimestamp = useMemo(() => {
+    if (!displayPreview) return null;
+    if (image) return parseTimestamp(frame?.timestamp);
+    if (lastPreview && lastPreview.clientId === clientId) {
+      return lastPreview.timestamp;
+    }
+    return null;
+  }, [clientId, displayPreview, frame, image, lastPreview]);
+
+  const fallbackDate = fallbackTimestamp ? new Date(fallbackTimestamp) : null;
+  const isFallback = Boolean(displayPreview && !image);
 
   return (
     <div className="panel frame-viewer">
@@ -157,37 +168,25 @@ const FrameViewer: React.FC<Props> = ({ frame, resourceCatalog }) => {
         )}
       </div>
       <div className="frame-viewer__content">
-        {image ? (
-          <img src={image} alt="Frame thumbnail" className="frame-viewer__image" />
+        {displayPreview ? (
+          <>
+            <img src={displayPreview} alt="Frame thumbnail" className="frame-viewer__image" />
+            {isFallback && (
+              <div className="frame-viewer__stale-badge">
+                {fallbackFrameIndex !== null ? `展示上次捕获帧 #${fallbackFrameIndex}` : '展示最近捕获画面'}
+              </div>
+            )}
+          </>
         ) : (
           <div className="frame-viewer__empty">
             <span>{hasFrame ? '未收到缩略图，请检查客户端是否开启缩略图上传' : '等待帧数据'}</span>
           </div>
         )}
       </div>
-      {textureSummaries.length > 0 && (
-        <div className="frame-viewer__details">
-          <div className="frame-viewer__details-title">纹理概览</div>
-          <ul className="frame-viewer__texture-list">
-            {textureSummaries.map((texture) => {
-              const showCompressed = texture.compressedKB > 0;
-              return (
-                <li key={texture.key} className="frame-viewer__texture-item">
-                  <div className="frame-viewer__texture-name">{texture.name}</div>
-                  <div className="frame-viewer__texture-meta">
-                    <span>{formatMemoryFromKB(texture.displayMemoryKB)}</span>
-                    {showCompressed && (
-                      <span className="frame-viewer__texture-meta-secondary">
-                        压缩 {formatMemoryFromKB(texture.compressedKB)}
-                      </span>
-                    )}
-                    {texture.dimensions && <span>{texture.dimensions}</span>}
-                    {texture.format && <span>{texture.format}</span>}
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
+      {isFallback && (
+        <div className="frame-viewer__hint">
+          当前帧未上传缩略图，正在显示最近捕获的画面
+          {fallbackDate ? `（${fallbackDate.toLocaleTimeString()}）` : ''}。
         </div>
       )}
     </div>

@@ -19,6 +19,7 @@ type Props = {
   className?: string;
   captureControlsExpanded: boolean;
   onToggleCaptureControls?: () => void;
+  captureToggleRef?: React.RefObject<HTMLButtonElement>;
 };
 
 const stateLabels: Record<ConnectionState, { label: string; tone: 'neutral' | 'warning' | 'success' | 'error' }> = {
@@ -45,7 +46,8 @@ const SessionControls: React.FC<Props> = ({
   onSpeedChange,
   className,
   captureControlsExpanded,
-  onToggleCaptureControls
+  onToggleCaptureControls,
+  captureToggleRef
 }) => {
   const [ip, setIp] = useState('');
   const [port, setPort] = useState('8080');
@@ -124,6 +126,7 @@ const SessionControls: React.FC<Props> = ({
                 }`}
                 onClick={() => onToggleCaptureControls && onToggleCaptureControls()}
                 aria-pressed={captureControlsExpanded}
+                ref={captureToggleRef}
               >
                 {captureControlsExpanded ? '收起采集控制' : '展开采集控制'}
               </button>
