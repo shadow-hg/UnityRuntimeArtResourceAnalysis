@@ -70,6 +70,9 @@ function handleWsMessage(ws, msg, clientId) {
       dt: obj.dt !== undefined ? obj.dt : null,
       metrics: obj.metrics || {},
       resources: obj.resources || [],
+      resourceStats: Array.isArray(obj.resourceStats) ? obj.resourceStats : [],
+      resourceTotalKB: typeof obj.resourceTotalKB === 'number' ? obj.resourceTotalKB : 0,
+      resourceCount: typeof obj.resourceCount === 'number' ? obj.resourceCount : (Array.isArray(obj.resources) ? obj.resources.length : 0),
       thumbnail: thumb,
       thumbnailUrl: thumb,
       buildVersion: obj.buildVersion || null
@@ -97,7 +100,9 @@ function handleWsMessage(ws, msg, clientId) {
     // if resources included as snapshot, merge into catalog
     if (obj.resourceSnapshot) {
       for (const r of obj.resourceSnapshot) {
-        resourceCatalog[clientId][r.id] = r;
+        if (!r || !r.id) continue;
+        const existing = resourceCatalog[clientId][r.id] || {};
+        resourceCatalog[clientId][r.id] = { ...existing, ...r };
       }
     }
 
@@ -107,7 +112,11 @@ function handleWsMessage(ws, msg, clientId) {
     broadcastToBrowsers({ type: 'frame', clientId, frame: frameEntry });
   } else if (obj.type === 'resource_snapshot') {
     if (Array.isArray(obj.resources)) {
-      for (const r of obj.resources) resourceCatalog[clientId][r.id] = r;
+      for (const r of obj.resources) {
+        if (!r || !r.id) continue;
+        const existing = resourceCatalog[clientId][r.id] || {};
+        resourceCatalog[clientId][r.id] = { ...existing, ...r };
+      }
     }
     broadcastToBrowsers({ type: 'resource_snapshot', clientId, resources: obj.resources });
   } else if (obj.type === 'ping') {

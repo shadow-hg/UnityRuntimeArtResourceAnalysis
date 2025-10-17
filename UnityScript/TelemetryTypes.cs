@@ -19,6 +19,24 @@ public class ResourceEntry
     public string shader;
     public string notes;
     public string thumbnailUrl;
+    public string dimension;
+    public string wrapMode;
+    public string filterMode;
+    public int anisoLevel;
+    public bool isReadable;
+    public int antiAliasing;
+    public string colorSpace;
+    public int passCount;
+    public int keywordCount;
+    public string[] keywords;
+    public string renderQueue;
+    public string variantId;
+    public int variantCount;
+    public int subMeshCount;
+    public float boundsX;
+    public float boundsY;
+    public float boundsZ;
+    public string usage;
 }
 
 [Serializable]
@@ -28,4 +46,12 @@ public class ResourceWithTexture
     // Texture reference not serialized when sending to server; used at runtime only
     [NonSerialized]
     public Texture tex;
+}
+
+[Serializable]
+public class ResourceCategoryStat
+{
+    public string category;
+    public int count;
+    public int sizeKB;
 }
