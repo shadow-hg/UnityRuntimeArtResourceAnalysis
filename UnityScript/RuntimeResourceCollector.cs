@@ -235,20 +235,30 @@ public static class RuntimeResourceCollector
         if (seen.Contains(id)) return;
         seen.Add(id);
 
+        bool canAccess = SafeCanAccessMesh(mesh);
+        int vertexCount = SafeGetMeshVertexCount(mesh);
+        int indexCount = SafeGetMeshIndexCount(mesh);
+        int triangleCount = indexCount > 0 ? indexCount / 3 : 0;
+        int subMeshCount = SafeGetMeshSubMeshCount(mesh);
+        Vector3 boundsSize = SafeGetMeshBoundsSize(mesh);
+        int indexElementSize = SafeGetMeshIndexElementSize(mesh);
+
         var entry = new ResourceEntry
         {
             id = id.ToString(),
             name = mesh.name ?? "<unnamed>",
             type = "Mesh",
             category = "Mesh",
-            vertexCount = mesh.vertexCount,
-            triangleCount = mesh.triangles != null ? mesh.triangles.Length / 3 : 0,
-            sizeKB = (int)(EstimateMeshMemoryBytes(mesh) / 1024),
-            subMeshCount = mesh.subMeshCount,
-            boundsX = mesh.bounds.size.x,
-            boundsY = mesh.bounds.size.y,
-            boundsZ = mesh.bounds.size.z,
-            usage = mesh.name
+            vertexCount = vertexCount,
+            triangleCount = triangleCount,
+            sizeKB = (int)(EstimateMeshMemoryBytes(mesh, vertexCount, indexCount, indexElementSize) / 1024),
+            subMeshCount = subMeshCount,
+            boundsX = boundsSize.x,
+            boundsY = boundsSize.y,
+            boundsZ = boundsSize.z,
+            usage = mesh.name,
+            isReadable = canAccess,
+            notes = canAccess ? null : "NotReadable"
         };
 
         list.Add(entry);
@@ -537,35 +547,122 @@ public static class RuntimeResourceCollector
         return 3;
     }
 
-    private static long EstimateMeshMemoryBytes(Mesh mesh)
+    private static long EstimateMeshMemoryBytes(Mesh mesh, int vertexCount, int indexCount, int indexElementSize)
     {
         if (mesh == null) return 0;
-        int vertexCount = mesh.vertexCount;
         int channels = 0;
-        if (mesh.HasVertexAttribute(VertexAttribute.Position)) channels += 12;
-        if (mesh.HasVertexAttribute(VertexAttribute.Normal)) channels += 12;
-        if (mesh.HasVertexAttribute(VertexAttribute.Tangent)) channels += 16;
-        if (mesh.HasVertexAttribute(VertexAttribute.Color)) channels += 16;
-        if (mesh.HasVertexAttribute(VertexAttribute.TexCoord0)) channels += 8;
-        if (mesh.HasVertexAttribute(VertexAttribute.TexCoord1)) channels += 8;
-        if (mesh.HasVertexAttribute(VertexAttribute.TexCoord2)) channels += 8;
-        if (mesh.HasVertexAttribute(VertexAttribute.TexCoord3)) channels += 8;
-        if (mesh.HasVertexAttribute(VertexAttribute.TexCoord4)) channels += 8;
-        if (mesh.HasVertexAttribute(VertexAttribute.TexCoord5)) channels += 8;
-        if (mesh.HasVertexAttribute(VertexAttribute.TexCoord6)) channels += 8;
-        if (mesh.HasVertexAttribute(VertexAttribute.TexCoord7)) channels += 8;
-        if (mesh.HasVertexAttribute(VertexAttribute.BlendWeight)) channels += 16;
-        if (mesh.HasVertexAttribute(VertexAttribute.BlendIndices)) channels += 4;
 
-        long vertexBytes = (long)vertexCount * Mathf.Max(0, channels);
-        long indexBytes = 0;
         try
         {
-            var indices = mesh.triangles;
-            indexBytes = (long)indices.Length * (mesh.indexFormat == UnityEngine.Rendering.IndexFormat.UInt16 ? 2 : 4);
+            if (mesh.HasVertexAttribute(VertexAttribute.Position)) channels += 12;
+            if (mesh.HasVertexAttribute(VertexAttribute.Normal)) channels += 12;
+            if (mesh.HasVertexAttribute(VertexAttribute.Tangent)) channels += 16;
+            if (mesh.HasVertexAttribute(VertexAttribute.Color)) channels += 16;
+            if (mesh.HasVertexAttribute(VertexAttribute.TexCoord0)) channels += 8;
+            if (mesh.HasVertexAttribute(VertexAttribute.TexCoord1)) channels += 8;
+            if (mesh.HasVertexAttribute(VertexAttribute.TexCoord2)) channels += 8;
+            if (mesh.HasVertexAttribute(VertexAttribute.TexCoord3)) channels += 8;
+            if (mesh.HasVertexAttribute(VertexAttribute.TexCoord4)) channels += 8;
+            if (mesh.HasVertexAttribute(VertexAttribute.TexCoord5)) channels += 8;
+            if (mesh.HasVertexAttribute(VertexAttribute.TexCoord6)) channels += 8;
+            if (mesh.HasVertexAttribute(VertexAttribute.TexCoord7)) channels += 8;
+            if (mesh.HasVertexAttribute(VertexAttribute.BlendWeight)) channels += 16;
+            if (mesh.HasVertexAttribute(VertexAttribute.BlendIndices)) channels += 4;
         }
-        catch { }
+        catch
+        {
+            channels = 0;
+        }
+
+        long vertexBytes = (long)vertexCount * Mathf.Max(0, channels);
+        long indexBytes = (long)Mathf.Max(0, indexCount) * Mathf.Max(2, indexElementSize);
 
         return vertexBytes + indexBytes;
+    }
+
+    private static bool SafeCanAccessMesh(Mesh mesh)
+    {
+        try
+        {
+            return mesh.isReadable;
+        }
+        catch
+        {
+            try { return mesh.canAccess; }
+            catch { return true; }
+        }
+    }
+
+    private static int SafeGetMeshVertexCount(Mesh mesh)
+    {
+        try { return mesh.vertexCount; }
+        catch { return 0; }
+    }
+
+    private static int SafeGetMeshSubMeshCount(Mesh mesh)
+    {
+        try { return mesh.subMeshCount; }
+        catch { return 0; }
+    }
+
+    private static int SafeGetMeshIndexElementSize(Mesh mesh)
+    {
+        try
+        {
+#if UNITY_2017_3_OR_NEWER
+            var format = mesh.indexFormat;
+            return format == IndexFormat.UInt16 ? 2 : 4;
+#else
+            return 2;
+#endif
+        }
+        catch
+        {
+            return 2;
+        }
+    }
+
+    private static int SafeGetMeshIndexCount(Mesh mesh)
+    {
+        if (mesh == null) return 0;
+
+#if UNITY_2017_3_OR_NEWER
+        try
+        {
+            int subMeshCount = mesh.subMeshCount;
+            if (subMeshCount > 0)
+            {
+                long total = 0;
+                for (int i = 0; i < subMeshCount; i++)
+                {
+                    total += (long)mesh.GetIndexCount(i);
+                }
+                if (total > 0)
+                {
+                    return total > int.MaxValue ? int.MaxValue : (int)total;
+                }
+            }
+        }
+        catch
+        {
+            // fall back to triangles API below
+        }
+#endif
+
+        try
+        {
+            var tris = mesh.triangles;
+            return tris != null ? tris.Length : 0;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    private static Vector3 SafeGetMeshBoundsSize(Mesh mesh)
+    {
+        try { return mesh.bounds.size; }
+        catch { return Vector3.zero; }
     }
 }

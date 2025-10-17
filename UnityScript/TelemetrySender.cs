@@ -125,7 +125,7 @@ public class TelemetrySender : MonoBehaviour
             if (hash != lastSnapshotHash)
             {
                 lastSnapshotHash = hash;
-                var snapshotMsg = new SnapshotMessage { clientId = clientId, resources = latestSnapshot };
+                var snapshotMsg = new SnapshotMessage { clientId = clientId, resources = latestSnapshot, replace = true };
 #if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
                 var j = JsonConvert.SerializeObject(snapshotMsg);
                 _ = SendTextAsync(j);
@@ -338,7 +338,7 @@ public class TelemetrySender : MonoBehaviour
                             // update local snapshot entry and notify server about updated resource
                             rwt.entry.thumbnailUrl = respObj.url;
                             UpdateCachedResource(rwt.entry);
-                            var snapshotMsg = new SnapshotMessage { clientId = clientId, resources = new List<ResourceEntry> { rwt.entry } };
+                            var snapshotMsg = new SnapshotMessage { clientId = clientId, resources = new List<ResourceEntry> { rwt.entry }, replace = false };
                             var j = JsonConvert.SerializeObject(snapshotMsg);
 #if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
                             _ = SendTextAsync(j);
@@ -436,7 +436,7 @@ public class TelemetrySender : MonoBehaviour
 public class ResourceEntryListWrapper { public List<ResourceEntry> items; }
 
 [Serializable]
-public class SnapshotMessage { public string type = "resource_snapshot"; public string clientId; public List<ResourceEntry> resources; }
+public class SnapshotMessage { public string type = "resource_snapshot"; public string clientId; public List<ResourceEntry> resources; public bool replace = true; }
 
 [Serializable]
 public class Metrics { public float fps; public float dt; }

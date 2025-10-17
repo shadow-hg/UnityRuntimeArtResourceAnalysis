@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './styles/app.css';
 import Toolbar from './components/Toolbar';
 import ConnectionPanel from './components/ConnectionPanel';
@@ -20,7 +20,7 @@ function frameKey(entry: Frame | null) {
 
 export default function App() {
   const [wsUrl, setWsUrl] = useState<string | null>(null);
-  const { frames, catalog, connectionState } = useTelemetry(wsUrl);
+  const { frames, catalog, catalogIndex, connectionState } = useTelemetry(wsUrl);
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
   const [selectedFrame, setSelectedFrame] = useState<Frame | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -28,13 +28,48 @@ export default function App() {
   const playIndexRef = useRef<number>(-1);
   const [currentIndex, setCurrentIndex] = useState<number>(-1);
   const [autoFollow, setAutoFollow] = useState(true);
+  const [livePinned, setLivePinned] = useState(false);
+  const [displayFrames, setDisplayFrames] = useState<Frame[]>(frames);
+  const [displayCatalog, setDisplayCatalog] = useState(catalog);
+  const [displayCatalogIndex, setDisplayCatalogIndex] = useState(catalogIndex);
+
+  useEffect(() => {
+    if (!livePinned) {
+      setDisplayFrames(frames);
+    }
+  }, [frames, livePinned]);
+
+  useEffect(() => {
+    if (!livePinned) {
+      setDisplayCatalog(catalog);
+    }
+  }, [catalog, livePinned]);
+
+  useEffect(() => {
+    if (!livePinned) {
+      setDisplayCatalogIndex(catalogIndex);
+    }
+  }, [catalogIndex, livePinned]);
+
+  const freezeLiveView = useCallback(() => {
+    if (livePinned) return;
+    setDisplayFrames(frames);
+    setDisplayCatalog(catalog);
+    setDisplayCatalogIndex(catalogIndex);
+    setLivePinned(true);
+  }, [livePinned, frames, catalog, catalogIndex]);
+
+  const resumeLiveView = useCallback(() => {
+    if (!livePinned) return;
+    setLivePinned(false);
+  }, [livePinned]);
 
   const clients = useMemo(() => {
     const ids = new Set<string>();
-    frames.forEach((f) => ids.add(f.clientId));
-    Object.keys(catalog).forEach((id) => ids.add(id));
+    displayFrames.forEach((f) => ids.add(f.clientId));
+    Object.keys(displayCatalog).forEach((id) => ids.add(id));
     return Array.from(ids).sort();
-  }, [frames, catalog]);
+  }, [displayFrames, displayCatalog]);
 
   useEffect(() => {
     if (clients.length === 0) {
@@ -48,9 +83,9 @@ export default function App() {
   }, [clients, selectedClientId]);
 
   const visibleFrames = useMemo(() => {
-    if (!selectedClientId) return frames;
-    return frames.filter((f) => f.clientId === selectedClientId);
-  }, [frames, selectedClientId]);
+    if (!selectedClientId) return displayFrames;
+    return displayFrames.filter((f) => f.clientId === selectedClientId);
+  }, [displayFrames, selectedClientId]);
 
   useEffect(() => {
     if (visibleFrames.length === 0) {
@@ -92,13 +127,15 @@ export default function App() {
     playIndexRef.current = idx;
   }, [selectedFrame, visibleFrames]);
 
-  const resources = selectedClientId ? catalog[selectedClientId] : [];
+  const resources = selectedClientId ? displayCatalog[selectedClientId] : [];
+  const resourceCatalog = selectedClientId ? displayCatalogIndex[selectedClientId] : undefined;
 
   const handleSeek = (idx: number) => {
     if (idx < 0 || idx >= visibleFrames.length) return;
     setSelectedFrame(visibleFrames[idx]);
     setPlaying(false);
     setAutoFollow(false);
+    freezeLiveView();
   };
 
   const handleStep = (direction: 1 | -1) => {
@@ -109,17 +146,27 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <Toolbar connectionState={connectionState} endpoint={wsUrl} onDisconnect={() => setWsUrl(null)} />
+      <Toolbar
+        connectionState={connectionState}
+        endpoint={wsUrl}
+        onDisconnect={() => {
+          setWsUrl(null);
+          setAutoFollow(true);
+          resumeLiveView();
+        }}
+      />
       <div className="app-body">
         <aside className="sidebar sidebar--left">
           <ConnectionPanel
             onConnect={(ip: string, port: string) => {
               setWsUrl(`ws://${ip}:${port}`);
               setAutoFollow(true);
+              resumeLiveView();
             }}
             onDisconnect={() => {
               setWsUrl(null);
               setAutoFollow(true);
+              resumeLiveView();
             }}
             connectionState={connectionState}
             activeUrl={wsUrl}
@@ -128,6 +175,7 @@ export default function App() {
             onSelectClient={(clientId) => {
               setSelectedClientId(clientId);
               setAutoFollow(true);
+              resumeLiveView();
             }}
           />
           <FrameList
@@ -137,6 +185,7 @@ export default function App() {
               setSelectedFrame(entry);
               setPlaying(false);
               setAutoFollow(false);
+              freezeLiveView();
             }}
           />
         </aside>
@@ -147,8 +196,17 @@ export default function App() {
               <PlaybackControls
                 playing={playing}
                 onPlayPause={() => {
-                  setPlaying((prev) => !prev);
-                  setAutoFollow(false);
+                  setPlaying((prev) => {
+                    const next = !prev;
+                    if (next) {
+                      resumeLiveView();
+                      setAutoFollow(true);
+                    } else {
+                      freezeLiveView();
+                      setAutoFollow(false);
+                    }
+                    return next;
+                  });
                 }}
                 speed={speed}
                 setSpeed={setSpeed}
@@ -163,7 +221,10 @@ export default function App() {
             </div>
           </section>
           <section className="main-bottom">
-            <FrameDetails frame={selectedFrame?.frame || null} />
+            <FrameDetails
+              frame={selectedFrame?.frame || null}
+              resourceCatalog={resourceCatalog}
+            />
           </section>
         </main>
         <aside className="sidebar sidebar--right">

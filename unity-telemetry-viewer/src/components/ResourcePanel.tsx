@@ -113,6 +113,10 @@ const ResourcePanel: React.FC<Props> = ({ resources, onSelect }) => {
               if (resource.keywordCount) detailList.push(`关键词×${formatNumber(resource.keywordCount)}`);
             }
 
+            if (resource.isReadable === false) {
+              detailList.push('不可读');
+            }
+
             const detailChips = Array.from(new Set(detailList.filter(Boolean)));
             const keywords = Array.isArray(resource.keywords) ? resource.keywords.filter(Boolean) : [];
             const keywordPreview = keywords.slice(0, 4).join(', ');
