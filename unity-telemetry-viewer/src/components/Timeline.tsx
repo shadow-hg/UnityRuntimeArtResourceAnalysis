@@ -201,9 +201,14 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek, p
     setVisibleCategories((prev) => {
       if (topCategories.length === 0) return [];
       if (prev.length === 0) return topCategories;
+      const prevSet = new Set(prev);
       const next = prev.filter((category) => topCategories.includes(category));
-      const missing = topCategories.filter((category) => !next.includes(category));
-      return [...next, ...missing];
+      topCategories.forEach((category) => {
+        if (!prevSet.has(category)) {
+          next.push(category);
+        }
+      });
+      return next;
     });
   }, [topCategories]);
 

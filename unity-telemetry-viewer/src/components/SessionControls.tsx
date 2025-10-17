@@ -208,17 +208,19 @@ const SessionControls: React.FC<Props> = ({
             </select>
           </div>
         </div>
-      </div>
-      <div className="session-controls__playback">
-        <PlaybackControls
-          appearance="inline"
-          playing={playing}
-          onPlayPause={onTogglePlay}
-          speed={speed}
-          setSpeed={onSpeedChange}
-          onStepForward={onStepForward}
-          onStepBack={onStepBack}
-        />
+        <div className="session-controls__playback">
+          <span className="session-controls__label">播放控制</span>
+          <PlaybackControls
+            appearance="inline"
+            playing={playing}
+            onPlayPause={onTogglePlay}
+            speed={speed}
+            setSpeed={onSpeedChange}
+            onStepForward={onStepForward}
+            onStepBack={onStepBack}
+            className="session-controls__playback-controls"
+          />
+        </div>
       </div>
     </section>
   );
