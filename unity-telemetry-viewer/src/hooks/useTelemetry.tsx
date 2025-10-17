@@ -12,6 +12,8 @@ export type ConnectionState = 'idle' | 'connecting' | 'open' | 'closed' | 'error
 
 type ResourceCatalog = Record<string, Record<string, ResourceEntry>>;
 
+type ResourceIngestMode = 'replace' | 'merge';
+
 const MAX_FRAMES = 2000;
 
 type FrameBucket = {
@@ -36,6 +38,51 @@ function makeFrameKey(clientId: string, frame: any) {
   const index = frame?.frameIndex ?? 'n/a';
   const timestamp = frame?.timestamp ?? 'ts';
   return `${clientId}:${index}:${timestamp}`;
+}
+
+function normaliseAssetUrl(url: unknown, baseUrl: string | null) {
+  if (typeof url !== 'string') return null;
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+  if (/^data:/i.test(trimmed)) return trimmed;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (!baseUrl) return trimmed;
+  try {
+    return new URL(trimmed, baseUrl).toString();
+  } catch (error) {
+    console.warn('Failed to resolve asset url', trimmed, error);
+    return trimmed;
+  }
+}
+
+function normaliseResourceEntry(resource: any, baseUrl: string | null) {
+  if (!resource || typeof resource !== 'object') return resource;
+  const next = { ...resource };
+  const thumbnail = normaliseAssetUrl(resource.thumbnailUrl ?? resource.thumbnail, baseUrl);
+  if (thumbnail) {
+    next.thumbnailUrl = thumbnail;
+    next.thumbnail = thumbnail;
+  }
+  if (Array.isArray(resource.children)) {
+    next.children = resource.children.map((child: any) => normaliseResourceEntry(child, baseUrl));
+  }
+  return next;
+}
+
+function normaliseFramePayload(frame: any, baseUrl: string | null) {
+  if (!frame || typeof frame !== 'object') return frame;
+  const next = { ...frame };
+  const thumbnail = normaliseAssetUrl(frame.thumbnailUrl ?? frame.thumbnail, baseUrl);
+  if (thumbnail) {
+    next.thumbnailUrl = thumbnail;
+    next.thumbnail = thumbnail;
+  }
+
+  if (Array.isArray(frame.resourceSnapshot)) {
+    next.resourceSnapshot = frame.resourceSnapshot.map((resource: any) => normaliseResourceEntry(resource, baseUrl));
+  }
+
+  return next;
 }
 
 function normaliseTimestamp(rawTimestamp: unknown) {
@@ -87,6 +134,7 @@ export function useTelemetry(wsUrl?: string | null) {
   const wsRef = useRef<TelemetryWS | null>(null);
   const frameStoreRef = useRef<FrameStore>(createFrameStore());
   const flushHandleRef = useRef<number | null>(null);
+  const assetBaseRef = useRef<string | null>(null);
 
   useEffect(() => {
     // reset when URL changes
@@ -104,6 +152,7 @@ export function useTelemetry(wsUrl?: string | null) {
         wsRef.current.close();
         wsRef.current = null;
       }
+      assetBaseRef.current = null;
       return;
     }
 
@@ -112,6 +161,13 @@ export function useTelemetry(wsUrl?: string | null) {
     const ws = new TelemetryWS(wsUrl, { autoReconnect: true });
     wsRef.current = ws;
     setConnectionState('connecting');
+
+    try {
+      const httpBase = wsUrl.replace(/^ws/i, wsUrl.startsWith('wss') ? 'https' : 'http');
+      assetBaseRef.current = httpBase;
+    } catch (error) {
+      assetBaseRef.current = null;
+    }
 
     const scheduleFlush = () => {
       if (!isActive) return;
@@ -144,14 +200,15 @@ export function useTelemetry(wsUrl?: string | null) {
     const ingestFrame = (clientId: string, frame: any) => {
       if (!isActive) return;
       if (!clientId || !frame) return;
-      const key = makeFrameKey(clientId, frame);
+      const normalisedFrame = normaliseFramePayload(frame, assetBaseRef.current);
+      const key = makeFrameKey(clientId, normalisedFrame);
       const store = frameStoreRef.current;
-      const sortValue = getFrameSortValue(frame);
+      const sortValue = getFrameSortValue(normalisedFrame);
       const existing = store.entries.get(key);
 
       if (existing) {
         const previousSortValue = existing.sortValue;
-        existing.frame = frame;
+        existing.frame = normalisedFrame;
         existing.sortValue = sortValue;
         if (previousSortValue !== sortValue) {
           const currentIndex = store.order.indexOf(key);
@@ -162,7 +219,7 @@ export function useTelemetry(wsUrl?: string | null) {
           }
         }
       } else {
-        store.entries.set(key, { clientId, frame, sortValue });
+        store.entries.set(key, { clientId, frame: normalisedFrame, sortValue });
         const insertIndex = findInsertIndex(store, sortValue);
         store.order.splice(insertIndex, 0, key);
 
@@ -177,18 +234,30 @@ export function useTelemetry(wsUrl?: string | null) {
       scheduleFlush();
     };
 
-    const ingestResources = (clientId: string, resources: ResourceEntry[] | undefined) => {
+    const ingestResources = (
+      clientId: string,
+      resources: ResourceEntry[] | undefined,
+      mode: ResourceIngestMode = 'merge'
+    ) => {
       if (!isActive) return;
-      if (!clientId || !Array.isArray(resources)) return;
+      if (!clientId) return;
+      const normalisedResources = Array.isArray(resources)
+        ? resources
+            .map((resource) => normaliseResourceEntry(resource, assetBaseRef.current))
+            .filter((resource): resource is ResourceEntry => Boolean(resource && resource.id))
+        : [];
       setCatalogMap((prev) => {
         const next = { ...prev };
-        const current = { ...(next[clientId] || {}) };
-        for (const resource of resources) {
-          if (!resource || !resource.id) continue;
-          const existing = current[resource.id] || {};
-          current[resource.id] = { ...existing, ...resource };
+        const base = mode === 'replace' ? {} : { ...(next[clientId] || {}) };
+        const updated: Record<string, ResourceEntry> = { ...base };
+        for (const resource of normalisedResources) {
+          const id = resource.id;
+          const existing = updated[id] || {};
+          updated[id] = { ...existing, ...resource };
         }
-        next[clientId] = current;
+        if (mode === 'replace' || normalisedResources.length > 0 || next[clientId]) {
+          next[clientId] = updated;
+        }
         return next;
       });
     };
@@ -210,10 +279,11 @@ export function useTelemetry(wsUrl?: string | null) {
       if (msg.type === 'frame' && msg.clientId && msg.frame) {
         ingestFrame(msg.clientId, msg.frame);
         if (msg.frame?.resourceSnapshot) {
-          ingestResources(msg.clientId, msg.frame.resourceSnapshot);
+          ingestResources(msg.clientId, msg.frame.resourceSnapshot, 'replace');
         }
       } else if (msg.type === 'resource_snapshot' && msg.clientId) {
-        ingestResources(msg.clientId, msg.resources);
+        const mode: ResourceIngestMode = msg.replace === false ? 'merge' : 'replace';
+        ingestResources(msg.clientId, msg.resources, mode);
       } else if (msg.type === 'timeline' && msg.clientId && Array.isArray(msg.frames)) {
         for (const frame of msg.frames) {
           ingestFrame(msg.clientId, frame);
@@ -223,7 +293,7 @@ export function useTelemetry(wsUrl?: string | null) {
 
     ws.connect();
 
-    const httpBase = wsUrl.replace(/^ws/i, wsUrl.startsWith('wss') ? 'https' : 'http');
+    const httpBase = assetBaseRef.current || wsUrl.replace(/^ws/i, wsUrl.startsWith('wss') ? 'https' : 'http');
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
 
     async function bootstrapFromHttp() {
@@ -256,7 +326,7 @@ export function useTelemetry(wsUrl?: string | null) {
               const catalogData = await catalogResp.json();
               if (!isActive) return;
               const resources = catalogData.catalog ? Object.values(catalogData.catalog) : [];
-              ingestResources(clientId, resources as ResourceEntry[]);
+              ingestResources(clientId, resources as ResourceEntry[], 'replace');
             }
           } catch (error) {
             console.warn('Bootstrap fetch failed for client', clientId, error);
@@ -295,5 +365,5 @@ export function useTelemetry(wsUrl?: string | null) {
     return result;
   }, [catalogMap]);
 
-  return { frames, catalog, connectionState };
+  return { frames, catalog, catalogIndex: catalogMap, connectionState };
 }

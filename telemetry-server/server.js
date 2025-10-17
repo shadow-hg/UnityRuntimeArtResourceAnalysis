@@ -111,6 +111,10 @@ function handleWsMessage(ws, msg, clientId) {
     // broadcast to browsers
     broadcastToBrowsers({ type: 'frame', clientId, frame: frameEntry });
   } else if (obj.type === 'resource_snapshot') {
+    const shouldReplace = obj.replace !== false;
+    if (!resourceCatalog[clientId] || shouldReplace) {
+      resourceCatalog[clientId] = {};
+    }
     if (Array.isArray(obj.resources)) {
       for (const r of obj.resources) {
         if (!r || !r.id) continue;
@@ -118,7 +122,7 @@ function handleWsMessage(ws, msg, clientId) {
         resourceCatalog[clientId][r.id] = { ...existing, ...r };
       }
     }
-    broadcastToBrowsers({ type: 'resource_snapshot', clientId, resources: obj.resources });
+    broadcastToBrowsers({ type: 'resource_snapshot', clientId, resources: obj.resources, replace: shouldReplace });
   } else if (obj.type === 'ping') {
     ws.send(JSON.stringify({ type: 'pong', pongTime: Date.now() }));
   } else {

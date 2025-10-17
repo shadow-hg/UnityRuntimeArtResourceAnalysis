@@ -1,11 +1,29 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { formatMemoryFromKB, formatNumber, formatSeconds, formatTimestamp } from '../utils/format';
 
 type Props = {
   frame: any | null;
+  resourceCatalog?: Record<string, any> | undefined;
 };
 
-const FrameDetails: React.FC<Props> = ({ frame }) => {
+type ResourceGroup = {
+  category: string;
+  count: number;
+  sizeKB: number;
+  resources: any[];
+};
+
+function getResourceCategory(resource: any) {
+  return resource?.category || resource?.type || '未分类';
+}
+
+function coerceSizeKB(value: any) {
+  if (typeof value === 'number') return value;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+const FrameDetails: React.FC<Props> = ({ frame, resourceCatalog }) => {
   if (!frame) {
     return (
       <div className="panel frame-details">
@@ -31,29 +49,94 @@ const FrameDetails: React.FC<Props> = ({ frame }) => {
     return Number.isFinite(parsed) ? parsed : null;
   }, [frame.frameIndex]);
 
-  const resourceStats = useMemo(() => {
-    if (!Array.isArray(frame.resourceStats)) return [] as { category: string; count: number; sizeKB: number }[];
+  const inlineResourceMap = useMemo(() => {
+    const map = new Map<string, any>();
+    if (Array.isArray(frame.resourceSnapshot)) {
+      for (const item of frame.resourceSnapshot) {
+        if (!item || !item.id) continue;
+        map.set(item.id, item);
+      }
+    }
+    return map;
+  }, [frame.resourceSnapshot]);
+
+  const activeResources = useMemo(() => {
+    const result: any[] = [];
+    const seen = new Set<string>();
+
+    if (Array.isArray(frame.resources)) {
+      for (const rid of frame.resources) {
+        if (typeof rid !== 'string' || seen.has(rid)) continue;
+        seen.add(rid);
+        const fromCatalog = resourceCatalog?.[rid];
+        const fromSnapshot = inlineResourceMap.get(rid);
+        if (fromCatalog || fromSnapshot) {
+          result.push({ ...(fromCatalog || {}), ...(fromSnapshot || {}) });
+        }
+      }
+    }
+
+    // fallback: include snapshot entries without ids in the resources array
+    if (result.length === 0 && inlineResourceMap.size > 0) {
+      result.push(...Array.from(inlineResourceMap.values()));
+    }
+
+    return result;
+  }, [frame.resources, resourceCatalog, inlineResourceMap]);
+
+  const detailedResourceGroups = useMemo<ResourceGroup[]>(() => {
+    if (!activeResources || activeResources.length === 0) return [];
+    const groups = new Map<string, ResourceGroup>();
+    for (const resource of activeResources) {
+      const category = getResourceCategory(resource);
+      const group = groups.get(category) || { category, count: 0, sizeKB: 0, resources: [] };
+      group.count += 1;
+      group.sizeKB += coerceSizeKB(resource.sizeKB ?? resource.size ?? 0);
+      group.resources.push(resource);
+      groups.set(category, group);
+    }
+    return Array.from(groups.values()).sort((a, b) => b.sizeKB - a.sizeKB);
+  }, [activeResources]);
+
+  const fallbackResourceStats = useMemo(() => {
+    if (!Array.isArray(frame.resourceStats)) return [] as ResourceGroup[];
     return (frame.resourceStats as any[])
       .map((stat) => ({
         category: stat?.category || '未分类',
         count: Number(stat?.count ?? 0),
-        sizeKB: Number(stat?.sizeKB ?? 0)
+        sizeKB: Number(stat?.sizeKB ?? 0),
+        resources: [] as any[]
       }))
       .filter((stat) => Number.isFinite(stat.count) || Number.isFinite(stat.sizeKB));
-  }, [frame]);
+  }, [frame.resourceStats]);
+
+  const resourceGroups = detailedResourceGroups.length > 0 ? detailedResourceGroups : fallbackResourceStats;
 
   const resourceTotalKB = useMemo(() => {
+    if (detailedResourceGroups.length > 0) {
+      return detailedResourceGroups.reduce((sum, stat) => sum + stat.sizeKB, 0);
+    }
     if (typeof frame.resourceTotalKB === 'number') return frame.resourceTotalKB;
-    return resourceStats.reduce((sum, stat) => sum + (Number.isFinite(stat.sizeKB) ? stat.sizeKB : 0), 0);
-  }, [frame.resourceTotalKB, resourceStats]);
+    return fallbackResourceStats.reduce((sum, stat) => sum + (Number.isFinite(stat.sizeKB) ? stat.sizeKB : 0), 0);
+  }, [detailedResourceGroups, frame.resourceTotalKB, fallbackResourceStats]);
 
   const resourceCount = useMemo(() => {
+    if (detailedResourceGroups.length > 0) {
+      return detailedResourceGroups.reduce((sum, stat) => sum + stat.count, 0);
+    }
     if (typeof frame.resourceCount === 'number') return frame.resourceCount;
     if (Array.isArray(frame.resources)) return frame.resources.length;
-    return resourceStats.reduce((sum, stat) => sum + (Number.isFinite(stat.count) ? stat.count : 0), 0);
-  }, [frame.resourceCount, frame.resources, resourceStats]);
+    return fallbackResourceStats.reduce((sum, stat) => sum + (Number.isFinite(stat.count) ? stat.count : 0), 0);
+  }, [detailedResourceGroups, frame.resourceCount, frame.resources, fallbackResourceStats]);
 
-  const topResourceStats = useMemo(() => resourceStats.slice(0, 6), [resourceStats]);
+  const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!expandedCategory) return;
+    if (!resourceGroups.some((group) => group.category === expandedCategory)) {
+      setExpandedCategory(null);
+    }
+  }, [expandedCategory, resourceGroups]);
 
   const metricsEntries = useMemo(() => {
     if (!frame.metrics || typeof frame.metrics !== 'object') return [] as [string, any][];
@@ -151,25 +234,71 @@ const FrameDetails: React.FC<Props> = ({ frame }) => {
         </div>
       )}
 
-      {topResourceStats.length > 0 && (
+      {resourceGroups.length > 0 && (
         <div className="metrics-panel">
           <div className="metrics-panel__title">资源分类</div>
           <div className="resource-breakdown">
-            {topResourceStats.map((stat) => (
-              <div key={stat.category} className="resource-breakdown__row">
-                <div className="resource-breakdown__info">
-                  <span className="resource-breakdown__category">{stat.category}</span>
-                  <span className="resource-breakdown__count">{formatNumber(stat.count)} 个</span>
+            {resourceGroups.map((stat) => {
+              const isExpanded = expandedCategory === stat.category;
+              const percentage = resourceTotalKB > 0 ? Math.max(1.5, (stat.sizeKB / resourceTotalKB) * 100) : 0;
+              const labelId = `resource-cat-${stat.category}`;
+              return (
+                <div key={stat.category} className="resource-breakdown__group">
+                  <button
+                    type="button"
+                    className={`resource-breakdown__row ${isExpanded ? 'resource-breakdown__row--expanded' : ''}`}
+                    onClick={() => setExpandedCategory(isExpanded ? null : stat.category)}
+                    aria-expanded={isExpanded}
+                    aria-controls={labelId}
+                  >
+                    <div className="resource-breakdown__info">
+                      <span className="resource-breakdown__category">{stat.category}</span>
+                      <span className="resource-breakdown__count">{formatNumber(stat.count)} 个</span>
+                    </div>
+                    <div className="resource-breakdown__bar">
+                      <div
+                        className="resource-breakdown__bar-fill"
+                        style={{ width: `${percentage}%` }}
+                      />
+                    </div>
+                    <div className="resource-breakdown__value">{formatMemoryFromKB(stat.sizeKB)}</div>
+                  </button>
+                  {isExpanded && stat.resources && stat.resources.length > 0 && (
+                    <div className="resource-breakdown__details" id={labelId}>
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>名称</th>
+                            <th>大小</th>
+                            <th>信息</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {stat.resources.map((res) => {
+                            const dimensions = res.width && res.height ? `${res.width}×${res.height}` : null;
+                            const extra: string[] = [];
+                            if (res.format) extra.push(res.format);
+                            if (res.mipCount) extra.push(`MIP×${formatNumber(res.mipCount)}`);
+                            if (res.vertexCount) extra.push(`顶点 ${formatNumber(res.vertexCount)}`);
+                            if (res.triangleCount) extra.push(`三角 ${formatNumber(res.triangleCount)}`);
+                            if (res.variantCount) extra.push(`变体×${formatNumber(res.variantCount)}`);
+                            if (res.isReadable === false) extra.push('不可读');
+                            const info = [res.type, dimensions, extra.join(' · ')].filter(Boolean).join(' | ');
+                            return (
+                              <tr key={res.id || res.name}>
+                                <td>{res.name || res.id || '未命名资源'}</td>
+                                <td>{formatMemoryFromKB(coerceSizeKB(res.sizeKB ?? res.size ?? 0))}</td>
+                                <td>{info || '-'}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
-                <div className="resource-breakdown__bar">
-                  <div
-                    className="resource-breakdown__bar-fill"
-                    style={{ width: resourceTotalKB > 0 ? `${Math.max(2, (stat.sizeKB / resourceTotalKB) * 100)}%` : '0%' }}
-                  />
-                </div>
-                <div className="resource-breakdown__value">{formatMemoryFromKB(stat.sizeKB)}</div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
