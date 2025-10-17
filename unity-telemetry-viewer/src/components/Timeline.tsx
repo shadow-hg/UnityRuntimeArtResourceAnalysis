@@ -109,8 +109,6 @@ const FALLBACK_COLORS = ['#0ea5e9', '#8b5cf6', '#ec4899', '#14b8a6', '#f59e0b', 
 
 const MAX_STACK_CATEGORIES = 5;
 
-const DEFAULT_WINDOW_SIZE = 600;
-
 const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek }) => {
   const [localIndex, setLocalIndex] = useState<number>(currentIndex);
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
@@ -232,11 +230,11 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
 
       const windowSize = Math.max(0, rangeEndRef.current - rangeStartRef.current);
 
-      if (!hasInitializedRangeRef.current && max > 0) {
+      if (!hasInitializedRangeRef.current) {
+        const start = 0;
         next = max;
-        rangeEndRef.current = next;
-        const start = Math.max(0, next - Math.min(DEFAULT_WINDOW_SIZE, max));
         rangeStartRef.current = start;
+        rangeEndRef.current = next;
         hasInitializedRangeRef.current = true;
         setRangeStart(start);
         return next;
@@ -244,9 +242,14 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
 
       if (max > prevMax && rangeEndRef.current === prevMax) {
         next = max;
-        const start = Math.max(0, next - windowSize);
-        rangeStartRef.current = start;
-        setRangeStart(start);
+        if (windowSize <= 0) {
+          rangeStartRef.current = 0;
+          setRangeStart(0);
+        } else {
+          const start = Math.max(0, next - windowSize);
+          rangeStartRef.current = start;
+          setRangeStart(start);
+        }
       }
 
       rangeEndRef.current = next;

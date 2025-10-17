@@ -14,6 +14,8 @@ type Props = {
   onMaxFramesChange: (value: number) => void;
   latestFrameTimestamp: number | null;
   connectionState: ConnectionState;
+  expanded: boolean;
+  onExpandChange: (expanded: boolean) => void;
 };
 
 function formatTimeAgo(timestamp: number | null) {
@@ -35,9 +37,10 @@ const CaptureControlOverlay: React.FC<Props> = ({
   maxFrames,
   onMaxFramesChange,
   latestFrameTimestamp,
-  connectionState
+  connectionState,
+  expanded,
+  onExpandChange
 }) => {
-  const [expanded, setExpanded] = useState(false);
   const [captureEnabled, setCaptureEnabled] = useState(controlState?.captureEnabled ?? true);
   const initialIntervalUnit: 'ms' | 's' = (controlState?.captureIntervalMs ?? 0) >= 1000 ? 's' : 'ms';
   const [intervalUnit, setIntervalUnit] = useState<'ms' | 's'>(initialIntervalUnit);
@@ -132,15 +135,10 @@ const CaptureControlOverlay: React.FC<Props> = ({
     }
   }, [controlState?.updatedAt]);
 
+  const handleClosePanel = () => onExpandChange(false);
+
   return (
     <div className={`capture-overlay ${expanded ? 'capture-overlay--expanded' : ''}`}>
-      <button
-        type="button"
-        className="capture-overlay__toggle"
-        onClick={() => setExpanded((prev) => !prev)}
-      >
-        {expanded ? '收起控制面板' : '展开采集控制'}
-      </button>
       {expanded && (
         <div className="capture-overlay__panel">
           <div className="capture-overlay__panel-header">
@@ -151,7 +149,7 @@ const CaptureControlOverlay: React.FC<Props> = ({
             <button
               type="button"
               className="capture-overlay__close"
-              onClick={() => setExpanded(false)}
+              onClick={handleClosePanel}
             >
               ×
             </button>
