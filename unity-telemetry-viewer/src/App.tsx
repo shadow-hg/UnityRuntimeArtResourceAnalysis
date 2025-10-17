@@ -5,7 +5,7 @@ import FrameViewer from './components/FrameViewer';
 import Timeline from './components/Timeline';
 import FrameDetails from './components/FrameDetails';
 import CaptureControlOverlay from './components/CaptureControlOverlay';
-import { ControlState, Frame, useTelemetry } from './hooks/useTelemetry';
+import { ControlState, Frame, SessionOverview, useTelemetry } from './hooks/useTelemetry';
 import SessionControls from './components/SessionControls';
 
 function frameKey(entry: Frame | null) {
@@ -19,7 +19,16 @@ function frameKey(entry: Frame | null) {
 export default function App() {
   const [wsUrl, setWsUrl] = useState<string | null>(null);
   const [maxFrames, setMaxFrames] = useState(10000);
-  const { frames, catalog, catalogIndex, connectionState, controlState, sendMessage } = useTelemetry(wsUrl, { maxFrames });
+  const {
+    frames,
+    catalog,
+    catalogIndex,
+    connectionState,
+    controlState,
+    sendMessage,
+    sessions,
+    fetchSessionData
+  } = useTelemetry(wsUrl, { maxFrames });
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
   const [selectedFrame, setSelectedFrame] = useState<Frame | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -36,6 +45,9 @@ export default function App() {
   const [captureControlsExpanded, setCaptureControlsExpanded] = useState(false);
   const selectedControlState = selectedClientId ? controlState[selectedClientId] : undefined;
   const connectionWasOpenRef = useRef(connectionState === 'open');
+  const [sessionViews, setSessionViews] = useState<Record<string, { mode: 'live' | 'history'; sessionId?: string }>>({});
+  const selectedSessionOverview: SessionOverview | undefined = selectedClientId ? sessions[selectedClientId] : undefined;
+  const selectedSessionView = selectedClientId ? sessionViews[selectedClientId] : undefined;
 
   useEffect(() => {
     if (!livePinned) {
@@ -54,6 +66,38 @@ export default function App() {
       setDisplayCatalogIndex(catalogIndex);
     }
   }, [catalogIndex, livePinned]);
+
+  useEffect(() => {
+    setSessionViews((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const [clientId, overview] of Object.entries(sessions || {})) {
+        const currentId = overview?.currentSession?.sessionId ?? undefined;
+        const existing = prev[clientId];
+        if (!existing || existing.mode === 'live') {
+          if (existing?.sessionId !== currentId) {
+            next[clientId] = { mode: 'live', sessionId: currentId };
+            changed = true;
+          }
+        } else if (existing.mode === 'history') {
+          const stillExists = overview.history.some((item) => item.sessionId === existing.sessionId);
+          if (!stillExists) {
+            next[clientId] = { mode: 'live', sessionId: currentId };
+            changed = true;
+          }
+        }
+      }
+      for (const clientId of Object.keys(prev)) {
+        if (!sessions[clientId]) {
+          if (prev[clientId]?.mode !== 'history' || prev[clientId]?.sessionId !== undefined) {
+            next[clientId] = { mode: 'live', sessionId: undefined };
+            changed = true;
+          }
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [sessions]);
 
   const freezeLiveView = useCallback(() => {
     if (livePinned) return;
@@ -85,8 +129,9 @@ export default function App() {
     const ids = new Set<string>();
     displayFrames.forEach((f) => ids.add(f.clientId));
     Object.keys(displayCatalog).forEach((id) => ids.add(id));
+    Object.keys(sessions || {}).forEach((id) => ids.add(id));
     return Array.from(ids).sort();
-  }, [displayFrames, displayCatalog]);
+  }, [displayFrames, displayCatalog, sessions]);
 
   useEffect(() => {
     if (clients.length === 0) {
@@ -236,6 +281,65 @@ export default function App() {
     });
   }, [freezeLiveView, resumeLiveView]);
 
+  const handleSessionViewChange = useCallback(
+    async (clientId: string, mode: 'live' | 'history', sessionId?: string) => {
+      if (!clientId) return;
+      if (mode === 'live') {
+        setSessionViews((prev) => {
+          const currentSessionId = sessions[clientId]?.currentSession?.sessionId ?? undefined;
+          const existing = prev[clientId];
+          if (existing?.mode === 'live' && existing.sessionId === currentSessionId) {
+            return prev;
+          }
+          return {
+            ...prev,
+            [clientId]: {
+              mode: 'live',
+              sessionId: currentSessionId
+            }
+          };
+        });
+        resumeLiveView();
+        setAutoFollow(true);
+        setPlaying(true);
+        return;
+      }
+
+      if (!sessionId) return;
+
+      try {
+        const data = await fetchSessionData(clientId, sessionId);
+        setLivePinned(true);
+        setAutoFollow(false);
+        setPlaying(false);
+        setSessionViews((prev) => {
+          const existing = prev[clientId];
+          if (existing?.mode === 'history' && existing.sessionId === sessionId) {
+            return prev;
+          }
+          return { ...prev, [clientId]: { mode: 'history', sessionId } };
+        });
+        setDisplayFrames((prev) => {
+          const liveOthers = frames.filter((entry) => entry.clientId !== clientId);
+          return [...liveOthers, ...data.frames];
+        });
+        setDisplayCatalog((prev) => {
+          const next = { ...catalog, ...prev };
+          next[clientId] = data.catalog;
+          return next;
+        });
+        setDisplayCatalogIndex((prev) => {
+          const next = { ...catalogIndex, ...prev };
+          next[clientId] = data.catalogIndex;
+          return next;
+        });
+      } catch (error) {
+        console.warn('加载历史会话失败', error);
+      }
+    },
+    [catalog, catalogIndex, fetchSessionData, frames, resumeLiveView, sessions]
+  );
+
   return (
     <div className="app-shell">
       <Toolbar
@@ -249,84 +353,92 @@ export default function App() {
           resumeLiveView();
         }}
       />
-      <SessionControls
-        className={fullscreenPanel ? 'session-controls--dimmed' : ''}
-        connectionState={connectionState}
-        activeUrl={wsUrl}
-        onConnect={(ip: string, port: string) => {
-          setWsUrl(`ws://${ip}:${port}`);
-          setPlaying(true);
-          setAutoFollow(true);
-          setCaptureControlsExpanded(false);
-          resumeLiveView();
-        }}
-        onDisconnect={() => {
-          setWsUrl(null);
-          setPlaying(false);
-          setAutoFollow(false);
-          setCaptureControlsExpanded(false);
-          resumeLiveView();
-        }}
-        clients={clients}
-        selectedClientId={selectedClientId}
-        onSelectClient={(clientId) => {
-          setSelectedClientId(clientId);
-          setPlaying(true);
-          setAutoFollow(true);
-          setCaptureControlsExpanded(false);
-          resumeLiveView();
-        }}
-        playing={playing}
-        onTogglePlay={handleTogglePlay}
-        onStepForward={() => handleStep(1)}
-        onStepBack={() => handleStep(-1)}
-        speed={speed}
-        onSpeedChange={(value) => setSpeed(value)}
-        captureControlsExpanded={captureControlsExpanded}
-        onToggleCaptureControls={() => setCaptureControlsExpanded((prev) => !prev)}
-        captureToggleRef={captureToggleRef}
-      />
-      <section className={`timeline-section ${fullscreenPanel ? 'timeline-section--dimmed' : ''}`}>
-        <Timeline
-          telemetryData={visibleFrames.map((entry) => entry.frame)}
-          currentIndex={currentIndex}
+      <main className="app-main">
+        <SessionControls
+          className={fullscreenPanel ? 'session-controls--dimmed' : ''}
+          connectionState={connectionState}
+          activeUrl={wsUrl}
+          onConnect={(ip: string, port: string) => {
+            setWsUrl(`ws://${ip}:${port}`);
+            setPlaying(true);
+            setAutoFollow(true);
+            setCaptureControlsExpanded(false);
+            resumeLiveView();
+          }}
+          onDisconnect={() => {
+            setWsUrl(null);
+            setPlaying(false);
+            setAutoFollow(false);
+            setCaptureControlsExpanded(false);
+            resumeLiveView();
+          }}
+          clients={clients}
+          selectedClientId={selectedClientId}
+          onSelectClient={(clientId) => {
+            setSelectedClientId(clientId);
+            setPlaying(true);
+            setAutoFollow(true);
+            setCaptureControlsExpanded(false);
+            resumeLiveView();
+          }}
           playing={playing}
-          onSeek={handleSeek}
+          onTogglePlay={handleTogglePlay}
+          onStepForward={() => handleStep(1)}
+          onStepBack={() => handleStep(-1)}
+          speed={speed}
+          onSpeedChange={(value) => setSpeed(value)}
+          captureControlsExpanded={captureControlsExpanded}
+          onToggleCaptureControls={() => setCaptureControlsExpanded((prev) => !prev)}
+          captureToggleRef={captureToggleRef}
+          sessionOverview={selectedSessionOverview}
+          sessionView={selectedSessionView}
+          onChangeSessionView={(mode, sessionId) => {
+            if (!selectedClientId) return;
+            handleSessionViewChange(selectedClientId, mode, sessionId);
+          }}
         />
-      </section>
-      <div className="app-body">
-        <div className="app-body__upper">
-          <main className={`main-area ${fullscreenPanel ? 'main-area--dimmed' : ''}`}>
-            <FrameDetails
-              frame={selectedFrame?.frame || null}
-              resourceCatalog={resourceCatalog}
-              onRequestFullscreen={() => setFullscreenPanel('details')}
-            />
-          </main>
-        </div>
-        <section className={`bottom-panels ${fullscreenPanel ? 'bottom-panels--dimmed' : ''}`}>
-          <div className="frame-viewer-container">
-            <FrameViewer
-              frame={selectedFrame?.frame || null}
-              resourceCatalog={resourceCatalog}
-              clientId={selectedFrame?.clientId || null}
-            />
-            <CaptureControlOverlay
-              clientId={selectedClientId}
-              controlState={selectedControlState}
-              onUpdate={sendControlPatch}
-              onRequestState={requestControlState}
-              maxFrames={maxFrames}
-              onMaxFramesChange={handleMaxFramesChange}
-              latestFrameTimestamp={latestFrameTimestamp}
-              connectionState={connectionState}
-              expanded={captureControlsExpanded}
-              onExpandChange={setCaptureControlsExpanded}
-              anchorRef={captureToggleRef}
-            />
-          </div>
+        <section className={`timeline-section ${fullscreenPanel ? 'timeline-section--dimmed' : ''}`}>
+          <Timeline
+            telemetryData={visibleFrames.map((entry) => entry.frame)}
+            currentIndex={currentIndex}
+            playing={playing}
+            onSeek={handleSeek}
+          />
         </section>
-      </div>
+        <div className="app-body">
+          <div className="app-body__upper">
+            <section className={`main-area ${fullscreenPanel ? 'main-area--dimmed' : ''}`}>
+              <FrameDetails
+                frame={selectedFrame?.frame || null}
+                resourceCatalog={resourceCatalog}
+                onRequestFullscreen={() => setFullscreenPanel('details')}
+              />
+            </section>
+          </div>
+          <section className={`bottom-panels ${fullscreenPanel ? 'bottom-panels--dimmed' : ''}`}>
+            <div className="frame-viewer-container">
+              <FrameViewer
+                frame={selectedFrame?.frame || null}
+                resourceCatalog={resourceCatalog}
+                clientId={selectedFrame?.clientId || null}
+              />
+              <CaptureControlOverlay
+                clientId={selectedClientId}
+                controlState={selectedControlState}
+                onUpdate={sendControlPatch}
+                onRequestState={requestControlState}
+                maxFrames={maxFrames}
+                onMaxFramesChange={handleMaxFramesChange}
+                latestFrameTimestamp={latestFrameTimestamp}
+                connectionState={connectionState}
+                expanded={captureControlsExpanded}
+                onExpandChange={setCaptureControlsExpanded}
+                anchorRef={captureToggleRef}
+              />
+            </div>
+          </section>
+        </div>
+      </main>
       {fullscreenPanel && (
         <div className="fullscreen-overlay">
           <div className="fullscreen-overlay__backdrop" onClick={() => setFullscreenPanel(null)} />

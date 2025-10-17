@@ -1,6 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ConnectionState } from '../hooks/useTelemetry';
+import { ConnectionState, SessionOverview } from '../hooks/useTelemetry';
 import PlaybackControls from './PlaybackControls';
+
+type SessionViewState = {
+  mode: 'live' | 'history';
+  sessionId?: string;
+};
 
 type Props = {
   connectionState: ConnectionState;
@@ -20,6 +25,9 @@ type Props = {
   captureControlsExpanded: boolean;
   onToggleCaptureControls?: () => void;
   captureToggleRef?: React.RefObject<HTMLButtonElement>;
+  sessionOverview?: SessionOverview;
+  sessionView?: SessionViewState;
+  onChangeSessionView?: (mode: 'live' | 'history', sessionId?: string) => void;
 };
 
 const stateLabels: Record<ConnectionState, { label: string; tone: 'neutral' | 'warning' | 'success' | 'error' }> = {
@@ -47,7 +55,10 @@ const SessionControls: React.FC<Props> = ({
   className,
   captureControlsExpanded,
   onToggleCaptureControls,
-  captureToggleRef
+  captureToggleRef,
+  sessionOverview,
+  sessionView,
+  onChangeSessionView
 }) => {
   const [ip, setIp] = useState('');
   const [port, setPort] = useState('8080');
@@ -80,6 +91,18 @@ const SessionControls: React.FC<Props> = ({
   const actionType = isConnected ? 'button' : 'submit';
   const actionClassName = `button ${isConnected ? 'button--ghost' : 'button--primary'}`;
   const actionDisabled = (!isConnected && (!canSubmit || isConnecting)) || (isConnected && isConnecting);
+
+  const sessionSelectValue = sessionView?.mode === 'history' ? sessionView.sessionId ?? '' : 'live';
+  const historySessions = sessionOverview?.history ?? [];
+
+  const formatSessionLabel = (session: { startedAt: number; endedAt?: number | null }) => {
+    const start = new Date(session.startedAt || 0);
+    const end = session.endedAt ? new Date(session.endedAt) : null;
+    const startLabel = Number.isFinite(start.getTime()) ? start.toLocaleString() : '未知时间';
+    if (!end) return `${startLabel}`;
+    const endLabel = Number.isFinite(end.getTime()) ? end.toLocaleString() : '进行中';
+    return `${startLabel} - ${endLabel}`;
+  };
 
   return (
     <section className={`session-controls ${className ?? ''}`}>
@@ -153,6 +176,36 @@ const SessionControls: React.FC<Props> = ({
                 );
               })
             )}
+          </div>
+        </div>
+        <div className="session-controls__history">
+          <span className="session-controls__label">数据来源</span>
+          <div className="session-controls__field session-controls__field--full">
+            <select
+              className="input"
+              value={sessionSelectValue}
+              onChange={(event) => {
+                const value = event.target.value;
+                if (value === 'live') {
+                  onChangeSessionView && onChangeSessionView('live');
+                } else {
+                  onChangeSessionView && onChangeSessionView('history', value);
+                }
+              }}
+              disabled={!sessionOverview}
+            >
+              <option value="live">
+                {sessionOverview?.currentSession ? '实时记录（当前会话）' : '实时记录（等待新会话）'}
+              </option>
+              <optgroup label="历史记录">
+                {historySessions.length === 0 && <option value="" disabled>暂无历史记录</option>}
+                {historySessions.map((session) => (
+                  <option key={session.sessionId} value={session.sessionId}>
+                    {formatSessionLabel(session)}
+                  </option>
+                ))}
+              </optgroup>
+            </select>
           </div>
         </div>
       </div>

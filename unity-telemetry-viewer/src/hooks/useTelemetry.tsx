@@ -3,6 +3,7 @@ import { TelemetryWS } from '../services/websocket';
 
 export type Frame = {
   clientId: string;
+  sessionId: string | null;
   frame: any;
 };
 
@@ -15,6 +16,21 @@ type ResourceCatalog = Record<string, Record<string, ResourceEntry>>;
 type ResourceIngestMode = 'replace' | 'merge';
 
 const DEFAULT_MAX_FRAMES = 10000;
+
+export type SessionSummary = {
+  sessionId: string;
+  startedAt: number;
+  endedAt?: number | null;
+  frameCount: number;
+  resourceCount: number;
+  origin?: string;
+  reason?: string;
+};
+
+export type SessionOverview = {
+  currentSession: SessionSummary | null;
+  history: SessionSummary[];
+};
 
 export type ControlState = {
   captureEnabled: boolean;
@@ -32,6 +48,7 @@ type UseTelemetryOptions = {
 
 type FrameBucket = {
   clientId: string;
+  sessionId: string | null;
   frame: any;
   sortValue: number;
 };
@@ -48,10 +65,11 @@ function createFrameStore(): FrameStore {
   };
 }
 
-function makeFrameKey(clientId: string, frame: any) {
+function makeFrameKey(clientId: string, sessionId: string | null, frame: any) {
   const index = frame?.frameIndex ?? 'n/a';
   const timestamp = frame?.timestamp ?? 'ts';
-  return `${clientId}:${index}:${timestamp}`;
+  const sessionKey = sessionId ?? 'current';
+  return `${clientId}:${sessionKey}:${index}:${timestamp}`;
 }
 
 function normaliseAssetUrl(url: unknown, baseUrl: string | null) {
@@ -158,11 +176,13 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
   const [catalogMap, setCatalogMap] = useState<ResourceCatalog>({});
   const [connectionState, setConnectionState] = useState<ConnectionState>('idle');
   const [controlStateMap, setControlStateMap] = useState<Record<string, ControlState>>({});
+  const [sessionOverviewMap, setSessionOverviewMap] = useState<Record<string, SessionOverview>>({});
   const wsRef = useRef<TelemetryWS | null>(null);
   const frameStoreRef = useRef<FrameStore>(createFrameStore());
   const flushHandleRef = useRef<number | null>(null);
   const assetBaseRef = useRef<string | null>(null);
   const maxFramesRef = useRef<number>(Math.max(1, options.maxFrames ?? DEFAULT_MAX_FRAMES));
+  const currentSessionRef = useRef<Record<string, string | null>>({});
 
   useEffect(() => {
     const nextMax = Math.max(1, options.maxFrames ?? DEFAULT_MAX_FRAMES);
@@ -192,11 +212,13 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
     setFrames([]);
     setCatalogMap({});
     setControlStateMap({});
+    setSessionOverviewMap({});
     if (flushHandleRef.current !== null && typeof window !== 'undefined') {
       window.cancelAnimationFrame(flushHandleRef.current);
       flushHandleRef.current = null;
     }
     frameStoreRef.current = createFrameStore();
+    currentSessionRef.current = {};
 
     if (!wsUrl) {
       setConnectionState('idle');
@@ -227,7 +249,9 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
         const nextFrames = frameStoreRef.current.order
           .map((key) => {
             const bucket = frameStoreRef.current.entries.get(key);
-            return bucket ? { clientId: bucket.clientId, frame: bucket.frame } : null;
+            return bucket
+              ? { clientId: bucket.clientId, sessionId: bucket.sessionId ?? null, frame: bucket.frame }
+              : null;
           })
           .filter((entry): entry is Frame => entry !== null);
         setFrames(nextFrames);
@@ -242,18 +266,24 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
         const nextFrames = frameStoreRef.current.order
           .map((key) => {
             const bucket = frameStoreRef.current.entries.get(key);
-            return bucket ? { clientId: bucket.clientId, frame: bucket.frame } : null;
+            return bucket
+              ? { clientId: bucket.clientId, sessionId: bucket.sessionId ?? null, frame: bucket.frame }
+              : null;
           })
           .filter((entry): entry is Frame => entry !== null);
         setFrames(nextFrames);
       });
     };
 
-    const ingestFrame = (clientId: string, frame: any) => {
+    const ingestFrame = (clientId: string, frame: any, sessionId?: string | null) => {
       if (!isActive) return;
       if (!clientId || !frame) return;
       const normalisedFrame = normaliseFramePayload(frame, assetBaseRef.current);
-      const key = makeFrameKey(clientId, normalisedFrame);
+      const resolvedSessionId = sessionId ?? normalisedFrame.sessionId ?? currentSessionRef.current[clientId] ?? null;
+      if (resolvedSessionId && currentSessionRef.current[clientId] !== resolvedSessionId) {
+        currentSessionRef.current[clientId] = resolvedSessionId;
+      }
+      const key = makeFrameKey(clientId, resolvedSessionId, normalisedFrame);
       const store = frameStoreRef.current;
       const sortValue = getFrameSortValue(normalisedFrame);
       const existing = store.entries.get(key);
@@ -262,6 +292,7 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
         const previousSortValue = existing.sortValue;
         existing.frame = normalisedFrame;
         existing.sortValue = sortValue;
+        existing.sessionId = resolvedSessionId ?? null;
         if (previousSortValue !== sortValue) {
           const currentIndex = store.order.indexOf(key);
           if (currentIndex >= 0) {
@@ -271,7 +302,7 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
           }
         }
       } else {
-        store.entries.set(key, { clientId, frame: normalisedFrame, sortValue });
+        store.entries.set(key, { clientId, sessionId: resolvedSessionId ?? null, frame: normalisedFrame, sortValue });
         const insertIndex = findInsertIndex(store, sortValue);
         store.order.splice(insertIndex, 0, key);
 
@@ -330,7 +361,7 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
     ws.onMessage = (msg) => {
       if (!isActive) return;
       if (msg.type === 'frame' && msg.clientId && msg.frame) {
-        ingestFrame(msg.clientId, msg.frame);
+        ingestFrame(msg.clientId, msg.frame, msg.sessionId);
         if (msg.frame?.resourceSnapshot) {
           ingestResources(msg.clientId, msg.frame.resourceSnapshot, 'replace');
         }
@@ -376,7 +407,36 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
         });
       } else if (msg.type === 'timeline' && msg.clientId && Array.isArray(msg.frames)) {
         for (const frame of msg.frames) {
-          ingestFrame(msg.clientId, frame);
+          ingestFrame(msg.clientId, frame, msg.sessionId);
+        }
+      } else if (msg.type === 'session_update' && msg.clientId) {
+        const overview: SessionOverview = {
+          currentSession: msg.currentSession || null,
+          history: Array.isArray(msg.history) ? msg.history : []
+        };
+        const previousSessionId = currentSessionRef.current[msg.clientId] ?? null;
+        const nextSessionId = overview.currentSession?.sessionId ?? null;
+        currentSessionRef.current[msg.clientId] = nextSessionId;
+        setSessionOverviewMap((prev) => ({ ...prev, [msg.clientId]: overview }));
+        if (previousSessionId !== nextSessionId) {
+          const store = frameStoreRef.current;
+          const nextOrder: string[] = [];
+          for (const key of store.order) {
+            const bucket = store.entries.get(key);
+            if (bucket && bucket.clientId === msg.clientId) {
+              store.entries.delete(key);
+            } else {
+              nextOrder.push(key);
+            }
+          }
+          store.order = nextOrder;
+          setFrames((prev) => prev.filter((entry) => entry.clientId !== msg.clientId));
+          setCatalogMap((prev) => {
+            if (!prev[msg.clientId]) return prev;
+            const next = { ...prev };
+            delete next[msg.clientId];
+            return next;
+          });
         }
       }
     };
@@ -388,28 +448,74 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
 
     async function bootstrapFromHttp() {
       try {
-        const clientsResponse = await fetch(`${httpBase}/api/clients`, controller ? { signal: controller.signal } : undefined);
+        const [clientsResponse, sessionsResponse] = await Promise.all([
+          fetch(`${httpBase}/api/clients`, controller ? { signal: controller.signal } : undefined),
+          fetch(`${httpBase}/api/sessions`, controller ? { signal: controller.signal } : undefined).catch(() => null)
+        ]);
         if (!clientsResponse.ok) return;
         const data = await clientsResponse.json();
         if (!isActive) return;
-        const clientIds: string[] = Array.isArray(data.timelines)
-          ? data.timelines
-          : Array.isArray(data.clients)
-            ? data.clients.map((c: any) => c.id).filter(Boolean)
-            : [];
+        const sessionSummaryRaw =
+          (data && typeof data === 'object' && data.sessions ? data.sessions : null) ||
+          (sessionsResponse && sessionsResponse.ok ? (await sessionsResponse.json()).sessions : null) ||
+          {};
+
+        if (!isActive) return;
+
+        if (sessionSummaryRaw && typeof sessionSummaryRaw === 'object') {
+          const overview: Record<string, SessionOverview> = {};
+          for (const [clientId, value] of Object.entries(sessionSummaryRaw)) {
+            if (!clientId) continue;
+            const currentSession = value && typeof value === 'object' && 'currentSession' in value ? value.currentSession : null;
+            const history = value && typeof value === 'object' && Array.isArray(value.history) ? value.history : [];
+            overview[clientId] = {
+              currentSession: currentSession || null,
+              history
+            };
+            currentSessionRef.current[clientId] = currentSession?.sessionId ?? null;
+          }
+          setSessionOverviewMap((prev) => ({ ...prev, ...overview }));
+        }
+
+        const clientIdSet = new Set<string>();
+        if (Array.isArray(data.timelines)) {
+          data.timelines.forEach((id: any) => {
+            if (typeof id === 'string') clientIdSet.add(id);
+          });
+        }
+        if (Array.isArray(data.clients)) {
+          data.clients.forEach((entry: any) => {
+            if (entry && typeof entry.id === 'string') clientIdSet.add(entry.id);
+          });
+        }
+        if (sessionSummaryRaw && typeof sessionSummaryRaw === 'object') {
+          Object.keys(sessionSummaryRaw).forEach((id) => {
+            if (id) clientIdSet.add(id);
+          });
+        }
+        const clientIds = Array.from(clientIdSet);
 
         await Promise.all(clientIds.map(async (clientId: string) => {
           try {
+            const currentSessionId = currentSessionRef.current[clientId] ?? null;
+            const timelineUrl = currentSessionId
+              ? `${httpBase}/api/timeline/${clientId}?sessionId=${encodeURIComponent(currentSessionId)}`
+              : `${httpBase}/api/timeline/${clientId}`;
+            const catalogUrl = currentSessionId
+              ? `${httpBase}/api/catalog/${clientId}?sessionId=${encodeURIComponent(currentSessionId)}`
+              : `${httpBase}/api/catalog/${clientId}`;
             const [timelineResp, catalogResp] = await Promise.all([
-              fetch(`${httpBase}/api/timeline/${clientId}`, controller ? { signal: controller.signal } : undefined),
-              fetch(`${httpBase}/api/catalog/${clientId}`, controller ? { signal: controller.signal } : undefined)
+              fetch(timelineUrl, controller ? { signal: controller.signal } : undefined),
+              fetch(catalogUrl, controller ? { signal: controller.signal } : undefined)
             ]);
             if (!isActive) return;
             if (timelineResp.ok) {
               const timelineData = await timelineResp.json();
               if (!isActive) return;
               if (Array.isArray(timelineData.frames)) {
-                timelineData.frames.forEach((frame: any) => ingestFrame(clientId, frame));
+                const sessionId = timelineData.sessionId ?? currentSessionRef.current[clientId] ?? null;
+                currentSessionRef.current[clientId] = sessionId ?? currentSessionRef.current[clientId] ?? null;
+                timelineData.frames.forEach((frame: any) => ingestFrame(clientId, frame, sessionId));
               }
             }
             if (catalogResp.ok) {
@@ -466,5 +572,71 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
     }
   }, []);
 
-  return { frames, catalog, catalogIndex: catalogMap, connectionState, controlState: controlStateMap, sendMessage };
+  const fetchSessionData = useCallback(
+    async (clientId: string, sessionId: string) => {
+      if (!clientId || !sessionId) {
+        return { frames: [] as Frame[], catalog: [] as ResourceEntry[], catalogIndex: {} as Record<string, ResourceEntry> };
+      }
+      const base = assetBaseRef.current || (wsUrl ? wsUrl.replace(/^ws/i, wsUrl.startsWith('wss') ? 'https' : 'http') : null);
+      if (!base) {
+        throw new Error('无法确定服务器地址，无法加载历史会话数据');
+      }
+      if (!assetBaseRef.current) {
+        assetBaseRef.current = base;
+      }
+      const timelineUrl = `${base}/api/timeline/${clientId}?sessionId=${encodeURIComponent(sessionId)}`;
+      const catalogUrl = `${base}/api/catalog/${clientId}?sessionId=${encodeURIComponent(sessionId)}`;
+      const [timelineResp, catalogResp] = await Promise.all([fetch(timelineUrl), fetch(catalogUrl)]);
+      const framesResult: Frame[] = [];
+      const catalogIndex: Record<string, ResourceEntry> = {};
+
+      if (timelineResp.ok) {
+        try {
+          const data = await timelineResp.json();
+          if (Array.isArray(data.frames)) {
+            for (const frame of data.frames) {
+              const normalised = normaliseFramePayload(frame, assetBaseRef.current);
+              framesResult.push({ clientId, sessionId, frame: normalised });
+            }
+          }
+        } catch (error) {
+          console.warn('解析历史帧数据失败', error);
+        }
+      }
+
+      if (catalogResp.ok) {
+        try {
+          const data = await catalogResp.json();
+          const resources = data.catalog ? Object.values(data.catalog) : [];
+          for (const resource of resources) {
+            const normalised = normaliseResourceEntry(resource, assetBaseRef.current);
+            if (!normalised || !normalised.id) continue;
+            catalogIndex[normalised.id] = normalised;
+          }
+        } catch (error) {
+          console.warn('解析历史资源数据失败', error);
+        }
+      }
+
+      const catalogArray = Object.values(catalogIndex).sort((a, b) => {
+        const sizeA = getResourceSortSize(a);
+        const sizeB = getResourceSortSize(b);
+        return sizeB - sizeA;
+      });
+
+      return { frames: framesResult, catalog: catalogArray, catalogIndex };
+    },
+    [wsUrl]
+  );
+
+  return {
+    frames,
+    catalog,
+    catalogIndex: catalogMap,
+    connectionState,
+    controlState: controlStateMap,
+    sendMessage,
+    sessions: sessionOverviewMap,
+    fetchSessionData
+  };
 }
