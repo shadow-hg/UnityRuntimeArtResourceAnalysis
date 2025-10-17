@@ -543,8 +543,16 @@ public static class RuntimeResourceCollector
 #if UNITY_EDITOR
         try
         {
-            long storage = TextureUtil.GetStorageMemorySizeLong(tex);
-            if (storage > 0) return storage;
+            // 通过反射访问 internal 的 TextureUtil
+            var textureUtilType = typeof(UnityEditor.Editor).Assembly.GetType("UnityEditor.TextureUtil");
+            var method = textureUtilType?.GetMethod("GetStorageMemorySizeLong",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+            if (method != null)
+            {
+                object result = method.Invoke(null, new object[] { tex });
+                if (result is long bytes && bytes > 0)
+                    return bytes;
+            }
         }
         catch { }
 #endif
