@@ -24,6 +24,9 @@ public class TelemetrySender : MonoBehaviour
     public string clientId = null;
 
     [Header("Sampling")]
+    public bool captureEnabled = true;
+    [Tooltip("Capture interval in milliseconds. Set to 0 to capture every frame.")]
+    public int captureIntervalMs = 0;
     public bool sendThumbnail = true;
     public int thumbnailIntervalFrames = 30; // capture every N frames
     public int thumbnailWidth = 320;
@@ -35,6 +38,7 @@ public class TelemetrySender : MonoBehaviour
 
     private int frameCounter = 0;
     private float startTime;
+    private float nextCaptureTime = 0f;
 
 #if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
     private ClientWebSocket ws;
@@ -49,6 +53,7 @@ public class TelemetrySender : MonoBehaviour
     void Start()
     {
         startTime = Time.realtimeSinceStartup;
+        nextCaptureTime = Time.realtimeSinceStartup;
         if (string.IsNullOrEmpty(clientId)) clientId = SystemInfo.deviceName + "-" + Application.productName;
         ConnectWebSocket();
         DontDestroyOnLoad(this.gameObject);
@@ -67,6 +72,7 @@ public class TelemetrySender : MonoBehaviour
                     Debug.Log("Telemetry WS open (ClientWebSocket)");
                     var hello = new { role = "unity", clientId = clientId };
                     await SendJsonAsync(hello).ConfigureAwait(false);
+                    SendControlAck("initial_state");
                     wsReceiveTask = Task.Run(() => ReceiveLoopAsync(ws, wsCts.Token));
                 }
                 catch (Exception ex) {
@@ -95,6 +101,21 @@ public class TelemetrySender : MonoBehaviour
 
     void LateUpdate()
     {
+        if (!captureEnabled)
+        {
+            return;
+        }
+
+        var now = Time.realtimeSinceStartup;
+        if (captureIntervalMs > 0)
+        {
+            if (now + 0.0001f < nextCaptureTime)
+            {
+                return;
+            }
+            nextCaptureTime = now + Mathf.Max(0.001f, (float)captureIntervalMs / 1000f);
+        }
+
         frameCounter++;
         var frameIndex = frameCounter;
         var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -383,6 +404,90 @@ public class TelemetrySender : MonoBehaviour
         }
     }
 
+    private void HandleIncomingMessage(string json)
+    {
+        if (string.IsNullOrEmpty(json)) return;
+#if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
+        ControlMessage message = null;
+        try
+        {
+            message = JsonConvert.DeserializeObject<ControlMessage>(json);
+        }
+        catch
+        {
+            return;
+        }
+        if (message == null) return;
+        if (!string.Equals(message.type, "control", StringComparison.OrdinalIgnoreCase)) return;
+        if (!string.IsNullOrEmpty(message.targetClientId) && message.targetClientId != clientId) return;
+
+        if (string.Equals(message.command, "configure_capture", StringComparison.OrdinalIgnoreCase))
+        {
+            ApplyControlPayload(message.payload);
+            SendControlAck("configure_capture");
+        }
+        else if (string.Equals(message.command, "request_state", StringComparison.OrdinalIgnoreCase))
+        {
+            SendControlAck("request_state");
+        }
+#endif
+    }
+
+    private void ApplyControlPayload(ControlPayload payload)
+    {
+        if (payload == null) return;
+        bool shouldResetTimer = false;
+        if (payload.captureEnabled.HasValue)
+        {
+            captureEnabled = payload.captureEnabled.Value;
+            if (captureEnabled) shouldResetTimer = true;
+        }
+        if (payload.captureIntervalMs.HasValue)
+        {
+            captureIntervalMs = Mathf.Max(0, Mathf.RoundToInt(payload.captureIntervalMs.Value));
+            shouldResetTimer = true;
+        }
+        if (payload.sendThumbnail.HasValue)
+        {
+            sendThumbnail = payload.sendThumbnail.Value;
+        }
+        if (payload.thumbnailIntervalFrames.HasValue)
+        {
+            thumbnailIntervalFrames = Mathf.Max(1, payload.thumbnailIntervalFrames.Value);
+        }
+        if (payload.sendResourceSnapshots.HasValue)
+        {
+            sendResourceSnapshots = payload.sendResourceSnapshots.Value;
+        }
+
+        if (shouldResetTimer)
+        {
+            nextCaptureTime = Time.realtimeSinceStartup;
+        }
+    }
+
+    private void SendControlAck(string command)
+    {
+#if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
+        var ack = new ControlAckMessage
+        {
+            clientId = clientId,
+            command = command,
+            timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            state = new ControlAckState
+            {
+                captureEnabled = captureEnabled,
+                captureIntervalMs = captureIntervalMs,
+                sendThumbnail = sendThumbnail,
+                sendResourceSnapshots = sendResourceSnapshots,
+                thumbnailIntervalFrames = thumbnailIntervalFrames
+            }
+        };
+        var json = JsonConvert.SerializeObject(ack);
+        _ = SendTextAsync(json);
+#endif
+    }
+
 #if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
     private async Task SendJsonAsync(object obj)
     {
@@ -421,6 +526,14 @@ public class TelemetrySender : MonoBehaviour
                 // run on main thread: use Unity's queue via StartCoroutine
                 UnityMainThreadDispatcher.Instance().Enqueue(() => {
                     Debug.Log("Telemetry WS recv: " + str);
+                    try
+                    {
+                        HandleIncomingMessage(str);
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.LogWarning("Failed to handle control message: " + ex.Message);
+                    }
                 });
             }
         } catch (Exception ex) {
@@ -449,4 +562,43 @@ public class ThumbUploadResponse { public string url; }
 
 [Serializable]
 public class GenericWrapper { public object obj; }
+
+[Serializable]
+public class ControlPayload
+{
+    public bool? captureEnabled;
+    public float? captureIntervalMs;
+    public bool? sendThumbnail;
+    public bool? sendResourceSnapshots;
+    public int? thumbnailIntervalFrames;
+}
+
+[Serializable]
+public class ControlMessage
+{
+    public string type;
+    public string command;
+    public string targetClientId;
+    public ControlPayload payload;
+}
+
+[Serializable]
+public class ControlAckState
+{
+    public bool captureEnabled;
+    public int captureIntervalMs;
+    public bool sendThumbnail;
+    public bool sendResourceSnapshots;
+    public int thumbnailIntervalFrames;
+}
+
+[Serializable]
+public class ControlAckMessage
+{
+    public string type = "control_ack";
+    public string clientId;
+    public string command;
+    public ControlAckState state;
+    public long timestamp;
+}
 

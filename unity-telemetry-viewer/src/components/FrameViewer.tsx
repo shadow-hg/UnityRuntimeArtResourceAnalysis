@@ -5,8 +5,38 @@ type Props = {
   resourceCatalog?: Record<string, any> | undefined;
 };
 
+function pickCameraImage(camera: any): string | null {
+  if (!camera || typeof camera !== 'object') return null;
+  const preferredKeys = ['imageUrl', 'image', 'previewUrl', 'preview', 'thumbnailUrl', 'thumbnail', 'screenshot', 'screenshotUrl'];
+  for (const key of preferredKeys) {
+    const value = camera[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value;
+    }
+  }
+
+  const nestedCandidates = [camera.renderTarget, camera.renderTexture, camera.output, camera.capture, camera.source];
+  for (const nested of nestedCandidates) {
+    if (!nested || typeof nested !== 'object') continue;
+    const nestedValue = pickCameraImage(nested);
+    if (nestedValue) return nestedValue;
+  }
+
+  if (Array.isArray(camera.captures)) {
+    for (const capture of camera.captures) {
+      const captureValue = pickCameraImage(capture);
+      if (captureValue) return captureValue;
+    }
+  }
+
+  return null;
+}
+
 function pickThumbnail(frame: any | null, resourceCatalog?: Record<string, any>) {
   if (!frame) return null;
+
+  const cameraImage = pickCameraImage(frame.camera);
+  if (cameraImage) return cameraImage;
 
   const directSources = [
     frame.thumbnailUrl,

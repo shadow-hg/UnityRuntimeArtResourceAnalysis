@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import { Frame } from '../hooks/useTelemetry';
+import { getStatDisplaySizeKB } from '../utils/resourceMetadata';
 import { formatMemoryFromKB, formatNumber } from '../utils/format';
 
 type Props = {
@@ -38,7 +39,7 @@ const FrameList: React.FC<Props> = ({ frames, selectedFrameKey, onSelect }) => {
             const statsArray: any[] = Array.isArray(frame.resourceStats) ? frame.resourceStats : [];
             const resourceTotalKB = typeof frame.resourceTotalKB === 'number'
               ? frame.resourceTotalKB
-              : statsArray.reduce((sum, stat) => sum + Number(stat?.sizeKB ?? 0), 0);
+              : statsArray.reduce((sum, stat) => sum + getStatDisplaySizeKB(stat), 0);
             const resourceCountValue = typeof frame.resourceCount === 'number'
               ? frame.resourceCount
               : Array.isArray(frame.resources)

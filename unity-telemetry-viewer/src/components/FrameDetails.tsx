@@ -3,9 +3,12 @@ import { formatMemoryFromKB, formatNumber, formatSeconds, formatTimestamp } from
 import {
   buildMaterialSummary,
   buildResourceSummary,
-  coerceSize,
   describeMesh,
-  getResourceCategory
+  getDisplayMemoryKB,
+  getResourceCategory,
+  getStatDisplaySizeKB,
+  isTextureCategory,
+  ResourceSummary
 } from '../utils/resourceMetadata';
 
 type Props = {
@@ -90,19 +93,25 @@ const FrameDetails: React.FC<Props> = ({ frame, resourceCatalog, onRequestFullsc
     return result;
   }, [frame.resources, resourceCatalog, inlineResourceMap]);
 
+  const summaryCache = useMemo(() => new WeakMap<any, ResourceSummary>(), []);
+
   const detailedResourceGroups = useMemo<ResourceGroup[]>(() => {
     if (!activeResources || activeResources.length === 0) return [];
     const groups = new Map<string, ResourceGroup>();
     for (const resource of activeResources) {
       const category = getResourceCategory(resource);
       const group = groups.get(category) || { category, count: 0, sizeKB: 0, resources: [] };
+      const summary = summaryCache.get(resource) || buildResourceSummary(resource);
+      if (!summaryCache.has(resource)) {
+        summaryCache.set(resource, summary);
+      }
       group.count += 1;
-      group.sizeKB += coerceSize(resource.sizeKB ?? resource.size ?? 0);
+      group.sizeKB += getDisplayMemoryKB(resource, summary);
       group.resources.push(resource);
       groups.set(category, group);
     }
     return Array.from(groups.values()).sort((a, b) => b.sizeKB - a.sizeKB);
-  }, [activeResources]);
+  }, [activeResources, summaryCache]);
 
   const fallbackResourceStats = useMemo(() => {
     if (!Array.isArray(frame.resourceStats)) return [] as ResourceGroup[];
@@ -110,7 +119,7 @@ const FrameDetails: React.FC<Props> = ({ frame, resourceCatalog, onRequestFullsc
       .map((stat) => ({
         category: stat?.category || '未分类',
         count: Number(stat?.count ?? 0),
-        sizeKB: Number(stat?.sizeKB ?? 0),
+        sizeKB: getStatDisplaySizeKB(stat),
         resources: [] as any[]
       }))
       .filter((stat) => Number.isFinite(stat.count) || Number.isFinite(stat.sizeKB));
@@ -288,11 +297,21 @@ const FrameDetails: React.FC<Props> = ({ frame, resourceCatalog, onRequestFullsc
                     <div className="resource-breakdown__details" id={labelId}>
                       {stat.resources.map((res, index) => {
                         const resourceKey = res.id || `${res.name || stat.category}-${index}`;
-                        const summary = buildResourceSummary(res);
+                        const summary = summaryCache.get(res) || buildResourceSummary(res);
+                        if (!summaryCache.has(res)) {
+                          summaryCache.set(res, summary);
+                        }
                         const materialSummary = stat.category === 'Material' ? buildMaterialSummary(res) : null;
                         const isResourceExpanded = expandedResourceKey === resourceKey;
+                        const displayMemory = getDisplayMemoryKB(res, summary);
                         const runtimeMemory = summary.runtimeKB || summary.originalKB;
                         const meshSummary = stat.category === 'Mesh' ? describeMesh(res) : [];
+                        const resourceCategory = getResourceCategory(res);
+                        const isTextureResource =
+                          isTextureCategory(resourceCategory) || (!resourceCategory && isTextureCategory(stat.category));
+                        const compressedMemory = summary.compressedKB;
+                        const showCompressed = isTextureResource && compressedMemory > 0;
+                        const showCompressedSummary = showCompressed && compressedMemory !== displayMemory;
                         const infoChips = new Set<string>();
                         if (res.shader) infoChips.add(res.shader);
                         if (res.renderQueue) infoChips.add(`队列 ${res.renderQueue}`);
@@ -302,6 +321,7 @@ const FrameDetails: React.FC<Props> = ({ frame, resourceCatalog, onRequestFullsc
                         if (res.mipCount) infoChips.add(`MIP×${formatNumber(res.mipCount)}`);
                         if (res.antiAliasing) infoChips.add(`MSAA×${formatNumber(res.antiAliasing)}`);
                         if (res.isReadable === false) infoChips.add('不可读');
+                        if (res.compression) infoChips.add(res.compression);
                         meshSummary.forEach((chip) => infoChips.add(chip));
                         const chips = Array.from(infoChips).filter(Boolean);
 
@@ -316,19 +336,17 @@ const FrameDetails: React.FC<Props> = ({ frame, resourceCatalog, onRequestFullsc
                               onClick={() => setExpandedResourceKey(isResourceExpanded ? null : resourceKey)}
                               aria-expanded={isResourceExpanded}
                             >
-                              <div>
+                              <div className="resource-breakdown__item-main">
                                 <div className="resource-breakdown__item-title">{res.name || res.id || '未命名资源'}</div>
-                                <div className="resource-breakdown__item-meta">
-                                  <span>{formatMemoryFromKB(runtimeMemory)}</span>
-                                  {summary.originalKB > 0 && summary.runtimeKB > 0 && summary.runtimeKB !== summary.originalKB && (
-                                    <span className="resource-breakdown__item-meta-secondary">原始 {formatMemoryFromKB(summary.originalKB)}</span>
-                                  )}
+                                <div className="resource-breakdown__item-summary">
+                                  <span>{formatMemoryFromKB(displayMemory)}</span>
+                                  {showCompressedSummary && <span>压缩 {formatMemoryFromKB(compressedMemory)}</span>}
                                   {summary.dimensions && <span>{summary.dimensions}</span>}
                                   {summary.format && <span>{summary.format}</span>}
                                 </div>
                               </div>
-                              <div className="resource-breakdown__item-tags">
-                                <span className="resource-panel__badge">{getResourceCategory(res)}</span>
+                              <div className="resource-breakdown__item-badges">
+                                <span className="resource-panel__badge">{resourceCategory}</span>
                                 {summary.textureRefs.length > 0 && (
                                   <span className="resource-panel__tag">纹理×{formatNumber(summary.textureRefs.length)}</span>
                                 )}
@@ -350,9 +368,21 @@ const FrameDetails: React.FC<Props> = ({ frame, resourceCatalog, onRequestFullsc
                                   <dl>
                                     <div>
                                       <dt>内存占用</dt>
-                                      <dd>{formatMemoryFromKB(runtimeMemory)}</dd>
+                                      <dd>{formatMemoryFromKB(displayMemory)}</dd>
                                     </div>
-                                    {summary.originalKB > 0 && summary.runtimeKB > 0 && summary.runtimeKB !== summary.originalKB && (
+                                    {showCompressed && (
+                                      <div>
+                                        <dt>Unity 压缩</dt>
+                                        <dd>{formatMemoryFromKB(compressedMemory)}</dd>
+                                      </div>
+                                    )}
+                                    {runtimeMemory > 0 && runtimeMemory !== displayMemory && (
+                                      <div>
+                                        <dt>运行时内存</dt>
+                                        <dd>{formatMemoryFromKB(runtimeMemory)}</dd>
+                                      </div>
+                                    )}
+                                    {summary.originalKB > 0 && summary.originalKB !== runtimeMemory && summary.originalKB !== compressedMemory && (
                                       <div>
                                         <dt>原始大小</dt>
                                         <dd>{formatMemoryFromKB(summary.originalKB)}</dd>

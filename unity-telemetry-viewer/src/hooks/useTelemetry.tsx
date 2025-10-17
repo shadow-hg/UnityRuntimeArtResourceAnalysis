@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { TelemetryWS } from '../services/websocket';
 
 export type Frame = {
@@ -14,7 +14,21 @@ type ResourceCatalog = Record<string, Record<string, ResourceEntry>>;
 
 type ResourceIngestMode = 'replace' | 'merge';
 
-const MAX_FRAMES = 2000;
+const DEFAULT_MAX_FRAMES = 10000;
+
+export type ControlState = {
+  captureEnabled: boolean;
+  captureIntervalMs: number;
+  sendThumbnail: boolean;
+  sendResourceSnapshots: boolean;
+  thumbnailIntervalFrames: number;
+  updatedAt: number;
+  lastCommand?: string;
+};
+
+type UseTelemetryOptions = {
+  maxFrames?: number;
+};
 
 type FrameBucket = {
   clientId: string;
@@ -127,19 +141,45 @@ function findInsertIndex(store: FrameStore, sortValue: number) {
   return low;
 }
 
-export function useTelemetry(wsUrl?: string | null) {
+export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions = {}) {
   const [frames, setFrames] = useState<Frame[]>([]);
   const [catalogMap, setCatalogMap] = useState<ResourceCatalog>({});
   const [connectionState, setConnectionState] = useState<ConnectionState>('idle');
+  const [controlStateMap, setControlStateMap] = useState<Record<string, ControlState>>({});
   const wsRef = useRef<TelemetryWS | null>(null);
   const frameStoreRef = useRef<FrameStore>(createFrameStore());
   const flushHandleRef = useRef<number | null>(null);
   const assetBaseRef = useRef<string | null>(null);
+  const maxFramesRef = useRef<number>(Math.max(1, options.maxFrames ?? DEFAULT_MAX_FRAMES));
+
+  useEffect(() => {
+    const nextMax = Math.max(1, options.maxFrames ?? DEFAULT_MAX_FRAMES);
+    maxFramesRef.current = nextMax;
+    const store = frameStoreRef.current;
+    let trimmed = false;
+    while (store.order.length > nextMax) {
+      const removedKey = store.order.shift();
+      if (removedKey) {
+        store.entries.delete(removedKey);
+        trimmed = true;
+      }
+    }
+    if (trimmed) {
+      const nextFrames = store.order
+        .map((key) => {
+          const bucket = store.entries.get(key);
+          return bucket ? { clientId: bucket.clientId, frame: bucket.frame } : null;
+        })
+        .filter((entry): entry is Frame => entry !== null);
+      setFrames(nextFrames);
+    }
+  }, [options.maxFrames]);
 
   useEffect(() => {
     // reset when URL changes
     setFrames([]);
     setCatalogMap({});
+    setControlStateMap({});
     if (flushHandleRef.current !== null && typeof window !== 'undefined') {
       window.cancelAnimationFrame(flushHandleRef.current);
       flushHandleRef.current = null;
@@ -223,7 +263,8 @@ export function useTelemetry(wsUrl?: string | null) {
         const insertIndex = findInsertIndex(store, sortValue);
         store.order.splice(insertIndex, 0, key);
 
-        if (store.order.length > MAX_FRAMES) {
+        const maxFrames = maxFramesRef.current;
+        if (store.order.length > maxFrames) {
           const removedKey = store.order.shift();
           if (removedKey) {
             store.entries.delete(removedKey);
@@ -284,6 +325,43 @@ export function useTelemetry(wsUrl?: string | null) {
       } else if (msg.type === 'resource_snapshot' && msg.clientId) {
         const mode: ResourceIngestMode = msg.replace === false ? 'merge' : 'replace';
         ingestResources(msg.clientId, msg.resources, mode);
+      } else if (msg.type === 'control_ack' && msg.clientId) {
+        const payload = msg.state || {};
+        setControlStateMap((prev) => {
+          const next = { ...prev };
+          const previous = prev[msg.clientId];
+          const captureEnabled =
+            typeof payload.captureEnabled === 'boolean'
+              ? payload.captureEnabled
+              : previous?.captureEnabled ?? true;
+          const captureIntervalMs =
+            typeof payload.captureIntervalMs === 'number'
+              ? payload.captureIntervalMs
+              : previous?.captureIntervalMs ?? 0;
+          const sendThumbnail =
+            typeof payload.sendThumbnail === 'boolean'
+              ? payload.sendThumbnail
+              : previous?.sendThumbnail ?? false;
+          const sendResourceSnapshots =
+            typeof payload.sendResourceSnapshots === 'boolean'
+              ? payload.sendResourceSnapshots
+              : previous?.sendResourceSnapshots ?? true;
+          const thumbnailIntervalFrames =
+            typeof payload.thumbnailIntervalFrames === 'number'
+              ? payload.thumbnailIntervalFrames
+              : previous?.thumbnailIntervalFrames ?? 30;
+
+          next[msg.clientId] = {
+            captureEnabled,
+            captureIntervalMs,
+            sendThumbnail,
+            sendResourceSnapshots,
+            thumbnailIntervalFrames,
+            updatedAt: typeof msg.timestamp === 'number' ? msg.timestamp : Date.now(),
+            lastCommand: typeof msg.command === 'string' ? msg.command : previous?.lastCommand
+          };
+          return next;
+        });
       } else if (msg.type === 'timeline' && msg.clientId && Array.isArray(msg.frames)) {
         for (const frame of msg.frames) {
           ingestFrame(msg.clientId, frame);
@@ -365,5 +443,16 @@ export function useTelemetry(wsUrl?: string | null) {
     return result;
   }, [catalogMap]);
 
-  return { frames, catalog, catalogIndex: catalogMap, connectionState };
+  const sendMessage = useCallback((message: any) => {
+    if (!message) return;
+    const ws = wsRef.current;
+    if (!ws) return;
+    try {
+      ws.send(message);
+    } catch (error) {
+      console.warn('telemetry send failed', error);
+    }
+  }, []);
+
+  return { frames, catalog, catalogIndex: catalogMap, connectionState, controlState: controlStateMap, sendMessage };
 }

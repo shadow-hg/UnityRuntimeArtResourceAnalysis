@@ -8,7 +8,8 @@ import FrameViewer from './components/FrameViewer';
 import Timeline from './components/Timeline';
 import PlaybackControls from './components/PlaybackControls';
 import FrameDetails from './components/FrameDetails';
-import { Frame, useTelemetry } from './hooks/useTelemetry';
+import CaptureControlOverlay from './components/CaptureControlOverlay';
+import { ControlState, Frame, useTelemetry } from './hooks/useTelemetry';
 
 function frameKey(entry: Frame | null) {
   if (!entry) return '';
@@ -20,7 +21,8 @@ function frameKey(entry: Frame | null) {
 
 export default function App() {
   const [wsUrl, setWsUrl] = useState<string | null>(null);
-  const { frames, catalog, catalogIndex, connectionState } = useTelemetry(wsUrl);
+  const [maxFrames, setMaxFrames] = useState(10000);
+  const { frames, catalog, catalogIndex, connectionState, controlState, sendMessage } = useTelemetry(wsUrl, { maxFrames });
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
   const [selectedFrame, setSelectedFrame] = useState<Frame | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -33,6 +35,7 @@ export default function App() {
   const [displayCatalog, setDisplayCatalog] = useState(catalog);
   const [displayCatalogIndex, setDisplayCatalogIndex] = useState(catalogIndex);
   const [fullscreenPanel, setFullscreenPanel] = useState<'details' | 'resources' | null>(null);
+  const selectedControlState = selectedClientId ? controlState[selectedClientId] : undefined;
 
   useEffect(() => {
     if (!livePinned) {
@@ -131,6 +134,60 @@ export default function App() {
   const resources = selectedClientId ? displayCatalog[selectedClientId] : [];
   const resourceCatalog = selectedClientId ? displayCatalogIndex[selectedClientId] : undefined;
 
+  const latestFrameTimestamp = useMemo(() => {
+    if (visibleFrames.length === 0) return null;
+    const latest = visibleFrames[visibleFrames.length - 1]?.frame;
+    if (!latest) return null;
+    const ts = latest.timestamp;
+    if (typeof ts === 'number') return ts;
+    if (typeof ts === 'string') {
+      const parsed = Date.parse(ts);
+      return Number.isNaN(parsed) ? null : parsed;
+    }
+    return null;
+  }, [visibleFrames]);
+
+  type ControlPatch = Partial<
+    Pick<ControlState, 'captureEnabled' | 'captureIntervalMs' | 'sendThumbnail' | 'sendResourceSnapshots' | 'thumbnailIntervalFrames'>
+  >;
+
+  const sendControlPatch = useCallback(
+    (patch: ControlPatch) => {
+      if (!selectedClientId) return;
+      sendMessage({
+        type: 'control',
+        targetClientId: selectedClientId,
+        command: 'configure_capture',
+        payload: patch
+      });
+    },
+    [selectedClientId, sendMessage]
+  );
+
+  const requestControlState = useCallback(() => {
+    if (!selectedClientId) return;
+    sendMessage({
+      type: 'control',
+      targetClientId: selectedClientId,
+      command: 'request_state'
+    });
+  }, [selectedClientId, sendMessage]);
+
+  const handleMaxFramesChange = useCallback(
+    (value: number) => {
+      if (!Number.isFinite(value)) return;
+      const clamped = Math.min(100000, Math.max(100, Math.round(value)));
+      setMaxFrames(clamped);
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (!selectedClientId) return;
+    if (connectionState !== 'open') return;
+    requestControlState();
+  }, [selectedClientId, connectionState, requestControlState]);
+
   const handleSeek = (idx: number) => {
     if (idx < 0 || idx >= visibleFrames.length) return;
     setSelectedFrame(visibleFrames[idx]);
@@ -199,12 +256,24 @@ export default function App() {
         </aside>
         <main className={`main-area ${fullscreenPanel ? 'main-area--dimmed' : ''}`}>
           <section className="main-top">
-            <FrameViewer
-              frame={selectedFrame?.frame || null}
-              resourceCatalog={resourceCatalog}
-            />
-            <div className="main-top__right">
+            <div className="frame-viewer-container">
+              <FrameViewer
+                frame={selectedFrame?.frame || null}
+                resourceCatalog={resourceCatalog}
+              />
+              <CaptureControlOverlay
+                clientId={selectedClientId}
+                controlState={selectedControlState}
+                onUpdate={sendControlPatch}
+                onRequestState={requestControlState}
+                maxFrames={maxFrames}
+                onMaxFramesChange={handleMaxFramesChange}
+                latestFrameTimestamp={latestFrameTimestamp}
+                connectionState={connectionState}
+              />
               <PlaybackControls
+                appearance="floating"
+                className="frame-viewer__playback"
                 playing={playing}
                 onPlayPause={() => {
                   setPlaying((prev) => {
@@ -260,30 +329,32 @@ export default function App() {
             >
               关闭
             </button>
-            {fullscreenPanel === 'details' && (
-              <FrameDetails
-                frame={selectedFrame?.frame || null}
-                resourceCatalog={resourceCatalog}
-                isFullscreen
-                onRequestFullscreen={() => setFullscreenPanel(null)}
-              />
-            )}
-            {fullscreenPanel === 'resources' && (
-              <ResourcePanel
-                resources={resources}
-                onSelect={(resource) => {
-                  const rid = resource?.id;
-                  if (!rid) return;
-                  const idx = visibleFrames.findIndex((entry) => Array.isArray(entry.frame?.resources) && entry.frame.resources.includes(rid));
-                  if (idx >= 0) {
-                    handleSeek(idx);
-                    setFullscreenPanel(null);
-                  }
-                }}
-                isFullscreen
-                onRequestFullscreen={() => setFullscreenPanel(null)}
-              />
-            )}
+            <div className="fullscreen-overlay__panel">
+              {fullscreenPanel === 'details' && (
+                <FrameDetails
+                  frame={selectedFrame?.frame || null}
+                  resourceCatalog={resourceCatalog}
+                  isFullscreen
+                  onRequestFullscreen={() => setFullscreenPanel(null)}
+                />
+              )}
+              {fullscreenPanel === 'resources' && (
+                <ResourcePanel
+                  resources={resources}
+                  onSelect={(resource) => {
+                    const rid = resource?.id;
+                    if (!rid) return;
+                    const idx = visibleFrames.findIndex((entry) => Array.isArray(entry.frame?.resources) && entry.frame.resources.includes(rid));
+                    if (idx >= 0) {
+                      handleSeek(idx);
+                      setFullscreenPanel(null);
+                    }
+                  }}
+                  isFullscreen
+                  onRequestFullscreen={() => setFullscreenPanel(null)}
+                />
+              )}
+            </div>
           </div>
         </div>
       )}
