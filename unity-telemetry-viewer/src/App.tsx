@@ -32,6 +32,7 @@ export default function App() {
   const [displayFrames, setDisplayFrames] = useState<Frame[]>(frames);
   const [displayCatalog, setDisplayCatalog] = useState(catalog);
   const [displayCatalogIndex, setDisplayCatalogIndex] = useState(catalogIndex);
+  const [fullscreenPanel, setFullscreenPanel] = useState<'details' | 'resources' | null>(null);
 
   useEffect(() => {
     if (!livePinned) {
@@ -155,6 +156,13 @@ export default function App() {
           resumeLiveView();
         }}
       />
+      <section className={`timeline-section ${fullscreenPanel ? 'timeline-section--dimmed' : ''}`}>
+        <Timeline
+          telemetryData={visibleFrames.map((entry) => entry.frame)}
+          currentIndex={currentIndex}
+          onSeek={handleSeek}
+        />
+      </section>
       <div className="app-body">
         <aside className="sidebar sidebar--left">
           <ConnectionPanel
@@ -189,9 +197,12 @@ export default function App() {
             }}
           />
         </aside>
-        <main className="main-area">
+        <main className={`main-area ${fullscreenPanel ? 'main-area--dimmed' : ''}`}>
           <section className="main-top">
-            <FrameViewer frame={selectedFrame?.frame || null} />
+            <FrameViewer
+              frame={selectedFrame?.frame || null}
+              resourceCatalog={resourceCatalog}
+            />
             <div className="main-top__right">
               <PlaybackControls
                 playing={playing}
@@ -213,17 +224,13 @@ export default function App() {
                 onStepForward={() => handleStep(1)}
                 onStepBack={() => handleStep(-1)}
               />
-              <Timeline
-                telemetryData={visibleFrames.map((entry) => entry.frame)}
-                currentIndex={currentIndex}
-                onSeek={handleSeek}
-              />
             </div>
           </section>
           <section className="main-bottom">
             <FrameDetails
               frame={selectedFrame?.frame || null}
               resourceCatalog={resourceCatalog}
+              onRequestFullscreen={() => setFullscreenPanel('details')}
             />
           </section>
         </main>
@@ -238,9 +245,48 @@ export default function App() {
                 handleSeek(idx);
               }
             }}
+            onRequestFullscreen={() => setFullscreenPanel('resources')}
           />
         </aside>
       </div>
+      {fullscreenPanel && (
+        <div className="fullscreen-overlay">
+          <div className="fullscreen-overlay__backdrop" onClick={() => setFullscreenPanel(null)} />
+          <div className="fullscreen-overlay__content">
+            <button
+              type="button"
+              className="fullscreen-overlay__close"
+              onClick={() => setFullscreenPanel(null)}
+            >
+              关闭
+            </button>
+            {fullscreenPanel === 'details' && (
+              <FrameDetails
+                frame={selectedFrame?.frame || null}
+                resourceCatalog={resourceCatalog}
+                isFullscreen
+                onRequestFullscreen={() => setFullscreenPanel(null)}
+              />
+            )}
+            {fullscreenPanel === 'resources' && (
+              <ResourcePanel
+                resources={resources}
+                onSelect={(resource) => {
+                  const rid = resource?.id;
+                  if (!rid) return;
+                  const idx = visibleFrames.findIndex((entry) => Array.isArray(entry.frame?.resources) && entry.frame.resources.includes(rid));
+                  if (idx >= 0) {
+                    handleSeek(idx);
+                    setFullscreenPanel(null);
+                  }
+                }}
+                isFullscreen
+                onRequestFullscreen={() => setFullscreenPanel(null)}
+              />
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

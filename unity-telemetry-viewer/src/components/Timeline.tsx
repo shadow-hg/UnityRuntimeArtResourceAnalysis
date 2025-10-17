@@ -120,12 +120,16 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
         totalPath: '',
         areas: [] as { category: string; path: string }[],
         points: [] as { x: number; y: number }[],
-        maxValue: 0
+        maxValue: 0,
+        fpsPath: '',
+        fpsPoints: [] as { x: number; y: number; value: number | null }[],
+        fpsMax: 0
       };
     }
 
     const step = entries.length > 1 ? 100 / (entries.length - 1) : 0;
     const totals = entries.map((entry) => Math.max(0, entry.totalKB));
+    const fpsValues = entries.map((entry) => (entry.fps !== null && Number.isFinite(entry.fps) ? entry.fps : null));
     const base = new Array(entries.length).fill(0);
 
     const stackedData = topCategories.map((category) => {
@@ -140,6 +144,7 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
     });
 
     const chartMax = Math.max(1, ...totals, ...base);
+    const fpsMax = Math.max(1, ...fpsValues.filter((value): value is number => value !== null));
 
     const points = entries.map((entry, idx) => {
       const x = idx === 0 ? 0 : step * idx;
@@ -147,9 +152,32 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
       return { x, y };
     });
 
+    const fpsPoints = entries.map((entry, idx) => {
+      const x = idx === 0 ? 0 : step * idx;
+      const value = fpsValues[idx];
+      const y = value !== null && fpsMax > 0 ? 100 - (value / fpsMax) * 100 : 100;
+      return { x, y, value };
+    });
+
     const totalPath = points
       .map((pt, idx) => `${idx === 0 ? 'M' : 'L'} ${pt.x.toFixed(3)} ${pt.y.toFixed(3)}`)
       .join(' ');
+
+    let fpsPath = '';
+    let hasStarted = false;
+    fpsPoints.forEach((pt) => {
+      if (pt.value === null) {
+        hasStarted = false;
+        return;
+      }
+      if (!hasStarted) {
+        fpsPath += `M ${pt.x.toFixed(3)} ${pt.y.toFixed(3)} `;
+        hasStarted = true;
+      } else {
+        fpsPath += `L ${pt.x.toFixed(3)} ${pt.y.toFixed(3)} `;
+      }
+    });
+    fpsPath = fpsPath.trim();
 
     const areas = stackedData.map(({ category, areaPoints }) => {
       const pointsTop = areaPoints.map((pt) => {
@@ -177,8 +205,33 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
       return { category, path: `${topSegment} ${bottomSegment} Z` };
     });
 
-    return { totalPath, areas, points, maxValue: chartMax };
+    return { totalPath, areas, points, maxValue: chartMax, fpsPath, fpsPoints, fpsMax };
   }, [entries, topCategories]);
+
+  const hasFpsData = useMemo(() => chartData.fpsPoints.some((pt) => pt.value !== null), [chartData.fpsPoints]);
+
+  const averageFps = useMemo(() => {
+    if (entries.length <= 1) return null;
+    let totalDuration = 0;
+    let previousTimestamp: number | null = null;
+
+    entries.forEach((entry, idx) => {
+      const frame = telemetryData[idx];
+      if (entry.timestamp !== null) {
+        if (previousTimestamp !== null) {
+          totalDuration += Math.max(0, (entry.timestamp - previousTimestamp) / 1000);
+        }
+        previousTimestamp = entry.timestamp;
+      } else if (typeof frame?.dt === 'number' && frame.dt > 0) {
+        totalDuration += frame.dt;
+      } else if (entry.fps && entry.fps > 0) {
+        totalDuration += 1 / entry.fps;
+      }
+    });
+
+    if (totalDuration <= 0) return null;
+    return (entries.length - 1) / totalDuration;
+  }, [entries, telemetryData]);
 
   return (
     <div className="panel timeline-panel">
@@ -214,6 +267,9 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
               />
             ))}
             <path d={chartData.totalPath} fill="none" stroke="url(#timeline-fill)" strokeWidth="2.2" />
+            {chartData.fpsPath && (
+              <path d={chartData.fpsPath} fill="none" stroke="#facc15" strokeWidth="1.8" strokeDasharray="4 3" strokeLinecap="round" />
+            )}
             {chartData.points.map((pt, idx) => (
               <circle
                 key={`pt-${idx}`}
@@ -226,6 +282,18 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
                 strokeWidth={0.6}
               />
             ))}
+            {chartData.fpsPoints.map((pt, idx) => (
+              <circle
+                key={`fps-${idx}`}
+                cx={pt.x}
+                cy={pt.y}
+                r={pt.value !== null ? 1.4 : 0}
+                fill="#facc15"
+                fillOpacity={idx === activeIndex ? 0.95 : 0.55}
+                stroke="rgba(15, 23, 42, 0.4)"
+                strokeWidth={pt.value !== null ? 0.5 : 0}
+              />
+            ))}
           </svg>
             <div
               className="timeline-panel__chart-overlay"
@@ -235,6 +303,7 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
               const left = pt.x;
               const isActive = idx === activeIndex;
               const entry = entries[idx];
+              const fpsValue = chartData.fpsPoints[idx]?.value ?? null;
               return (
                 <button
                   key={entry.index}
@@ -250,7 +319,7 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
                   onMouseLeave={() => setHoverIndex(null)}
                   onFocus={() => setHoverIndex(idx)}
                   onBlur={() => setHoverIndex(null)}
-                  title={`#${entry.frameIndex ?? idx} · ${formatMemoryFromKB(entry.totalKB)} · ${formatNumber(entry.totalCount)} 资源`}
+                  title={`#${entry.frameIndex ?? idx} · ${formatMemoryFromKB(entry.totalKB)} · ${formatNumber(entry.totalCount)} 资源 · FPS ${fpsValue ? fpsValue.toFixed(1) : '-'}`}
                 >
                   <span className="sr-only">跳转到帧 {entry.frameIndex ?? idx}</span>
                 </button>
@@ -265,8 +334,18 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
         )}
       </div>
 
-      {topCategories.length > 0 && (
+      {(topCategories.length > 0 || chartData.fpsPath) && (
         <div className="timeline-panel__legend">
+          <div className="timeline-panel__legend-item">
+            <span className="timeline-panel__legend-swatch timeline-panel__legend-swatch--memory" />
+            <span>资源内存</span>
+          </div>
+          {chartData.fpsPath && hasFpsData && (
+            <div className="timeline-panel__legend-item">
+              <span className="timeline-panel__legend-swatch timeline-panel__legend-swatch--fps" />
+              <span>FPS</span>
+            </div>
+          )}
           {topCategories.map((category) => (
             <div key={category} className="timeline-panel__legend-item">
               <span className="timeline-panel__legend-swatch" style={{ backgroundColor: categoryColors[category] || '#94a3b8' }} />
@@ -293,6 +372,18 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
           <span>0</span>
           <span>{max}</span>
         </div>
+        <div className="timeline-panel__stats">
+          <div>
+            <span className="timeline-panel__stats-label">平均 FPS</span>
+            <span className="timeline-panel__stats-value">{averageFps ? averageFps.toFixed(1) : '-'}</span>
+          </div>
+          {hasFpsData && (
+            <div>
+              <span className="timeline-panel__stats-label">峰值 FPS</span>
+              <span className="timeline-panel__stats-value">{chartData.fpsMax.toFixed(1)}</span>
+            </div>
+          )}
+        </div>
       </div>
 
       {currentEntry && (
@@ -313,6 +404,10 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
             <div>
               <span className="timeline-panel__details-label">FPS</span>
               <span className="timeline-panel__details-value">{currentEntry.fps ? currentEntry.fps.toFixed(1) : '-'}</span>
+            </div>
+            <div>
+              <span className="timeline-panel__details-label">平均 FPS</span>
+              <span className="timeline-panel__details-value">{averageFps ? averageFps.toFixed(1) : '-'}</span>
             </div>
           </div>
           <ul className="timeline-panel__details-list">
