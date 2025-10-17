@@ -125,10 +125,10 @@ body {
 }
 
 .app-body__upper {
-  display: grid;
-  grid-template-columns: 320px minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   gap: 24px;
-  align-items: start;
+  align-items: stretch;
   flex: 1;
 }
 
@@ -1726,7 +1726,9 @@ body {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  max-height: calc(100vh - 320px);
+  flex: 1;
+  min-height: 0;
+  max-height: min(calc(100vh - 320px), 720px);
   overflow-y: auto;
   padding-right: 4px;
 }

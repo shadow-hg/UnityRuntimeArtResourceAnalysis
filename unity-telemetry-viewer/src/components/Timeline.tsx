@@ -19,6 +19,7 @@ type Props = {
   telemetryData: any[];
   currentIndex?: number;
   onSeek?: (index: number) => void;
+  playing?: boolean;
 };
 
 type TimelineEntry = {
@@ -108,8 +109,9 @@ const CATEGORY_COLOR_OVERRIDES: Record<string, string> = {
 const FALLBACK_COLORS = ['#0ea5e9', '#8b5cf6', '#ec4899', '#14b8a6', '#f59e0b', '#f97316', '#64748b', '#10b981'];
 
 const MAX_STACK_CATEGORIES = 5;
+const PLAYBACK_WINDOW_SIZE = 500;
 
-const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek }) => {
+const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek, playing = false }) => {
   const [localIndex, setLocalIndex] = useState<number>(currentIndex);
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const [visibleCategories, setVisibleCategories] = useState<string[]>([]);
@@ -205,20 +207,33 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
     });
   }, [topCategories]);
 
-  const max = Math.max(0, entries.length - 1);
+  const totalEntries = entries.length;
+  const max = Math.max(0, totalEntries - 1);
 
   useEffect(() => {
-    if (max < 0) {
+    if (totalEntries === 0) {
       setRangeStart(0);
       setRangeEnd(0);
       rangeStartRef.current = 0;
       rangeEndRef.current = 0;
+      previousMaxRef.current = -1;
       hasInitializedRangeRef.current = false;
       return;
     }
 
     const prevMax = previousMaxRef.current;
     previousMaxRef.current = max;
+
+    if (playing) {
+      const end = max;
+      const start = Math.max(0, end - PLAYBACK_WINDOW_SIZE);
+      rangeStartRef.current = start;
+      rangeEndRef.current = end;
+      hasInitializedRangeRef.current = true;
+      setRangeStart(start);
+      setRangeEnd(end);
+      return;
+    }
 
     setRangeStart((prev) => {
       const next = Math.min(prev, max);
@@ -256,7 +271,7 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
       rangeEndRef.current = next;
       return next;
     });
-  }, [max]);
+  }, [max, playing, totalEntries]);
 
   useEffect(() => {
     rangeStartRef.current = rangeStart;
@@ -271,6 +286,28 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
     if (value < rangeStart) return rangeStart;
     if (value > rangeEnd) return rangeEnd;
     return value;
+  };
+
+  const getIndexFromClientX = (clientX: number) => {
+    const container = rangeContainerRef.current;
+    if (!container) return -1;
+    const rect = container.getBoundingClientRect();
+    if (rect.width <= 0) return -1;
+    const percent = (clientX - rect.left) / rect.width;
+    if (!Number.isFinite(percent)) return -1;
+    const rawIndex = Math.round(percent * max);
+    return clampToRange(rawIndex);
+  };
+
+  const seekToIndex = (targetIndex: number) => {
+    if (targetIndex < 0) return;
+    setLocalIndex(targetIndex);
+    setHoverIndex(null);
+    if (onSeek) onSeek(targetIndex);
+  };
+
+  const isRangeInput = (target: EventTarget | null) => {
+    return (target as HTMLElement | null)?.tagName?.toLowerCase() === 'input';
   };
 
   useEffect(() => {
@@ -394,9 +431,7 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
     if (idx === null || idx < 0 || idx >= windowEntries.length) return;
     const entry = windowEntries[idx];
     if (!entry) return;
-    setLocalIndex(entry.index);
-    setHoverIndex(null);
-    if (onSeek) onSeek(entry.index);
+    seekToIndex(entry.index);
   };
 
   const handleChartHover = (state: any) => {
@@ -414,6 +449,7 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
   };
 
   const handleRangeChange = (type: 'start' | 'end', value: number) => {
+    if (playing) return;
     if (!Number.isFinite(value)) return;
     const clampedValue = Math.max(0, Math.min(value, max));
     if (type === 'start') {
@@ -444,19 +480,19 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
   const endFrameIndex = entries[rangeEnd]?.frameIndex ?? rangeEnd;
 
   const handleRangeClick = (event: React.MouseEvent<HTMLDivElement>) => {
-    if ((event.target as HTMLElement).tagName.toLowerCase() === 'input') return;
-    const container = rangeContainerRef.current;
-    if (!container || max <= 0) return;
-    const rect = container.getBoundingClientRect();
-    if (rect.width <= 0) return;
-    const percent = (event.clientX - rect.left) / rect.width;
-    if (!Number.isFinite(percent)) return;
-    const rawIndex = Math.round(percent * max);
-    const targetIndex = clampToRange(rawIndex);
+    if (playing) return;
+    if (isRangeInput(event.target)) return;
+    const targetIndex = getIndexFromClientX(event.clientX);
     if (targetIndex < 0) return;
-    setLocalIndex(targetIndex);
-    setHoverIndex(null);
-    if (onSeek) onSeek(targetIndex);
+    seekToIndex(targetIndex);
+  };
+
+  const handleRangeContextMenu = (event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    if (isRangeInput(event.target)) return;
+    const targetIndex = getIndexFromClientX(event.clientX);
+    if (targetIndex < 0) return;
+    seekToIndex(targetIndex);
   };
 
   return (
@@ -652,6 +688,7 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
           className="timeline-panel__range"
           ref={rangeContainerRef}
           onClick={handleRangeClick}
+          onContextMenu={handleRangeContextMenu}
         >
           <div className="timeline-panel__range-track">
             <div
@@ -672,9 +709,10 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
             max={max}
             value={rangeStart}
             onChange={(event) => handleRangeChange('start', parseInt(event.target.value, 10))}
-                className="timeline-panel__range-input timeline-panel__range-input--start"
-                aria-label="起始帧"
-              />
+            className="timeline-panel__range-input timeline-panel__range-input--start"
+            aria-label="起始帧"
+            disabled={playing}
+          />
           <input
             type="range"
             min={0}
@@ -683,6 +721,7 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
             onChange={(event) => handleRangeChange('end', parseInt(event.target.value, 10))}
             className="timeline-panel__range-input timeline-panel__range-input--end"
             aria-label="结束帧"
+            disabled={playing}
           />
         </div>
         <div className="timeline-panel__scale">
