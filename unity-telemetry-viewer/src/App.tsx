@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './styles/app.css';
 import Toolbar from './components/Toolbar';
-import FrameList from './components/FrameList';
 import ResourcePanel from './components/ResourcePanel';
 import FrameViewer from './components/FrameViewer';
 import Timeline from './components/Timeline';
@@ -277,23 +276,12 @@ export default function App() {
         <Timeline
           telemetryData={visibleFrames.map((entry) => entry.frame)}
           currentIndex={currentIndex}
+          playing={playing}
           onSeek={handleSeek}
         />
       </section>
       <div className="app-body">
         <div className="app-body__upper">
-          <aside className="sidebar sidebar--left">
-            <FrameList
-              frames={visibleFrames}
-              selectedFrameKey={frameKey(selectedFrame)}
-              onSelect={(entry) => {
-                setSelectedFrame(entry);
-                setPlaying(false);
-                setAutoFollow(false);
-                freezeLiveView();
-              }}
-            />
-          </aside>
           <main className={`main-area ${fullscreenPanel ? 'main-area--dimmed' : ''}`}>
             <FrameDetails
               frame={selectedFrame?.frame || null}

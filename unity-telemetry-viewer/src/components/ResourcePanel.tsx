@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { formatMemoryFromKB, formatNumber } from '../utils/format';
 import {
   buildResourceSummary,
@@ -26,6 +26,7 @@ const ResourcePanel: React.FC<Props> = ({ resources, onSelect, onRequestFullscre
   const [filter, setFilter] = useState('');
   const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({});
   const [expandedResourceIds, setExpandedResourceIds] = useState<Record<string, boolean>>({});
+  const [hasInitializedExpansion, setHasInitializedExpansion] = useState(false);
 
   const list = resources || [];
 
@@ -82,6 +83,7 @@ const ResourcePanel: React.FC<Props> = ({ resources, onSelect, onRequestFullscre
   }, [filtered]);
 
   const toggleCategory = (category: string) => {
+    setHasInitializedExpansion(true);
     setExpandedCategories((prev) => ({ ...prev, [category]: !prev[category] }));
   };
 
@@ -89,9 +91,30 @@ const ResourcePanel: React.FC<Props> = ({ resources, onSelect, onRequestFullscre
     setExpandedResourceIds((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
+  useEffect(() => {
+    if (groups.length === 0) {
+      if (hasInitializedExpansion) {
+        setHasInitializedExpansion(false);
+      }
+      return;
+    }
+
+    if (hasInitializedExpansion) return;
+
+    const hasExpanded = groups.some((group) => expandedCategories[group.category]);
+    if (hasExpanded) {
+      setHasInitializedExpansion(true);
+      return;
+    }
+
+    const defaultCategory = groups[0]?.category;
+    if (!defaultCategory) return;
+    setExpandedCategories((prev) => ({ ...prev, [defaultCategory]: true }));
+    setHasInitializedExpansion(true);
+  }, [groups, expandedCategories, hasInitializedExpansion]);
+
   const isCategoryExpanded = (category: string) => {
-    if (expandedCategories[category] !== undefined) return expandedCategories[category];
-    return true;
+    return !!expandedCategories[category];
   };
 
   return (
