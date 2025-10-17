@@ -140,6 +140,30 @@ function normaliseTimestamp(rawTimestamp: unknown) {
   return null;
 }
 
+function normaliseFrameIndexValue(value: unknown): number | string | null {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? parsed : trimmed;
+  }
+  return null;
+}
+
+function normaliseTimestampStrict(value: unknown): number | null {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+  return null;
+}
+
 function getFrameSortValue(frame: any) {
   const ts = normaliseTimestamp(frame?.timestamp);
   if (ts !== null) return ts;
@@ -405,6 +429,68 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
           };
           return next;
         });
+      } else if (msg.type === 'frame_thumbnail' && msg.clientId) {
+        const resolvedUrl = normaliseAssetUrl(
+          msg.url ?? msg.thumbnailUrl ?? msg.thumbnail,
+          assetBaseRef.current
+        );
+        if (!resolvedUrl) return;
+
+        const targetFrameIndex = normaliseFrameIndexValue(msg.frameIndex);
+        const targetTimestamp = normaliseTimestampStrict(msg.timestamp);
+        const targetSessionId =
+          typeof msg.sessionId === 'string' && msg.sessionId.trim().length > 0
+            ? msg.sessionId.trim()
+            : null;
+
+        if (targetFrameIndex === null && targetTimestamp === null) {
+          return;
+        }
+
+        const matchesFrame = (frame: any, sessionId: string | null) => {
+          if (targetSessionId && sessionId && targetSessionId !== sessionId) return false;
+
+          if (targetFrameIndex !== null) {
+            const frameIndex = normaliseFrameIndexValue(frame?.frameIndex);
+            if (frameIndex !== null) {
+              if (
+                typeof frameIndex === 'number' &&
+                typeof targetFrameIndex === 'number' &&
+                frameIndex === targetFrameIndex
+              ) {
+                return true;
+              }
+              if (String(frameIndex) === String(targetFrameIndex)) {
+                return true;
+              }
+            }
+          }
+
+          if (targetTimestamp !== null) {
+            const frameTimestamp = normaliseTimestampStrict(frame?.timestamp);
+            if (frameTimestamp !== null && frameTimestamp === targetTimestamp) {
+              return true;
+            }
+          }
+
+          return false;
+        };
+
+        const store = frameStoreRef.current;
+        let didUpdate = false;
+
+        store.entries.forEach((bucket) => {
+          if (!bucket || bucket.clientId !== msg.clientId) return;
+          const sessionId = bucket.sessionId ?? null;
+          if (!matchesFrame(bucket.frame, sessionId)) return;
+          const frame = bucket.frame || {};
+          bucket.frame = { ...frame, thumbnail: resolvedUrl, thumbnailUrl: resolvedUrl };
+          didUpdate = true;
+        });
+
+        if (didUpdate) {
+          scheduleFlush();
+        }
       } else if (msg.type === 'timeline' && msg.clientId && Array.isArray(msg.frames)) {
         for (const frame of msg.frames) {
           ingestFrame(msg.clientId, frame, msg.sessionId);

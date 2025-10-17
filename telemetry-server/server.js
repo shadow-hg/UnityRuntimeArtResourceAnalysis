@@ -43,6 +43,88 @@ const sessionHistory = {};
 const MAX_TIMELINE_LENGTH = 10000;
 const MAX_SESSION_HISTORY = 20;
 
+function sanitiseFilenameSegment(value, fallback) {
+  const str = String(value ?? '').trim();
+  const cleaned = str.replace(/[^a-zA-Z0-9_-]+/g, '_');
+  return cleaned.length > 0 ? cleaned : fallback;
+}
+
+function normaliseFrameIndexValue(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  const str = String(value).trim();
+  if (!str) return null;
+  const parsed = Number(str);
+  return Number.isFinite(parsed) ? parsed : str;
+}
+
+function normaliseTimestampValue(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  const str = String(value).trim();
+  if (!str) return null;
+  const parsed = Date.parse(str);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function frameMatchesTarget(frame, target) {
+  if (!frame || typeof frame !== 'object') return false;
+  if (target.sessionId && frame.sessionId && frame.sessionId !== target.sessionId) return false;
+
+  if (target.frameIndex !== null) {
+    const frameIndex = normaliseFrameIndexValue(frame.frameIndex);
+    if (frameIndex !== null) {
+      if (typeof frameIndex === 'number' && typeof target.frameIndex === 'number' && frameIndex === target.frameIndex) {
+        return true;
+      }
+      if (String(frameIndex) === String(target.frameIndex)) {
+        return true;
+      }
+    }
+  }
+
+  if (target.timestamp !== null) {
+    const frameTimestamp = normaliseTimestampValue(frame.timestamp);
+    if (frameTimestamp !== null && frameTimestamp === target.timestamp) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function applyThumbnailToTimelineFrames(clientId, target, url) {
+  let updated = false;
+
+  const updateFrames = (frames) => {
+    if (!Array.isArray(frames)) return;
+    for (let i = frames.length - 1; i >= 0; i -= 1) {
+      const frame = frames[i];
+      if (!frameMatchesTarget(frame, target)) continue;
+      frame.thumbnail = url;
+      frame.thumbnailUrl = url;
+      updated = true;
+      break;
+    }
+  };
+
+  updateFrames(timelines[clientId]);
+
+  const history = sessionHistory[clientId];
+  if (Array.isArray(history)) {
+    history.forEach((session) => {
+      if (!session || (target.sessionId && session.sessionId !== target.sessionId)) return;
+      updateFrames(session.frames);
+    });
+  }
+
+  return updated;
+}
+
 function createSessionId(clientId) {
   const unique = Math.random().toString(36).slice(2, 10);
   return `${clientId}-${Date.now().toString(36)}-${unique}`;
@@ -447,16 +529,48 @@ app.get('/api/sessions/:clientId', (req, res) => {
 // thumbnail upload (multipart)
 const upload = multer({ dest: THUMBS_DIR });
 app.post('/upload/thumb', upload.single('thumb'), (req, res) => {
-  // rename to clientid-frameIndex.jpg if provided
-  const clientId = req.body.clientId || 'anon';
-  const frameIndex = req.body.frameIndex || Date.now();
+  if (!req.file) {
+    res.status(400).json({ error: 'thumb file required' });
+    return;
+  }
+
+  const rawClientId = typeof req.body.clientId === 'string' ? req.body.clientId : 'anon';
+  const clientId = rawClientId && rawClientId.trim().length > 0 ? rawClientId.trim() : 'anon';
+  const frameIndexValue = normaliseFrameIndexValue(req.body.frameIndex);
+  const timestampValue = normaliseTimestampValue(req.body.timestamp);
+  const sessionId =
+    typeof req.body.sessionId === 'string' && req.body.sessionId.trim().length > 0
+      ? req.body.sessionId.trim()
+      : null;
+
+  const safeClientSegment = sanitiseFilenameSegment(clientId, 'client');
+  const frameSegmentSource =
+    frameIndexValue !== null ? frameIndexValue : timestampValue !== null ? timestampValue : Date.now();
+  const safeFrameSegment = sanitiseFilenameSegment(frameSegmentSource, Date.now().toString(36));
+
   const orig = req.file.path;
-  const ext = path.extname(req.file.originalname) || '.jpg';
-  const newName = `${clientId}-${frameIndex}${ext}`;
+  const ext = path.extname(req.file.originalname || '') || '.jpg';
+  const newName = `${safeClientSegment}-${safeFrameSegment}${ext}`;
   const newPath = path.join(THUMBS_DIR, newName);
+
   fs.renameSync(orig, newPath);
+
   const url = `/thumbs/${newName}`;
-  res.json({ url });
+  const target = { frameIndex: frameIndexValue, timestamp: timestampValue, sessionId };
+  const updated = applyThumbnailToTimelineFrames(clientId, target, url);
+
+  if (updated) {
+    broadcastToBrowsers({
+      type: 'frame_thumbnail',
+      clientId,
+      sessionId,
+      frameIndex: frameIndexValue,
+      timestamp: timestampValue,
+      url
+    });
+  }
+
+  res.json({ url, clientId, frameIndex: frameIndexValue, timestamp: timestampValue, sessionId, updated });
 });
 
 // serve thumbs
