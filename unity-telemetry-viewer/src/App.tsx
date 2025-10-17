@@ -78,12 +78,14 @@ export default function App() {
   useEffect(() => {
     if (clients.length === 0) {
       setSelectedClientId(null);
+      setAutoFollow(false);
+      setPlaying(false);
       return;
     }
     if (!selectedClientId || !clients.includes(selectedClientId)) {
       setSelectedClientId(clients[0]);
-      setAutoFollow(false);
-      setPlaying(false);
+      setAutoFollow(true);
+      setPlaying(true);
     }
   }, [clients, selectedClientId]);
 
@@ -241,8 +243,8 @@ export default function App() {
         activeUrl={wsUrl}
         onConnect={(ip: string, port: string) => {
           setWsUrl(`ws://${ip}:${port}`);
-          setPlaying(false);
-          setAutoFollow(false);
+          setPlaying(true);
+          setAutoFollow(true);
           setCaptureControlsExpanded(false);
           resumeLiveView();
         }}
@@ -257,8 +259,8 @@ export default function App() {
         selectedClientId={selectedClientId}
         onSelectClient={(clientId) => {
           setSelectedClientId(clientId);
-          setPlaying(false);
-          setAutoFollow(false);
+          setPlaying(true);
+          setAutoFollow(true);
           setCaptureControlsExpanded(false);
           resumeLiveView();
         }}

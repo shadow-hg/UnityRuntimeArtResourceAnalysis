@@ -349,6 +349,16 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek, p
     return chartEntries.slice(start, end + 1);
   }, [chartEntries, rangeStart, rangeEnd]);
 
+  const windowEntryMap = useMemo(() => {
+    const map = new Map<number, ChartEntry>();
+    windowEntries.forEach((entry) => {
+      if (typeof entry.index === 'number') {
+        map.set(entry.index, entry);
+      }
+    });
+    return map;
+  }, [windowEntries]);
+
   const memoryMax = useMemo(() => {
     return windowEntries.reduce((maxValue, entry) => {
       return Math.max(maxValue, Number(entry.totalKB) || 0);
@@ -426,26 +436,55 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek, p
     });
   };
 
+  const resolveChartIndex = (state: any): number | null => {
+    if (!state) return null;
+
+    const candidates: number[] = [];
+
+    if (typeof state.activeTooltipIndex === 'number') {
+      const entry = windowEntries[state.activeTooltipIndex];
+      if (entry && typeof entry.index === 'number') {
+        candidates.push(entry.index);
+      }
+    }
+
+    if (Array.isArray(state.activePayload)) {
+      state.activePayload.forEach((payload: any) => {
+        const candidate = payload?.payload?.index;
+        if (typeof candidate === 'number') {
+          candidates.push(candidate);
+        }
+      });
+    }
+
+    if (typeof state.activeLabel === 'number') {
+      candidates.push(state.activeLabel);
+    }
+
+    for (const candidate of candidates) {
+      if (!Number.isFinite(candidate)) continue;
+      const rounded = Math.round(candidate);
+      const entry = windowEntryMap.get(rounded);
+      if (!entry) continue;
+      return entry.index;
+    }
+
+    return null;
+  };
+
   const handleChartClick = (state: any) => {
-    const idx = typeof state?.activeTooltipIndex === 'number' ? state.activeTooltipIndex : null;
-    if (idx === null || idx < 0 || idx >= windowEntries.length) return;
-    const entry = windowEntries[idx];
-    if (!entry) return;
-    seekToIndex(entry.index);
+    const index = resolveChartIndex(state);
+    if (index === null || index < 0) return;
+    seekToIndex(index);
   };
 
   const handleChartHover = (state: any) => {
-    const idx = typeof state?.activeTooltipIndex === 'number' ? state.activeTooltipIndex : null;
-    if (idx === null) {
+    const index = resolveChartIndex(state);
+    if (index === null || index < 0) {
       setHoverIndex(null);
       return;
     }
-    const entry = windowEntries[idx];
-    if (!entry) {
-      setHoverIndex(null);
-      return;
-    }
-    setHoverIndex(entry.index);
+    setHoverIndex(index);
   };
 
   const handleRangeChange = (type: 'start' | 'end', value: number) => {
