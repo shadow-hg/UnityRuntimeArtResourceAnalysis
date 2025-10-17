@@ -15,6 +15,18 @@ if (!fs.existsSync(THUMBS_DIR)) fs.mkdirSync(THUMBS_DIR);
 const app = express();
 const server = http.createServer(app);
 
+app.use((req, res, next) => {
+  const allowedOrigin = process.env.CORS_ORIGIN || '*';
+  res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (req.method === 'OPTIONS') {
+    res.sendStatus(204);
+    return;
+  }
+  next();
+});
+
 // WebSocket server
 const wss = new WebSocket.Server({ server });
 
