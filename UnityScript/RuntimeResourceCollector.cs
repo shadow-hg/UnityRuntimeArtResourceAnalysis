@@ -588,8 +588,7 @@ public static class RuntimeResourceCollector
         }
         catch
         {
-            try { return mesh.canAccess; }
-            catch { return true; }
+            return true;
         }
     }
 
