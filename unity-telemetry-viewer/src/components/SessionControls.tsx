@@ -17,6 +17,8 @@ type Props = {
   speed: number;
   onSpeedChange: (value: number) => void;
   className?: string;
+  captureControlsExpanded: boolean;
+  onToggleCaptureControls?: () => void;
 };
 
 const stateLabels: Record<ConnectionState, { label: string; tone: 'neutral' | 'warning' | 'success' | 'error' }> = {
@@ -41,7 +43,9 @@ const SessionControls: React.FC<Props> = ({
   onStepBack,
   speed,
   onSpeedChange,
-  className
+  className,
+  captureControlsExpanded,
+  onToggleCaptureControls
 }) => {
   const [ip, setIp] = useState('');
   const [port, setPort] = useState('8080');
@@ -69,6 +73,11 @@ const SessionControls: React.FC<Props> = ({
   };
 
   const state = stateLabels[connectionState];
+
+  const actionLabel = isConnected ? '断开' : isConnecting ? '连接中…' : '连接';
+  const actionType = isConnected ? 'button' : 'submit';
+  const actionClassName = `button ${isConnected ? 'button--ghost' : 'button--primary'}`;
+  const actionDisabled = (!isConnected && (!canSubmit || isConnecting)) || (isConnected && isConnecting);
 
   return (
     <section className={`session-controls ${className ?? ''}`}>
@@ -100,14 +109,24 @@ const SessionControls: React.FC<Props> = ({
               />
             </label>
             <div className="session-controls__actions">
-              <button type="submit" className="button button--primary" disabled={!canSubmit || isConnecting}>
-                {isConnecting ? '连接中…' : '连接'}
+              <button
+                type={actionType}
+                className={actionClassName}
+                disabled={actionDisabled}
+                onClick={isConnected ? onDisconnect : undefined}
+              >
+                {actionLabel}
               </button>
-              {isConnected && (
-                <button type="button" className="button button--ghost" onClick={onDisconnect}>
-                  断开
-                </button>
-              )}
+              <button
+                type="button"
+                className={`button button--ghost session-controls__capture-toggle ${
+                  captureControlsExpanded ? 'session-controls__capture-toggle--active' : ''
+                }`}
+                onClick={() => onToggleCaptureControls && onToggleCaptureControls()}
+                aria-pressed={captureControlsExpanded}
+              >
+                {captureControlsExpanded ? '收起采集控制' : '展开采集控制'}
+              </button>
             </div>
           </div>
         </form>

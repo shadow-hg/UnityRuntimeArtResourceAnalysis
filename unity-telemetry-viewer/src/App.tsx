@@ -34,6 +34,7 @@ export default function App() {
   const [displayCatalog, setDisplayCatalog] = useState(catalog);
   const [displayCatalogIndex, setDisplayCatalogIndex] = useState(catalogIndex);
   const [fullscreenPanel, setFullscreenPanel] = useState<'details' | 'resources' | null>(null);
+  const [captureControlsExpanded, setCaptureControlsExpanded] = useState(false);
   const selectedControlState = selectedClientId ? controlState[selectedClientId] : undefined;
 
   useEffect(() => {
@@ -188,6 +189,11 @@ export default function App() {
     requestControlState();
   }, [selectedClientId, connectionState, requestControlState]);
 
+  useEffect(() => {
+    if (!captureControlsExpanded) return;
+    requestControlState();
+  }, [captureControlsExpanded, requestControlState]);
+
   const handleSeek = (idx: number) => {
     if (idx < 0 || idx >= visibleFrames.length) return;
     setSelectedFrame(visibleFrames[idx]);
@@ -225,6 +231,7 @@ export default function App() {
           setWsUrl(null);
           setPlaying(false);
           setAutoFollow(false);
+          setCaptureControlsExpanded(false);
           resumeLiveView();
         }}
       />
@@ -236,12 +243,14 @@ export default function App() {
           setWsUrl(`ws://${ip}:${port}`);
           setPlaying(false);
           setAutoFollow(false);
+          setCaptureControlsExpanded(false);
           resumeLiveView();
         }}
         onDisconnect={() => {
           setWsUrl(null);
           setPlaying(false);
           setAutoFollow(false);
+          setCaptureControlsExpanded(false);
           resumeLiveView();
         }}
         clients={clients}
@@ -250,6 +259,7 @@ export default function App() {
           setSelectedClientId(clientId);
           setPlaying(false);
           setAutoFollow(false);
+          setCaptureControlsExpanded(false);
           resumeLiveView();
         }}
         playing={playing}
@@ -258,6 +268,8 @@ export default function App() {
         onStepBack={() => handleStep(-1)}
         speed={speed}
         onSpeedChange={(value) => setSpeed(value)}
+        captureControlsExpanded={captureControlsExpanded}
+        onToggleCaptureControls={() => setCaptureControlsExpanded((prev) => !prev)}
       />
       <section className={`timeline-section ${fullscreenPanel ? 'timeline-section--dimmed' : ''}`}>
         <Timeline
@@ -267,39 +279,43 @@ export default function App() {
         />
       </section>
       <div className="app-body">
-        <aside className="sidebar sidebar--left">
-          <FrameList
-            frames={visibleFrames}
-            selectedFrameKey={frameKey(selectedFrame)}
-            onSelect={(entry) => {
-              setSelectedFrame(entry);
-              setPlaying(false);
-              setAutoFollow(false);
-              freezeLiveView();
-            }}
-          />
-        </aside>
-        <main className={`main-area ${fullscreenPanel ? 'main-area--dimmed' : ''}`}>
-          <section className="main-top">
-            <div className="frame-viewer-container">
-              <FrameViewer
-                frame={selectedFrame?.frame || null}
-                resourceCatalog={resourceCatalog}
-              />
-              <CaptureControlOverlay
-                clientId={selectedClientId}
-                controlState={selectedControlState}
-                onUpdate={sendControlPatch}
-                onRequestState={requestControlState}
-                maxFrames={maxFrames}
-                onMaxFramesChange={handleMaxFramesChange}
-                latestFrameTimestamp={latestFrameTimestamp}
-                connectionState={connectionState}
-              />
-            </div>
-          </section>
-        </main>
-        <aside className="sidebar sidebar--right">
+        <div className="app-body__upper">
+          <aside className="sidebar sidebar--left">
+            <FrameList
+              frames={visibleFrames}
+              selectedFrameKey={frameKey(selectedFrame)}
+              onSelect={(entry) => {
+                setSelectedFrame(entry);
+                setPlaying(false);
+                setAutoFollow(false);
+                freezeLiveView();
+              }}
+            />
+          </aside>
+          <main className={`main-area ${fullscreenPanel ? 'main-area--dimmed' : ''}`}>
+            <section className="main-top">
+              <div className="frame-viewer-container">
+                <FrameViewer
+                  frame={selectedFrame?.frame || null}
+                  resourceCatalog={resourceCatalog}
+                />
+                <CaptureControlOverlay
+                  clientId={selectedClientId}
+                  controlState={selectedControlState}
+                  onUpdate={sendControlPatch}
+                  onRequestState={requestControlState}
+                  maxFrames={maxFrames}
+                  onMaxFramesChange={handleMaxFramesChange}
+                  latestFrameTimestamp={latestFrameTimestamp}
+                  connectionState={connectionState}
+                  expanded={captureControlsExpanded}
+                  onExpandChange={setCaptureControlsExpanded}
+                />
+              </div>
+            </section>
+          </main>
+        </div>
+        <section className={`bottom-panels ${fullscreenPanel ? 'bottom-panels--dimmed' : ''}`}>
           <ResourcePanel
             resources={resources}
             onSelect={(resource) => {
@@ -317,7 +333,7 @@ export default function App() {
             resourceCatalog={resourceCatalog}
             onRequestFullscreen={() => setFullscreenPanel('details')}
           />
-        </aside>
+        </section>
       </div>
       {fullscreenPanel && (
         <div className="fullscreen-overlay">
