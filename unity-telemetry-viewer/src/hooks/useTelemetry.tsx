@@ -107,11 +107,14 @@ export function useTelemetry(wsUrl?: string | null) {
       return;
     }
 
+    let isActive = true;
+
     const ws = new TelemetryWS(wsUrl, { autoReconnect: true });
     wsRef.current = ws;
     setConnectionState('connecting');
 
     const scheduleFlush = () => {
+      if (!isActive) return;
       if (typeof window === 'undefined') {
         const nextFrames = frameStoreRef.current.order
           .map((key) => {
@@ -127,6 +130,7 @@ export function useTelemetry(wsUrl?: string | null) {
 
       flushHandleRef.current = window.requestAnimationFrame(() => {
         flushHandleRef.current = null;
+        if (!isActive) return;
         const nextFrames = frameStoreRef.current.order
           .map((key) => {
             const bucket = frameStoreRef.current.entries.get(key);
@@ -138,6 +142,7 @@ export function useTelemetry(wsUrl?: string | null) {
     };
 
     const ingestFrame = (clientId: string, frame: any) => {
+      if (!isActive) return;
       if (!clientId || !frame) return;
       const key = makeFrameKey(clientId, frame);
       const store = frameStoreRef.current;
@@ -173,6 +178,7 @@ export function useTelemetry(wsUrl?: string | null) {
     };
 
     const ingestResources = (clientId: string, resources: ResourceEntry[] | undefined) => {
+      if (!isActive) return;
       if (!clientId || !Array.isArray(resources)) return;
       setCatalogMap((prev) => {
         const next = { ...prev };
@@ -188,15 +194,19 @@ export function useTelemetry(wsUrl?: string | null) {
     };
 
     ws.onOpen = () => {
+      if (!isActive) return;
       setConnectionState('open');
     };
     ws.onClose = () => {
+      if (!isActive) return;
       setConnectionState('closed');
     };
     ws.onError = () => {
+      if (!isActive) return;
       setConnectionState('error');
     };
     ws.onMessage = (msg) => {
+      if (!isActive) return;
       if (msg.type === 'frame' && msg.clientId && msg.frame) {
         ingestFrame(msg.clientId, msg.frame);
         if (msg.frame?.resourceSnapshot) {
@@ -221,6 +231,7 @@ export function useTelemetry(wsUrl?: string | null) {
         const clientsResponse = await fetch(`${httpBase}/api/clients`, controller ? { signal: controller.signal } : undefined);
         if (!clientsResponse.ok) return;
         const data = await clientsResponse.json();
+        if (!isActive) return;
         const clientIds: string[] = Array.isArray(data.timelines)
           ? data.timelines
           : Array.isArray(data.clients)
@@ -233,14 +244,17 @@ export function useTelemetry(wsUrl?: string | null) {
               fetch(`${httpBase}/api/timeline/${clientId}`, controller ? { signal: controller.signal } : undefined),
               fetch(`${httpBase}/api/catalog/${clientId}`, controller ? { signal: controller.signal } : undefined)
             ]);
+            if (!isActive) return;
             if (timelineResp.ok) {
               const timelineData = await timelineResp.json();
+              if (!isActive) return;
               if (Array.isArray(timelineData.frames)) {
                 timelineData.frames.forEach((frame: any) => ingestFrame(clientId, frame));
               }
             }
             if (catalogResp.ok) {
               const catalogData = await catalogResp.json();
+              if (!isActive) return;
               const resources = catalogData.catalog ? Object.values(catalogData.catalog) : [];
               ingestResources(clientId, resources as ResourceEntry[]);
             }
@@ -257,6 +271,7 @@ export function useTelemetry(wsUrl?: string | null) {
     bootstrapFromHttp();
 
     return () => {
+      isActive = false;
       if (controller) controller.abort();
       if (flushHandleRef.current !== null && typeof window !== 'undefined') {
         window.cancelAnimationFrame(flushHandleRef.current);
