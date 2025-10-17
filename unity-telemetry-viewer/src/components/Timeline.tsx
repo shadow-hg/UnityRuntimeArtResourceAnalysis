@@ -197,6 +197,8 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek, p
       .map(([category]) => category);
   }, [entries]);
 
+  const topCategoriesKey = useMemo(() => topCategories.join('|'), [topCategories]);
+
   useEffect(() => {
     setVisibleCategories((prev) => {
       if (topCategories.length === 0) return [];
@@ -210,7 +212,7 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek, p
       });
       return next;
     });
-  }, [topCategories]);
+  }, [topCategoriesKey]);
 
   const totalEntries = entries.length;
   const max = Math.max(0, totalEntries - 1);
