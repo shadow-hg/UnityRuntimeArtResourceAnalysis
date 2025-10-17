@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { formatMemoryFromKB, formatNumber, formatSeconds, formatTimestamp } from '../utils/format';
 import {
   buildMaterialSummary,
@@ -25,6 +25,423 @@ type ResourceGroup = {
   sizeKB: number;
   resources: any[];
 };
+
+type SortDirection = 'asc' | 'desc';
+type SortValueType = 'number' | 'string';
+
+type SortContext = {
+  getSummary: (resource: any) => ResourceSummary;
+  getMaterialSummary: (resource: any) => ReturnType<typeof buildMaterialSummary>;
+};
+
+type ResourceSortOption = {
+  id: string;
+  label: string;
+  direction: SortDirection;
+  valueType: SortValueType;
+  getValue: (resource: any, context: SortContext) => number | string | null | undefined;
+};
+
+function pickPositiveNumber(...values: any[]): number | null {
+  for (const value of values) {
+    const num = Number(value);
+    if (Number.isFinite(num) && num > 0) {
+      return num;
+    }
+  }
+  return null;
+}
+
+function parseDimensionString(dimensions: string | null | undefined) {
+  if (!dimensions) return null;
+  const normalised = dimensions.replace(/[×xX]/g, 'x');
+  const parts = normalised.match(/(\d+)/g);
+  if (!parts || parts.length < 2) return null;
+  const width = Number(parts[0]);
+  const height = Number(parts[1]);
+  const depth = parts[2] ? Number(parts[2]) : 1;
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
+  const safeDepth = Number.isFinite(depth) && depth > 0 ? depth : 1;
+  return { width, height, depth: safeDepth };
+}
+
+function computeTexturePixelCount(resource: any, summary: ResourceSummary): number {
+  const width =
+    pickPositiveNumber(
+      resource?.width,
+      resource?.textureWidth,
+      resource?.pixelWidth,
+      resource?.resolution?.width,
+      resource?.size?.width,
+      resource?.dimensions?.width
+    ) ?? null;
+  const height =
+    pickPositiveNumber(
+      resource?.height,
+      resource?.textureHeight,
+      resource?.pixelHeight,
+      resource?.resolution?.height,
+      resource?.size?.height,
+      resource?.dimensions?.height
+    ) ?? null;
+  const depth =
+    pickPositiveNumber(
+      resource?.depth,
+      resource?.textureDepth,
+      resource?.pixelDepth,
+      resource?.resolution?.depth,
+      resource?.size?.depth,
+      resource?.dimensions?.depth
+    ) ?? 1;
+
+  if (width && height) {
+    return width * height * (depth || 1);
+  }
+
+  const parsed = parseDimensionString(summary.dimensions);
+  if (parsed) {
+    return parsed.width * parsed.height * parsed.depth;
+  }
+
+  return 0;
+}
+
+function getShaderPassCount(resource: any): number {
+  if (typeof resource?.passCount === 'number') {
+    return resource.passCount;
+  }
+  if (Array.isArray(resource?.passes)) {
+    return resource.passes.length;
+  }
+  if (Array.isArray(resource?.subShaders)) {
+    return resource.subShaders.reduce((sum: number, subShader: any) => {
+      if (Array.isArray(subShader?.passes)) {
+        return sum + subShader.passes.length;
+      }
+      if (typeof subShader?.passCount === 'number') {
+        return sum + subShader.passCount;
+      }
+      return sum;
+    }, 0);
+  }
+  const numeric = Number(resource?.passes ?? resource?.pass);
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function getShaderVariantCount(resource: any): number {
+  if (typeof resource?.variantCount === 'number') {
+    return resource.variantCount;
+  }
+  if (Array.isArray(resource?.variants)) {
+    return resource.variants.length;
+  }
+  if (Array.isArray(resource?.variantCollection)) {
+    return resource.variantCollection.length;
+  }
+  return 0;
+}
+
+function getShaderKeywordCount(resource: any, context: SortContext): number {
+  if (typeof resource?.keywordCount === 'number') {
+    return resource.keywordCount;
+  }
+  if (Array.isArray(resource?.keywords)) {
+    return resource.keywords.filter(Boolean).length;
+  }
+  const summary = context.getSummary(resource);
+  return summary.keywords.length;
+}
+
+function resolveSelectedSortId(options: ResourceSortOption[], preferredSortId?: string) {
+  if (!options.length) return undefined;
+  if (preferredSortId && options.some((option) => option.id === preferredSortId)) {
+    return preferredSortId;
+  }
+  return options[0]?.id;
+}
+
+function compareSortValues(option: ResourceSortOption, aValue: any, bValue: any): number {
+  const direction = option.direction === 'asc' ? 1 : -1;
+  if (option.valueType === 'string') {
+    const normalise = (value: any) => {
+      if (typeof value === 'string' && value.trim().length > 0) {
+        return value.toLowerCase();
+      }
+      return option.direction === 'asc' ? '\uffff' : '';
+    };
+    const aStr = normalise(aValue);
+    const bStr = normalise(bValue);
+    if (aStr === bStr) return 0;
+    return aStr.localeCompare(bStr, 'zh-Hans-CN') * direction;
+  }
+
+  const normaliseNumber = (value: any) => {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+    return option.direction === 'asc' ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY;
+  };
+
+  const aNum = normaliseNumber(aValue);
+  const bNum = normaliseNumber(bValue);
+  if (aNum === bNum) return 0;
+  return (aNum - bNum) * direction;
+}
+
+function createComparator(
+  options: ResourceSortOption[],
+  selectedSortId: string | undefined,
+  context: SortContext
+) {
+  if (!options.length) {
+    return () => 0;
+  }
+  const selectedOption =
+    (selectedSortId ? options.find((option) => option.id === selectedSortId) : undefined) || options[0];
+  const nameOption = options.find((option) => option.id === 'name');
+
+  return (a: any, b: any) => {
+    const aValue = selectedOption.getValue(a, context);
+    const bValue = selectedOption.getValue(b, context);
+    const primary = compareSortValues(selectedOption, aValue, bValue);
+    if (primary !== 0) return primary;
+
+    if (nameOption && nameOption !== selectedOption) {
+      const nameComparison = compareSortValues(
+        nameOption,
+        nameOption.getValue(a, context),
+        nameOption.getValue(b, context)
+      );
+      if (nameComparison !== 0) return nameComparison;
+    }
+
+    const aName = String(a?.name ?? a?.id ?? '');
+    const bName = String(b?.name ?? b?.id ?? '');
+    return aName.localeCompare(bName, 'zh-Hans-CN');
+  };
+}
+
+function hasSortData(option: ResourceSortOption, resources: any[], context: SortContext) {
+  if (!resources.length) return false;
+  if (option.id === 'memory' || option.id === 'name') return true;
+  return resources.some((resource) => {
+    const value = option.getValue(resource, context);
+    if (option.valueType === 'number') {
+      const num = Number(value);
+      return Number.isFinite(num);
+    }
+    if (option.valueType === 'string') {
+      return typeof value === 'string' && value.trim().length > 0;
+    }
+    return false;
+  });
+}
+
+function buildResourceSortOptions(
+  category: string,
+  resources: any[],
+  context: SortContext
+): ResourceSortOption[] {
+  if (!resources || resources.length === 0) {
+    return [];
+  }
+
+  const options: ResourceSortOption[] = [
+    {
+      id: 'memory',
+      label: '内存占用（大→小）',
+      direction: 'desc',
+      valueType: 'number',
+      getValue: (resource: any) => getDisplayMemoryKB(resource, context.getSummary(resource))
+    }
+  ];
+
+  const categoryKey = (category || '').toLowerCase();
+  const isTextureGroup =
+    isTextureCategory(category) ||
+    categoryKey.includes('texture') ||
+    categoryKey.includes('贴图') ||
+    categoryKey.includes('sprite');
+
+  if (isTextureGroup) {
+    options.push(
+      {
+        id: 'texture-resolution',
+        label: '分辨率（大→小）',
+        direction: 'desc',
+        valueType: 'number',
+        getValue: (resource: any) => computeTexturePixelCount(resource, context.getSummary(resource))
+      },
+      {
+        id: 'texture-mip-count',
+        label: 'MIP 数（多→少）',
+        direction: 'desc',
+        valueType: 'number',
+        getValue: (resource: any) =>
+          Number(
+            resource?.mipCount ??
+              resource?.mipmapCount ??
+              resource?.mipmapLevels ??
+              resource?.mipmapLevel ??
+              0
+          )
+      }
+    );
+  }
+
+  const isShaderGroup = categoryKey.includes('shader') || categoryKey.includes('着色');
+  if (isShaderGroup) {
+    options.push(
+      {
+        id: 'shader-pass-count',
+        label: 'Pass 数（多→少）',
+        direction: 'desc',
+        valueType: 'number',
+        getValue: (resource: any) => getShaderPassCount(resource)
+      },
+      {
+        id: 'shader-keyword-count',
+        label: '关键字数量（多→少）',
+        direction: 'desc',
+        valueType: 'number',
+        getValue: (resource: any) => getShaderKeywordCount(resource, context)
+      },
+      {
+        id: 'shader-variant-count',
+        label: '变体数量（多→少）',
+        direction: 'desc',
+        valueType: 'number',
+        getValue: (resource: any) => getShaderVariantCount(resource)
+      }
+    );
+  }
+
+  const isMaterialGroup = categoryKey.includes('material') || categoryKey.includes('材质');
+  if (isMaterialGroup) {
+    options.push(
+      {
+        id: 'material-texture-count',
+        label: '引用纹理（多→少）',
+        direction: 'desc',
+        valueType: 'number',
+        getValue: (resource: any) => context.getMaterialSummary(resource).textureCount
+      },
+      {
+        id: 'material-render-queue',
+        label: '渲染队列（低→高）',
+        direction: 'asc',
+        valueType: 'number',
+        getValue: (resource: any) =>
+          Number(resource?.renderQueue ?? resource?.queue ?? resource?.renderqueue ?? 0)
+      }
+    );
+  }
+
+  const isMeshGroup = categoryKey.includes('mesh') || categoryKey.includes('网格') || categoryKey.includes('模型');
+  if (isMeshGroup) {
+    options.push(
+      {
+        id: 'mesh-triangle-count',
+        label: '三角形数（多→少）',
+        direction: 'desc',
+        valueType: 'number',
+        getValue: (resource: any) => Number(resource?.triangleCount ?? resource?.triangles ?? resource?.triCount ?? 0)
+      },
+      {
+        id: 'mesh-vertex-count',
+        label: '顶点数（多→少）',
+        direction: 'desc',
+        valueType: 'number',
+        getValue: (resource: any) => Number(resource?.vertexCount ?? resource?.vertices ?? 0)
+      },
+      {
+        id: 'mesh-submesh-count',
+        label: '子网格数（多→少）',
+        direction: 'desc',
+        valueType: 'number',
+        getValue: (resource: any) =>
+          Number(
+            resource?.subMeshCount ??
+              resource?.submeshCount ??
+              (Array.isArray(resource?.subMeshes) ? resource.subMeshes.length : 0) ??
+              (Array.isArray(resource?.submeshes) ? resource.submeshes.length : 0)
+          )
+      }
+    );
+  }
+
+  const isAnimationGroup = categoryKey.includes('animation') || categoryKey.includes('anim') || categoryKey.includes('动画');
+  if (isAnimationGroup) {
+    options.push(
+      {
+        id: 'animation-length',
+        label: '时长（长→短）',
+        direction: 'desc',
+        valueType: 'number',
+        getValue: (resource: any) => Number(resource?.length ?? resource?.duration ?? 0)
+      },
+      {
+        id: 'animation-frame-rate',
+        label: '帧率（高→低）',
+        direction: 'desc',
+        valueType: 'number',
+        getValue: (resource: any) => Number(resource?.frameRate ?? resource?.fps ?? 0)
+      }
+    );
+  }
+
+  const isAudioGroup = categoryKey.includes('audio') || categoryKey.includes('sound') || categoryKey.includes('声音');
+  if (isAudioGroup) {
+    options.push(
+      {
+        id: 'audio-length',
+        label: '时长（长→短）',
+        direction: 'desc',
+        valueType: 'number',
+        getValue: (resource: any) =>
+          Number(resource?.length ?? resource?.duration ?? resource?.time ?? 0)
+      },
+      {
+        id: 'audio-sample-rate',
+        label: '采样率（高→低）',
+        direction: 'desc',
+        valueType: 'number',
+        getValue: (resource: any) => Number(resource?.sampleRate ?? resource?.frequency ?? resource?.hz ?? 0)
+      },
+      {
+        id: 'audio-channels',
+        label: '声道数（多→少）',
+        direction: 'desc',
+        valueType: 'number',
+        getValue: (resource: any) => Number(resource?.channels ?? resource?.channelCount ?? 0)
+      }
+    );
+  }
+
+  const nameOption: ResourceSortOption = {
+    id: 'name',
+    label: '名称（A→Z）',
+    direction: 'asc',
+    valueType: 'string',
+    getValue: (resource: any) => String(resource?.name ?? resource?.id ?? '')
+  };
+
+  options.push(nameOption);
+
+  const unique = new Map<string, ResourceSortOption>();
+  options.forEach((option) => {
+    if (!unique.has(option.id)) {
+      unique.set(option.id, option);
+    }
+  });
+
+  const uniqueOptions = Array.from(unique.values());
+  return uniqueOptions.filter((option) => hasSortData(option, resources, context));
+}
 
 const FrameDetails: React.FC<Props> = ({ frame, resourceCatalog, onRequestFullscreen, isFullscreen }) => {
   if (!frame) {
@@ -65,6 +482,53 @@ const FrameDetails: React.FC<Props> = ({ frame, resourceCatalog, onRequestFullsc
   );
 
   const summaryCache = useMemo(() => new WeakMap<any, ResourceSummary>(), []);
+  const materialSummaryCache = useMemo(
+    () => new WeakMap<any, ReturnType<typeof buildMaterialSummary>>(),
+    []
+  );
+
+  const getResourceSummary = useCallback(
+    (resource: any): ResourceSummary => {
+      if (!resource || (typeof resource !== 'object' && typeof resource !== 'function')) {
+        return buildResourceSummary(resource);
+      }
+      let summary = summaryCache.get(resource);
+      if (!summary) {
+        summary = buildResourceSummary(resource);
+        summaryCache.set(resource, summary);
+      }
+      return summary;
+    },
+    [summaryCache]
+  );
+
+  const getMaterialSummaryCached = useCallback(
+    (resource: any) => {
+      if (!resource || (typeof resource !== 'object' && typeof resource !== 'function')) {
+        return buildMaterialSummary(resource);
+      }
+      let summary = materialSummaryCache.get(resource);
+      if (!summary) {
+        summary = buildMaterialSummary(resource);
+        materialSummaryCache.set(resource, summary);
+      }
+      return summary;
+    },
+    [materialSummaryCache]
+  );
+
+  const sortContext = useMemo<SortContext>(
+    () => ({
+      getSummary: getResourceSummary,
+      getMaterialSummary: getMaterialSummaryCached
+    }),
+    [getResourceSummary, getMaterialSummaryCached]
+  );
+
+  const getResourceSortOptions = useCallback(
+    (category: string, resources: any[]) => buildResourceSortOptions(category, resources, sortContext),
+    [sortContext]
+  );
 
   const detailedResourceGroups = useMemo<ResourceGroup[]>(() => {
     if (!activeResources || activeResources.length === 0) return [];
@@ -72,17 +536,14 @@ const FrameDetails: React.FC<Props> = ({ frame, resourceCatalog, onRequestFullsc
     for (const resource of activeResources) {
       const category = getResourceCategory(resource);
       const group = groups.get(category) || { category, count: 0, sizeKB: 0, resources: [] };
-      const summary = summaryCache.get(resource) || buildResourceSummary(resource);
-      if (!summaryCache.has(resource)) {
-        summaryCache.set(resource, summary);
-      }
+      const summary = getResourceSummary(resource);
       group.count += 1;
       group.sizeKB += getDisplayMemoryKB(resource, summary);
       group.resources.push(resource);
       groups.set(category, group);
     }
     return Array.from(groups.values()).sort((a, b) => b.sizeKB - a.sizeKB);
-  }, [activeResources, summaryCache]);
+  }, [activeResources, getResourceSummary]);
 
   const fallbackResourceStats = useMemo(() => {
     if (!Array.isArray(frame.resourceStats)) return [] as ResourceGroup[];
@@ -97,12 +558,36 @@ const FrameDetails: React.FC<Props> = ({ frame, resourceCatalog, onRequestFullsc
   }, [frame.resourceStats]);
 
   const resourceGroups = detailedResourceGroups.length > 0 ? detailedResourceGroups : fallbackResourceStats;
+  const [categorySorts, setCategorySorts] = useState<Record<string, string>>({});
   const [resourceFilter, setResourceFilter] = useState('');
+
+  const applySortingToGroups = useCallback(
+    (groups: ResourceGroup[]) => {
+      return groups.map((group) => {
+        if (!group.resources || group.resources.length === 0) {
+          return group;
+        }
+        const options = getResourceSortOptions(group.category, group.resources);
+        if (options.length === 0) {
+          return group;
+        }
+        const selectedSortId = resolveSelectedSortId(options, categorySorts[group.category]);
+        const comparator = createComparator(options, selectedSortId, sortContext);
+        return {
+          ...group,
+          resources: [...group.resources].sort(comparator)
+        };
+      });
+    },
+    [categorySorts, getResourceSortOptions, sortContext]
+  );
 
   const displayedResourceGroups = useMemo<ResourceGroup[]>(() => {
     const query = resourceFilter.trim().toLowerCase();
+    const applySort = (groups: ResourceGroup[]) => applySortingToGroups(groups);
+
     if (!query) {
-      return resourceGroups;
+      return applySort(resourceGroups);
     }
 
     if (detailedResourceGroups.length > 0) {
@@ -123,10 +608,7 @@ const FrameDetails: React.FC<Props> = ({ frame, resourceCatalog, onRequestFullsc
           }
 
           const sizeKB = matchingResources.reduce((sum, resource) => {
-            const summary = summaryCache.get(resource) || buildResourceSummary(resource);
-            if (!summaryCache.has(resource)) {
-              summaryCache.set(resource, summary);
-            }
+            const summary = getResourceSummary(resource);
             return sum + getDisplayMemoryKB(resource, summary);
           }, 0);
 
@@ -139,11 +621,21 @@ const FrameDetails: React.FC<Props> = ({ frame, resourceCatalog, onRequestFullsc
         })
         .filter((group): group is ResourceGroup => Boolean(group));
 
-      return filtered.sort((a, b) => b.sizeKB - a.sizeKB);
+      return applySort(filtered.sort((a, b) => b.sizeKB - a.sizeKB));
     }
 
-    return fallbackResourceStats.filter((stat) => stat.category.toLowerCase().includes(query));
-  }, [resourceFilter, resourceGroups, detailedResourceGroups, fallbackResourceStats, summaryCache]);
+    const filteredFallback = fallbackResourceStats.filter((stat) =>
+      stat.category.toLowerCase().includes(query)
+    );
+    return applySort(filteredFallback);
+  }, [
+    resourceFilter,
+    resourceGroups,
+    detailedResourceGroups,
+    fallbackResourceStats,
+    applySortingToGroups,
+    getResourceSummary
+  ]);
 
   const resourceTotalKB = useMemo(() => {
     if (detailedResourceGroups.length > 0) {
@@ -176,6 +668,43 @@ const FrameDetails: React.FC<Props> = ({ frame, resourceCatalog, onRequestFullsc
       0
     );
   }, [resourceFilter, resourceTotalKB, detailedResourceGroups, displayedResourceGroups]);
+
+  useEffect(() => {
+    setCategorySorts((prev) => {
+      const next: Record<string, string> = {};
+      let changed = false;
+
+      for (const group of resourceGroups) {
+        if (!group.resources || group.resources.length === 0) continue;
+        const options = getResourceSortOptions(group.category, group.resources);
+        if (options.length === 0) continue;
+        const resolved = resolveSelectedSortId(options, prev[group.category]);
+        if (resolved) {
+          next[group.category] = resolved;
+        }
+        if (resolved !== prev[group.category]) {
+          changed = true;
+        }
+      }
+
+      const prevKeys = Object.keys(prev);
+      const nextKeys = Object.keys(next);
+      if (!changed) {
+        if (prevKeys.length !== nextKeys.length) {
+          changed = true;
+        } else {
+          for (const key of nextKeys) {
+            if (prev[key] !== next[key]) {
+              changed = true;
+              break;
+            }
+          }
+        }
+      }
+
+      return changed ? next : prev;
+    });
+  }, [resourceGroups, getResourceSortOptions]);
 
   const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
   const [expandedResourceKey, setExpandedResourceKey] = useState<string | null>(null);
@@ -316,11 +845,15 @@ const FrameDetails: React.FC<Props> = ({ frame, resourceCatalog, onRequestFullsc
             <div className="resource-breakdown">
               {displayedResourceGroups.map((stat) => {
                 const isExpanded = expandedCategory === stat.category;
+                const resources = stat.resources ?? [];
                 const percentage =
                   displayedResourceTotalKB > 0
                     ? Math.max(1.5, (stat.sizeKB / displayedResourceTotalKB) * 100)
                     : 0;
                 const labelId = `resource-cat-${stat.category}`;
+                const sortOptions = getResourceSortOptions(stat.category, resources);
+                const resolvedSortId = resolveSelectedSortId(sortOptions, categorySorts[stat.category]);
+                const showSortControl = sortOptions.length > 1;
                 return (
                   <div key={stat.category} className="resource-breakdown__group">
                     <button
@@ -342,20 +875,47 @@ const FrameDetails: React.FC<Props> = ({ frame, resourceCatalog, onRequestFullsc
                       </div>
                       <div className="resource-breakdown__value">{formatMemoryFromKB(stat.sizeKB)}</div>
                     </button>
-                    {isExpanded && stat.resources && stat.resources.length > 0 && (
+                    {isExpanded && resources.length > 0 && (
                       <div className="resource-breakdown__details" id={labelId}>
-                        {stat.resources.map((res, index) => {
+                        {showSortControl && (
+                          <div className="resource-breakdown__sort">
+                            <label>
+                              <span>排序方式</span>
+                              <select
+                                className="input"
+                                value={resolvedSortId ?? ''}
+                                onChange={(event) =>
+                                  setCategorySorts((prev) => {
+                                    const nextValue = event.target.value;
+                                    if (prev[stat.category] === nextValue) {
+                                      return prev;
+                                    }
+                                    return { ...prev, [stat.category]: nextValue };
+                                  })
+                                }
+                              >
+                                {sortOptions.map((option) => (
+                                  <option key={option.id} value={option.id}>
+                                    {option.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          </div>
+                        )}
+                        {resources.map((res, index) => {
                           const resourceKey = res.id || `${res.name || stat.category}-${index}`;
-                          const summary = summaryCache.get(res) || buildResourceSummary(res);
-                          if (!summaryCache.has(res)) {
-                            summaryCache.set(res, summary);
-                          }
-                          const materialSummary = stat.category === 'Material' ? buildMaterialSummary(res) : null;
+                          const summary = getResourceSummary(res);
+                          const resourceCategory = getResourceCategory(res);
+                          const isMaterialCategory =
+                            /material|材质/i.test(stat.category) || /material|材质/i.test(resourceCategory);
+                          const materialSummary = isMaterialCategory ? getMaterialSummaryCached(res) : null;
+                          const isMeshCategory =
+                            /mesh|网格|模型/i.test(stat.category) || /mesh|网格|模型/i.test(resourceCategory);
+                          const meshSummary = isMeshCategory ? describeMesh(res) : [];
                           const isResourceExpanded = expandedResourceKey === resourceKey;
                           const displayMemory = getDisplayMemoryKB(res, summary);
                           const runtimeMemory = summary.runtimeKB || summary.originalKB;
-                          const meshSummary = stat.category === 'Mesh' ? describeMesh(res) : [];
-                          const resourceCategory = getResourceCategory(res);
                           const isTextureResource =
                             isTextureCategory(resourceCategory) || (!resourceCategory && isTextureCategory(stat.category));
                           const compressedMemory = summary.compressedKB;
@@ -451,6 +1011,18 @@ const FrameDetails: React.FC<Props> = ({ frame, resourceCatalog, onRequestFullsc
                                         <div>
                                           <dt>格式</dt>
                                           <dd>{summary.format}</dd>
+                                        </div>
+                                      )}
+                                      {res.passCount && (
+                                        <div>
+                                          <dt>Pass 数</dt>
+                                          <dd>{formatNumber(res.passCount)}</dd>
+                                        </div>
+                                      )}
+                                      {res.keywordCount && (
+                                        <div>
+                                          <dt>关键字</dt>
+                                          <dd>{formatNumber(res.keywordCount)}</dd>
                                         </div>
                                       )}
                                       {res.vertexCount && (
