@@ -698,6 +698,50 @@ body {
   font-size: 12px;
 }
 
+.frame-viewer__details-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.frame-viewer__texture-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.frame-viewer__texture-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.frame-viewer__texture-name {
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.frame-viewer__texture-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.frame-viewer__texture-meta span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.frame-viewer__texture-meta-secondary {
+  color: rgba(148, 163, 184, 0.9);
+}
+
 .frame-viewer-container {
   position: relative;
   padding-bottom: 96px;
@@ -1290,7 +1334,7 @@ body {
   background: none;
   appearance: none;
   -webkit-appearance: none;
-  pointer-events: auto;
+  pointer-events: none;
 }
 
 .timeline-panel__range-input--start {
@@ -1299,6 +1343,7 @@ body {
 
 .timeline-panel__range-input--end {
   z-index: 1;
+  pointer-events: auto;
 }
 
 .timeline-panel__range-input::-webkit-slider-runnable-track {
@@ -1322,6 +1367,7 @@ body {
   box-shadow: 0 4px 12px rgba(15, 23, 42, 0.25);
   cursor: pointer;
   margin-top: -6px;
+  pointer-events: auto;
 }
 
 .timeline-panel__range-input::-moz-range-thumb {
@@ -1332,6 +1378,7 @@ body {
   background: #f8fafc;
   box-shadow: 0 4px 12px rgba(15, 23, 42, 0.25);
   cursor: pointer;
+  pointer-events: auto;
 }
 
 .timeline-panel__scale {

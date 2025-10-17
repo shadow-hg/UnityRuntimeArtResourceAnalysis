@@ -293,29 +293,32 @@ export default function App() {
             />
           </aside>
           <main className={`main-area ${fullscreenPanel ? 'main-area--dimmed' : ''}`}>
-            <section className="main-top">
-              <div className="frame-viewer-container">
-                <FrameViewer
-                  frame={selectedFrame?.frame || null}
-                  resourceCatalog={resourceCatalog}
-                />
-                <CaptureControlOverlay
-                  clientId={selectedClientId}
-                  controlState={selectedControlState}
-                  onUpdate={sendControlPatch}
-                  onRequestState={requestControlState}
-                  maxFrames={maxFrames}
-                  onMaxFramesChange={handleMaxFramesChange}
-                  latestFrameTimestamp={latestFrameTimestamp}
-                  connectionState={connectionState}
-                  expanded={captureControlsExpanded}
-                  onExpandChange={setCaptureControlsExpanded}
-                />
-              </div>
-            </section>
+            <FrameDetails
+              frame={selectedFrame?.frame || null}
+              resourceCatalog={resourceCatalog}
+              onRequestFullscreen={() => setFullscreenPanel('details')}
+            />
           </main>
         </div>
         <section className={`bottom-panels ${fullscreenPanel ? 'bottom-panels--dimmed' : ''}`}>
+          <div className="frame-viewer-container">
+            <FrameViewer
+              frame={selectedFrame?.frame || null}
+              resourceCatalog={resourceCatalog}
+            />
+            <CaptureControlOverlay
+              clientId={selectedClientId}
+              controlState={selectedControlState}
+              onUpdate={sendControlPatch}
+              onRequestState={requestControlState}
+              maxFrames={maxFrames}
+              onMaxFramesChange={handleMaxFramesChange}
+              latestFrameTimestamp={latestFrameTimestamp}
+              connectionState={connectionState}
+              expanded={captureControlsExpanded}
+              onExpandChange={setCaptureControlsExpanded}
+            />
+          </div>
           <ResourcePanel
             resources={resources}
             onSelect={(resource) => {
@@ -327,11 +330,6 @@ export default function App() {
               }
             }}
             onRequestFullscreen={() => setFullscreenPanel('resources')}
-          />
-          <FrameDetails
-            frame={selectedFrame?.frame || null}
-            resourceCatalog={resourceCatalog}
-            onRequestFullscreen={() => setFullscreenPanel('details')}
           />
         </section>
       </div>
