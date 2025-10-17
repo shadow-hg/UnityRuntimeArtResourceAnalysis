@@ -14,10 +14,70 @@ type ResourceCatalog = Record<string, Record<string, ResourceEntry>>;
 
 const MAX_FRAMES = 2000;
 
+type FrameBucket = {
+  clientId: string;
+  frame: any;
+  sortValue: number;
+};
+
+type FrameStore = {
+  order: string[];
+  entries: Map<string, FrameBucket>;
+};
+
+function createFrameStore(): FrameStore {
+  return {
+    order: [],
+    entries: new Map()
+  };
+}
+
 function makeFrameKey(clientId: string, frame: any) {
   const index = frame?.frameIndex ?? 'n/a';
   const timestamp = frame?.timestamp ?? 'ts';
   return `${clientId}:${index}:${timestamp}`;
+}
+
+function normaliseTimestamp(rawTimestamp: unknown) {
+  if (typeof rawTimestamp === 'number') {
+    return Number.isFinite(rawTimestamp) ? rawTimestamp : 0;
+  }
+  if (typeof rawTimestamp === 'string') {
+    const parsed = Date.parse(rawTimestamp);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return null;
+}
+
+function getFrameSortValue(frame: any) {
+  const ts = normaliseTimestamp(frame?.timestamp);
+  if (ts !== null) return ts;
+  if (typeof frame?.frameIndex === 'number' && Number.isFinite(frame.frameIndex)) {
+    return frame.frameIndex;
+  }
+  if (typeof frame?.dt === 'number' && Number.isFinite(frame.dt)) {
+    return Date.now() - frame.dt * 1000;
+  }
+  return Date.now();
+}
+
+function findInsertIndex(store: FrameStore, sortValue: number) {
+  const { order, entries } = store;
+  let low = 0;
+  let high = order.length;
+
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    const midKey = order[mid];
+    const midValue = entries.get(midKey)?.sortValue ?? 0;
+    if (midValue <= sortValue) {
+      low = mid + 1;
+    } else {
+      high = mid;
+    }
+  }
+
+  return low;
 }
 
 export function useTelemetry(wsUrl?: string | null) {
@@ -25,13 +85,18 @@ export function useTelemetry(wsUrl?: string | null) {
   const [catalogMap, setCatalogMap] = useState<ResourceCatalog>({});
   const [connectionState, setConnectionState] = useState<ConnectionState>('idle');
   const wsRef = useRef<TelemetryWS | null>(null);
-  const frameKeySetRef = useRef<Set<string>>(new Set());
+  const frameStoreRef = useRef<FrameStore>(createFrameStore());
+  const flushHandleRef = useRef<number | null>(null);
 
   useEffect(() => {
     // reset when URL changes
     setFrames([]);
     setCatalogMap({});
-    frameKeySetRef.current = new Set();
+    if (flushHandleRef.current !== null && typeof window !== 'undefined') {
+      window.cancelAnimationFrame(flushHandleRef.current);
+      flushHandleRef.current = null;
+    }
+    frameStoreRef.current = createFrameStore();
 
     if (!wsUrl) {
       setConnectionState('idle');
@@ -42,41 +107,69 @@ export function useTelemetry(wsUrl?: string | null) {
       return;
     }
 
-    const ws = new TelemetryWS(wsUrl);
+    const ws = new TelemetryWS(wsUrl, { autoReconnect: true });
     wsRef.current = ws;
     setConnectionState('connecting');
+
+    const scheduleFlush = () => {
+      if (typeof window === 'undefined') {
+        const nextFrames = frameStoreRef.current.order
+          .map((key) => {
+            const bucket = frameStoreRef.current.entries.get(key);
+            return bucket ? { clientId: bucket.clientId, frame: bucket.frame } : null;
+          })
+          .filter((entry): entry is Frame => entry !== null);
+        setFrames(nextFrames);
+        return;
+      }
+
+      if (flushHandleRef.current !== null) return;
+
+      flushHandleRef.current = window.requestAnimationFrame(() => {
+        flushHandleRef.current = null;
+        const nextFrames = frameStoreRef.current.order
+          .map((key) => {
+            const bucket = frameStoreRef.current.entries.get(key);
+            return bucket ? { clientId: bucket.clientId, frame: bucket.frame } : null;
+          })
+          .filter((entry): entry is Frame => entry !== null);
+        setFrames(nextFrames);
+      });
+    };
 
     const ingestFrame = (clientId: string, frame: any) => {
       if (!clientId || !frame) return;
       const key = makeFrameKey(clientId, frame);
-      setFrames((prev) => {
-        const existingIndex = prev.findIndex((entry) => makeFrameKey(entry.clientId, entry.frame) === key);
-        if (existingIndex >= 0) {
-          const next = [...prev];
-          next[existingIndex] = { clientId, frame };
-          return next;
-        }
+      const store = frameStoreRef.current;
+      const sortValue = getFrameSortValue(frame);
+      const existing = store.entries.get(key);
 
-        if (frameKeySetRef.current.has(key)) {
-          return prev;
-        }
-
-        const next = [...prev, { clientId, frame }];
-        next.sort((a, b) => {
-          const ta = Number(a.frame?.timestamp ?? 0);
-          const tb = Number(b.frame?.timestamp ?? 0);
-          return ta - tb;
-        });
-        frameKeySetRef.current.add(key);
-        if (next.length > MAX_FRAMES) {
-          const removed = next.shift();
-          if (removed) {
-            const removedKey = makeFrameKey(removed.clientId, removed.frame);
-            frameKeySetRef.current.delete(removedKey);
+      if (existing) {
+        const previousSortValue = existing.sortValue;
+        existing.frame = frame;
+        existing.sortValue = sortValue;
+        if (previousSortValue !== sortValue) {
+          const currentIndex = store.order.indexOf(key);
+          if (currentIndex >= 0) {
+            store.order.splice(currentIndex, 1);
+            const insertIndex = findInsertIndex(store, sortValue);
+            store.order.splice(insertIndex, 0, key);
           }
         }
-        return next;
-      });
+      } else {
+        store.entries.set(key, { clientId, frame, sortValue });
+        const insertIndex = findInsertIndex(store, sortValue);
+        store.order.splice(insertIndex, 0, key);
+
+        if (store.order.length > MAX_FRAMES) {
+          const removedKey = store.order.shift();
+          if (removedKey) {
+            store.entries.delete(removedKey);
+          }
+        }
+      }
+
+      scheduleFlush();
     };
 
     const ingestResources = (clientId: string, resources: ResourceEntry[] | undefined) => {
@@ -120,15 +213,14 @@ export function useTelemetry(wsUrl?: string | null) {
 
     ws.connect();
 
-    const httpBase = wsUrl.replace(/^ws/i, 'http');
-    let aborted = false;
+    const httpBase = wsUrl.replace(/^ws/i, wsUrl.startsWith('wss') ? 'https' : 'http');
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
 
     async function bootstrapFromHttp() {
       try {
-        const clientsResponse = await fetch(`${httpBase}/api/clients`);
+        const clientsResponse = await fetch(`${httpBase}/api/clients`, controller ? { signal: controller.signal } : undefined);
         if (!clientsResponse.ok) return;
         const data = await clientsResponse.json();
-        if (aborted) return;
         const clientIds: string[] = Array.isArray(data.timelines)
           ? data.timelines
           : Array.isArray(data.clients)
@@ -138,10 +230,9 @@ export function useTelemetry(wsUrl?: string | null) {
         await Promise.all(clientIds.map(async (clientId: string) => {
           try {
             const [timelineResp, catalogResp] = await Promise.all([
-              fetch(`${httpBase}/api/timeline/${clientId}`),
-              fetch(`${httpBase}/api/catalog/${clientId}`)
+              fetch(`${httpBase}/api/timeline/${clientId}`, controller ? { signal: controller.signal } : undefined),
+              fetch(`${httpBase}/api/catalog/${clientId}`, controller ? { signal: controller.signal } : undefined)
             ]);
-            if (aborted) return;
             if (timelineResp.ok) {
               const timelineData = await timelineResp.json();
               if (Array.isArray(timelineData.frames)) {
@@ -157,7 +248,8 @@ export function useTelemetry(wsUrl?: string | null) {
             console.warn('Bootstrap fetch failed for client', clientId, error);
           }
         }));
-      } catch (error) {
+      } catch (error: any) {
+        if (error?.name === 'AbortError') return;
         console.warn('Bootstrap fetch failed', error);
       }
     }
@@ -165,7 +257,11 @@ export function useTelemetry(wsUrl?: string | null) {
     bootstrapFromHttp();
 
     return () => {
-      aborted = true;
+      if (controller) controller.abort();
+      if (flushHandleRef.current !== null && typeof window !== 'undefined') {
+        window.cancelAnimationFrame(flushHandleRef.current);
+        flushHandleRef.current = null;
+      }
       ws.close();
       wsRef.current = null;
     };

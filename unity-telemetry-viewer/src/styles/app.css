@@ -352,6 +352,28 @@ body {
   padding-right: 4px;
 }
 
+.frame-list__content::-webkit-scrollbar,
+.resource-panel__list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.frame-list__content::-webkit-scrollbar-thumb,
+.resource-panel__list::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.35);
+  border-radius: 999px;
+}
+
+.frame-list__content::-webkit-scrollbar-track,
+.resource-panel__list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.frame-list__content,
+.resource-panel__list {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.35) transparent;
+}
+
 .frame-list__item {
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid transparent;
@@ -998,5 +1020,16 @@ body {
 
   .resource-panel__summary {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
