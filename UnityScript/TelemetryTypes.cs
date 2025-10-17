@@ -11,6 +11,9 @@ public class ResourceEntry
     public int width;
     public int height;
     public int sizeKB;
+    public int runtimeSizeKB;
+    public int compressedSizeKB;
+    public int sizeAfterCompressionKB;
     public string format;
     public int depth;
     public int mipCount;

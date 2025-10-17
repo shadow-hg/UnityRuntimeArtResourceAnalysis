@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Area,
   CartesianGrid,
@@ -109,12 +109,20 @@ const FALLBACK_COLORS = ['#0ea5e9', '#8b5cf6', '#ec4899', '#14b8a6', '#f59e0b', 
 
 const MAX_STACK_CATEGORIES = 5;
 
+const DEFAULT_WINDOW_SIZE = 600;
+
 const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek }) => {
   const [localIndex, setLocalIndex] = useState<number>(currentIndex);
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const [visibleCategories, setVisibleCategories] = useState<string[]>([]);
   const [showTotal, setShowTotal] = useState(true);
   const [showFps, setShowFps] = useState(true);
+  const [rangeStart, setRangeStart] = useState(0);
+  const [rangeEnd, setRangeEnd] = useState(0);
+  const hasInitializedRangeRef = useRef(false);
+  const previousMaxRef = useRef(-1);
+  const rangeStartRef = useRef(0);
+  const rangeEndRef = useRef(0);
 
   useEffect(() => {
     setLocalIndex(currentIndex);
@@ -199,9 +207,83 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
   }, [topCategories]);
 
   const max = Math.max(0, entries.length - 1);
-  const clampedIndex = Math.min(localIndex, max);
-  const effectiveIndex = entries.length === 0 ? -1 : (clampedIndex >= 0 ? clampedIndex : max);
-  const activeIndex = hoverIndex !== null ? hoverIndex : effectiveIndex;
+
+  useEffect(() => {
+    if (max < 0) {
+      setRangeStart(0);
+      setRangeEnd(0);
+      rangeStartRef.current = 0;
+      rangeEndRef.current = 0;
+      hasInitializedRangeRef.current = false;
+      return;
+    }
+
+    const prevMax = previousMaxRef.current;
+    previousMaxRef.current = max;
+
+    setRangeStart((prev) => {
+      const next = Math.min(prev, max);
+      rangeStartRef.current = next;
+      return next;
+    });
+
+    setRangeEnd((prev) => {
+      let next = Math.min(Math.max(prev, rangeStartRef.current), max);
+
+      const windowSize = Math.max(0, rangeEndRef.current - rangeStartRef.current);
+
+      if (!hasInitializedRangeRef.current && max > 0) {
+        next = max;
+        rangeEndRef.current = next;
+        const start = Math.max(0, next - Math.min(DEFAULT_WINDOW_SIZE, max));
+        rangeStartRef.current = start;
+        hasInitializedRangeRef.current = true;
+        setRangeStart(start);
+        return next;
+      }
+
+      if (max > prevMax && rangeEndRef.current === prevMax) {
+        next = max;
+        const start = Math.max(0, next - windowSize);
+        rangeStartRef.current = start;
+        setRangeStart(start);
+      }
+
+      rangeEndRef.current = next;
+      return next;
+    });
+  }, [max]);
+
+  useEffect(() => {
+    rangeStartRef.current = rangeStart;
+  }, [rangeStart]);
+
+  useEffect(() => {
+    rangeEndRef.current = rangeEnd;
+  }, [rangeEnd]);
+
+  const clampToRange = (value: number) => {
+    if (rangeEnd < rangeStart) return -1;
+    if (value < rangeStart) return rangeStart;
+    if (value > rangeEnd) return rangeEnd;
+    return value;
+  };
+
+  useEffect(() => {
+    setLocalIndex((prev) => {
+      if (prev < 0) return prev;
+      return clampToRange(prev);
+    });
+    setHoverIndex((prev) => {
+      if (prev === null) return prev;
+      const clamped = clampToRange(prev);
+      return clamped >= 0 ? clamped : null;
+    });
+  }, [rangeStart, rangeEnd]);
+
+  const clampedIndex = clampToRange(localIndex >= 0 ? localIndex : rangeEnd);
+  const effectiveIndex = entries.length === 0 ? -1 : (clampedIndex >= 0 ? clampedIndex : rangeEnd);
+  const activeIndex = hoverIndex !== null ? clampToRange(hoverIndex) : effectiveIndex;
   const currentEntry = activeIndex >= 0 ? entries[activeIndex] : null;
   const currentStats = currentEntry ? currentEntry.stats.slice(0, 5) : [];
 
@@ -222,39 +304,55 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
     });
   }, [entries, topCategories]);
 
+  const windowEntries = useMemo(() => {
+    if (chartEntries.length === 0) return [] as ChartEntry[];
+    const start = Math.max(0, Math.min(rangeStart, chartEntries.length - 1));
+    const end = Math.max(start, Math.min(rangeEnd, chartEntries.length - 1));
+    return chartEntries.slice(start, end + 1);
+  }, [chartEntries, rangeStart, rangeEnd]);
+
   const memoryMax = useMemo(() => {
-    return chartEntries.reduce((maxValue, entry) => {
+    return windowEntries.reduce((maxValue, entry) => {
       return Math.max(maxValue, Number(entry.totalKB) || 0);
     }, 0);
-  }, [chartEntries]);
+  }, [windowEntries]);
 
   const fpsMax = useMemo(() => {
-    return chartEntries.reduce((maxValue, entry) => {
+    return windowEntries.reduce((maxValue, entry) => {
       return Math.max(maxValue, typeof entry.fps === 'number' ? entry.fps : 0);
     }, 0);
-  }, [chartEntries]);
+  }, [windowEntries]);
 
   const hasFpsData = useMemo(() => fpsMax > 0, [fpsMax]);
 
   const xTicks = useMemo(() => {
-    if (chartEntries.length <= 1) return chartEntries.map((entry) => Number(entry.index));
-    const lastIndex = Number(chartEntries[chartEntries.length - 1]?.index ?? 0);
-    const tickCount = Math.min(6, chartEntries.length);
-    const step = Math.max(1, Math.floor(lastIndex / Math.max(1, tickCount - 1)));
+    if (windowEntries.length <= 1) return windowEntries.map((entry) => Number(entry.index));
+    const firstIndex = Number(windowEntries[0]?.index ?? 0);
+    const lastIndex = Number(windowEntries[windowEntries.length - 1]?.index ?? firstIndex);
+    const tickCount = Math.min(6, windowEntries.length);
+    const span = Math.max(1, lastIndex - firstIndex);
+    const step = Math.max(1, Math.floor(span / Math.max(1, tickCount - 1)));
     const ticks: number[] = [];
-    for (let i = 0; i <= lastIndex; i += step) {
+    for (let i = firstIndex; i <= lastIndex; i += step) {
       ticks.push(i);
     }
     if (!ticks.includes(lastIndex)) ticks.push(lastIndex);
     return ticks;
-  }, [chartEntries]);
+  }, [windowEntries]);
 
   const averageFps = useMemo(() => {
     if (entries.length <= 1) return null;
     let totalDuration = 0;
     let previousTimestamp: number | null = null;
 
-    entries.forEach((entry, idx) => {
+    const rangeMin = Math.max(0, Math.min(rangeStart, entries.length - 1));
+    const rangeMax = Math.max(rangeMin, Math.min(rangeEnd, entries.length - 1));
+
+    const entriesInRange = entries.slice(rangeMin, rangeMax + 1);
+    if (entriesInRange.length <= 1) return null;
+
+    entriesInRange.forEach((entry, sliceIdx) => {
+      const idx = rangeMin + sliceIdx;
       const frame = telemetryData[idx];
       if (entry.timestamp !== null) {
         if (previousTimestamp !== null) {
@@ -269,8 +367,8 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
     });
 
     if (totalDuration <= 0) return null;
-    return (entries.length - 1) / totalDuration;
-  }, [entries, telemetryData]);
+    return (entriesInRange.length - 1) / totalDuration;
+  }, [entries, telemetryData, rangeStart, rangeEnd]);
 
   const toggleCategory = (category: string) => {
     setVisibleCategories((prev) => {
@@ -284,10 +382,12 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
 
   const handleChartClick = (state: any) => {
     const idx = typeof state?.activeTooltipIndex === 'number' ? state.activeTooltipIndex : null;
-    if (idx === null || idx < 0 || idx >= entries.length) return;
-    setLocalIndex(idx);
+    if (idx === null || idx < 0 || idx >= windowEntries.length) return;
+    const entry = windowEntries[idx];
+    if (!entry) return;
+    setLocalIndex(entry.index);
     setHoverIndex(null);
-    if (onSeek) onSeek(idx);
+    if (onSeek) onSeek(entry.index);
   };
 
   const handleChartHover = (state: any) => {
@@ -296,8 +396,43 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
       setHoverIndex(null);
       return;
     }
-    setHoverIndex(idx);
+    const entry = windowEntries[idx];
+    if (!entry) {
+      setHoverIndex(null);
+      return;
+    }
+    setHoverIndex(entry.index);
   };
+
+  const handleRangeChange = (type: 'start' | 'end', value: number) => {
+    if (!Number.isFinite(value)) return;
+    const clampedValue = Math.max(0, Math.min(value, max));
+    if (type === 'start') {
+      const nextStart = Math.min(clampedValue, rangeEnd);
+      rangeStartRef.current = nextStart;
+      setRangeStart(nextStart);
+      if (localIndex >= 0 && localIndex < nextStart) {
+        setLocalIndex(nextStart);
+        if (onSeek) onSeek(nextStart);
+      }
+    } else {
+      const nextEnd = Math.max(clampedValue, rangeStart);
+      rangeEndRef.current = nextEnd;
+      setRangeEnd(nextEnd);
+      if (localIndex >= 0 && localIndex > nextEnd) {
+        setLocalIndex(nextEnd);
+        if (onSeek) onSeek(nextEnd);
+      }
+    }
+  };
+
+  const sliderPercent = (index: number) => {
+    if (max <= 0) return 0;
+    return (Math.max(0, Math.min(index, max)) / max) * 100;
+  };
+
+  const startFrameIndex = entries[rangeStart]?.frameIndex ?? rangeStart;
+  const endFrameIndex = entries[rangeEnd]?.frameIndex ?? rangeEnd;
 
   return (
     <div className="panel timeline-panel">
@@ -313,7 +448,7 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
           <div className="timeline-panel__chart-area">
             <ResponsiveContainer>
               <ComposedChart
-                data={chartEntries as any[]}
+                data={windowEntries as any[]}
                 margin={{ top: 18, right: showFps && hasFpsData ? 48 : 24, bottom: 12, left: 0 }}
                 onClick={handleChartClick}
                 onMouseMove={handleChartHover}
@@ -329,7 +464,10 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
                 <XAxis
                   dataKey="index"
                   type="number"
-                  domain={[0, Math.max(0, chartEntries.length - 1)]}
+                  domain={[
+                    Number(windowEntries[0]?.index ?? 0),
+                    Number(windowEntries[windowEntries.length - 1]?.index ?? 0)
+                  ]}
                   ticks={xTicks}
                   tickFormatter={(value: number) => {
                     const entry = chartEntries[Math.round(value)];
@@ -485,21 +623,42 @@ const Timeline: React.FC<Props> = ({ telemetryData, currentIndex = -1, onSeek })
       )}
 
       <div className="timeline-panel__slider">
-        <input
-          type="range"
-          min={0}
-          max={max}
-          value={effectiveIndex >= 0 ? effectiveIndex : 0}
-          onChange={(event) => {
-            const idx = parseInt(event.target.value, 10);
-            setLocalIndex(idx);
-            setHoverIndex(null);
-            if (onSeek) onSeek(idx);
-          }}
-        />
+        <div className="timeline-panel__range">
+          <div className="timeline-panel__range-track">
+            <div
+              className="timeline-panel__range-progress"
+              style={{ left: `${sliderPercent(rangeStart)}%`, right: `${100 - sliderPercent(rangeEnd)}%` }}
+            />
+            {activeIndex >= 0 && (
+              <div
+                className="timeline-panel__range-marker"
+                style={{ left: `${sliderPercent(activeIndex)}%` }}
+                aria-hidden
+              />
+            )}
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={max}
+            value={rangeStart}
+            onChange={(event) => handleRangeChange('start', parseInt(event.target.value, 10))}
+            className="timeline-panel__range-input timeline-panel__range-input--start"
+            aria-label="起始帧"
+          />
+          <input
+            type="range"
+            min={0}
+            max={max}
+            value={rangeEnd}
+            onChange={(event) => handleRangeChange('end', parseInt(event.target.value, 10))}
+            className="timeline-panel__range-input timeline-panel__range-input--end"
+            aria-label="结束帧"
+          />
+        </div>
         <div className="timeline-panel__scale">
-          <span>0</span>
-          <span>{max}</span>
+          <span>{formatNumber(startFrameIndex)}</span>
+          <span>{formatNumber(endFrameIndex)}</span>
         </div>
         <div className="timeline-panel__stats">
           <div>

@@ -4,6 +4,9 @@ using System.Linq;
 using UnityEngine;
 using UnityEngine.Experimental.Rendering;
 using UnityEngine.Rendering;
+#if UNITY_EDITOR
+using UnityEditor;
+#endif
 
 // RuntimeResourceCollector: lightweight, runtime-safe resource snapshot for mobile builds.
 // It collects textures referenced by active Renderers' materials and active Cameras' target RenderTextures.
@@ -208,6 +211,7 @@ public static class RuntimeResourceCollector
         if (seen.Contains(id)) return false;
         seen.Add(id);
 
+        int runtimeKB = EstimateMaterialMemoryKB(mat);
         var entry = new ResourceEntry
         {
             id = id.ToString(),
@@ -216,13 +220,14 @@ public static class RuntimeResourceCollector
             category = "Material",
             shader = mat.shader ? mat.shader.name : null,
             notes = mat.IsKeywordEnabled("_ALPHATEST_ON") ? "AlphaTest" : null,
-            sizeKB = EstimateMaterialMemoryKB(mat),
             passCount = mat.shader ? SafeGetShaderPassCount(mat.shader) : 0,
             keywordCount = mat.shaderKeywords != null ? mat.shaderKeywords.Length : 0,
             keywords = mat.shaderKeywords != null && mat.shaderKeywords.Length > 0 ? mat.shaderKeywords.ToArray() : null,
             renderQueue = mat.renderQueue.ToString(),
             usage = mat.name
         };
+
+        SetSizeEstimates(entry, runtimeKB);
 
         list.Add(entry);
         return true;
@@ -243,6 +248,9 @@ public static class RuntimeResourceCollector
         Vector3 boundsSize = SafeGetMeshBoundsSize(mesh);
         int indexElementSize = SafeGetMeshIndexElementSize(mesh);
 
+        long meshBytes = EstimateMeshMemoryBytes(mesh, vertexCount, indexCount, indexElementSize);
+        int runtimeKB = BytesToKilobytes(meshBytes);
+
         var entry = new ResourceEntry
         {
             id = id.ToString(),
@@ -251,7 +259,6 @@ public static class RuntimeResourceCollector
             category = "Mesh",
             vertexCount = vertexCount,
             triangleCount = triangleCount,
-            sizeKB = (int)(EstimateMeshMemoryBytes(mesh, vertexCount, indexCount, indexElementSize) / 1024),
             subMeshCount = subMeshCount,
             boundsX = boundsSize.x,
             boundsY = boundsSize.y,
@@ -260,6 +267,8 @@ public static class RuntimeResourceCollector
             isReadable = canAccess,
             notes = canAccess ? null : "NotReadable"
         };
+
+        SetSizeEstimates(entry, runtimeKB);
 
         list.Add(entry);
     }
@@ -278,7 +287,6 @@ public static class RuntimeResourceCollector
         entry.format = GetTextureFormat(tex);
         entry.depth = GetTextureDepth(tex);
         entry.mipCount = GetTextureMips(tex);
-        try { entry.sizeKB = (int)(RuntimeEstimateMemoryBytes(tex) / 1024); } catch { entry.sizeKB = 0; }
         entry.dimension = SafeGetDimension(tex);
         entry.wrapMode = SafeGetWrapMode(tex);
         entry.filterMode = SafeGetFilterMode(tex);
@@ -286,6 +294,17 @@ public static class RuntimeResourceCollector
         entry.isReadable = IsTextureReadable(tex);
         entry.colorSpace = QualitySettings.activeColorSpace.ToString();
         entry.usage = usage;
+
+        long runtimeBytes = RuntimeEstimateMemoryBytes(tex);
+        long storageBytes = EstimateTextureStorageBytes(tex);
+        int runtimeKB = BytesToKilobytes(runtimeBytes);
+        int compressedKB = BytesToKilobytes(storageBytes);
+        if (compressedKB <= 0 && runtimeKB > 0)
+        {
+            compressedKB = runtimeKB;
+        }
+
+        SetSizeEstimates(entry, runtimeKB, compressedKB);
 
         if (tex is RenderTexture rt)
         {
@@ -395,6 +414,7 @@ public static class RuntimeResourceCollector
         seen.Add(id);
 
         var keywords = aggregate != null ? aggregate.keywords.OrderBy(k => k, StringComparer.Ordinal).ToArray() : Array.Empty<string>();
+        int runtimeKB = EstimateShaderMemoryKB(shader, aggregate);
         var entry = new ResourceEntry
         {
             id = id.ToString(),
@@ -406,16 +426,18 @@ public static class RuntimeResourceCollector
             keywordCount = keywords.Length,
             keywords = keywords.Length > 0 ? keywords : null,
             variantCount = aggregate != null ? aggregate.variants.Count : 0,
-            sizeKB = EstimateShaderMemoryKB(shader, aggregate),
             notes = CombineNotes(aggregate != null && aggregate.materialCount > 0 ? $"Materials×{aggregate.materialCount}" : null, shader.isSupported ? null : "Unsupported"),
             usage = shader.name
         };
+
+        SetSizeEstimates(entry, runtimeKB);
 
         list.Add(entry);
     }
 
     private static void AddShaderVariantEntry(Shader shader, Material mat, string[] keywords, List<ResourceEntry> list, string variantKey)
     {
+        int runtimeKB = EstimateShaderVariantMemoryKB(mat, keywords != null ? keywords.Length : 0);
         var entry = new ResourceEntry
         {
             id = variantKey,
@@ -426,11 +448,12 @@ public static class RuntimeResourceCollector
             keywordCount = keywords != null ? keywords.Length : 0,
             keywords = keywords != null && keywords.Length > 0 ? keywords : null,
             passCount = shader != null ? SafeGetShaderPassCount(shader) : 0,
-            sizeKB = EstimateShaderVariantMemoryKB(mat, keywords != null ? keywords.Length : 0),
             notes = CombineNotes(mat != null ? mat.name : null, keywords != null && keywords.Length > 0 ? string.Join(",", keywords) : "Default"),
             variantId = variantKey,
             usage = mat != null ? mat.name : null
         };
+
+        SetSizeEstimates(entry, runtimeKB);
 
         list.Add(entry);
     }
@@ -512,6 +535,45 @@ public static class RuntimeResourceCollector
             return baseLevel * mips;
         }
         catch { return 0; }
+    }
+
+    private static long EstimateTextureStorageBytes(Texture tex)
+    {
+        if (tex == null) return 0;
+#if UNITY_EDITOR
+        try
+        {
+            long storage = TextureUtil.GetStorageMemorySizeLong(tex);
+            if (storage > 0) return storage;
+        }
+        catch { }
+#endif
+        return RuntimeEstimateMemoryBytes(tex);
+    }
+
+    private static int BytesToKilobytes(long bytes)
+    {
+        if (bytes <= 0) return 0;
+        return Mathf.Max(1, Mathf.RoundToInt(bytes / 1024f));
+    }
+
+    private static void SetSizeEstimates(ResourceEntry entry, int runtimeKB, int compressedKB = 0)
+    {
+        int runtime = Mathf.Max(0, runtimeKB);
+        entry.sizeKB = runtime;
+        entry.runtimeSizeKB = runtime;
+
+        int compressed = Mathf.Max(0, compressedKB);
+        if (compressed > 0)
+        {
+            entry.compressedSizeKB = compressed;
+            entry.sizeAfterCompressionKB = compressed;
+        }
+        else
+        {
+            entry.compressedSizeKB = 0;
+            entry.sizeAfterCompressionKB = 0;
+        }
     }
 
     private static int GetTextureFormatBytes(TextureFormat format)
