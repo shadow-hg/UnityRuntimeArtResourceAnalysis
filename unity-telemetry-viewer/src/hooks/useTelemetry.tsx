@@ -102,11 +102,36 @@ function getResourceSortSize(resource: any): number {
 function normaliseResourceEntry(resource: any, baseUrl: string | null) {
   if (!resource || typeof resource !== 'object') return resource;
   const next = { ...resource };
-  const thumbnail = normaliseAssetUrl(resource.thumbnailUrl ?? resource.thumbnail, baseUrl);
-  if (thumbnail) {
-    next.thumbnailUrl = thumbnail;
-    next.thumbnail = thumbnail;
+
+  const previewFields: Array<keyof typeof resource> = [
+    'thumbnailUrl',
+    'thumbnail',
+    'previewUrl',
+    'preview',
+    'imageUrl',
+    'image',
+    'screenshotUrl',
+    'screenshot'
+  ];
+
+  let resolvedPreview: string | null = null;
+
+  for (const field of previewFields) {
+    const value = resource[field];
+    const resolved = normaliseAssetUrl(value, baseUrl);
+    if (resolved) {
+      next[field] = resolved;
+      if (!resolvedPreview) {
+        resolvedPreview = resolved;
+      }
+    }
   }
+
+  if (resolvedPreview) {
+    next.thumbnailUrl = resolvedPreview;
+    next.thumbnail = resolvedPreview;
+  }
+
   if (Array.isArray(resource.children)) {
     next.children = resource.children.map((child: any) => normaliseResourceEntry(child, baseUrl));
   }
@@ -352,7 +377,15 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
       const normalisedResources = Array.isArray(resources)
         ? resources
             .map((resource) => normaliseResourceEntry(resource, assetBaseRef.current))
-            .filter((resource): resource is ResourceEntry => Boolean(resource && resource.id))
+            .filter(
+              (resource): resource is ResourceEntry =>
+                Boolean(
+                  resource &&
+                    resource.id !== undefined &&
+                    resource.id !== null &&
+                    !(typeof resource.id === 'string' && resource.id.trim() === '')
+                )
+            )
         : [];
       setCatalogMap((prev) => {
         const next = { ...prev };
@@ -503,7 +536,17 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
         const previousSessionId = currentSessionRef.current[msg.clientId] ?? null;
         const nextSessionId = overview.currentSession?.sessionId ?? null;
         currentSessionRef.current[msg.clientId] = nextSessionId;
-        setSessionOverviewMap((prev) => ({ ...prev, [msg.clientId]: overview }));
+        setSessionOverviewMap((prev) => {
+          const previous = prev[msg.clientId];
+          const history = Array.isArray(msg.history) ? msg.history : previous?.history ?? [];
+          return {
+            ...prev,
+            [msg.clientId]: {
+              currentSession: overview.currentSession,
+              history
+            }
+          };
+        });
         if (previousSessionId !== nextSessionId) {
           const store = frameStoreRef.current;
           const nextOrder: string[] = [];
@@ -549,18 +592,34 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
         if (!isActive) return;
 
         if (sessionSummaryRaw && typeof sessionSummaryRaw === 'object') {
-          const overview: Record<string, SessionOverview> = {};
+          const entries: Array<{ clientId: string; overview: SessionOverview; historyProvided: boolean }> = [];
           for (const [clientId, value] of Object.entries(sessionSummaryRaw)) {
             if (!clientId) continue;
-            const currentSession = value && typeof value === 'object' && 'currentSession' in value ? value.currentSession : null;
-            const history = value && typeof value === 'object' && Array.isArray(value.history) ? value.history : [];
-            overview[clientId] = {
-              currentSession: currentSession || null,
-              history
-            };
+            const currentSession =
+              value && typeof value === 'object' && 'currentSession' in value ? value.currentSession : null;
+            const historyValue = value && typeof value === 'object' ? (value as any).history : undefined;
+            const historyArray = Array.isArray(historyValue) ? historyValue : [];
+            entries.push({
+              clientId,
+              overview: {
+                currentSession: currentSession || null,
+                history: historyArray
+              },
+              historyProvided: Array.isArray(historyValue)
+            });
             currentSessionRef.current[clientId] = currentSession?.sessionId ?? null;
           }
-          setSessionOverviewMap((prev) => ({ ...prev, ...overview }));
+          setSessionOverviewMap((prev) => {
+            const next = { ...prev };
+            for (const { clientId, overview, historyProvided } of entries) {
+              const previous = prev[clientId];
+              next[clientId] = {
+                currentSession: overview.currentSession,
+                history: historyProvided ? overview.history : previous?.history ?? []
+              };
+            }
+            return next;
+          });
         }
 
         const clientIdSet = new Set<string>();

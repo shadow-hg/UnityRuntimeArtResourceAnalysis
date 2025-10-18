@@ -234,10 +234,18 @@ body {
   grid-column: span 2;
   justify-content: flex-end;
   flex-wrap: wrap;
+  align-items: center;
 }
 
 .session-controls__actions .button {
   min-width: 96px;
+}
+
+.session-controls__action-buttons {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .session-controls__capture-toggle {
@@ -276,17 +284,27 @@ body {
   color: var(--text-muted);
 }
 
-.session-controls__playback {
+.session-controls__playback-inline {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
-  margin-top: 16px;
 }
 
-.session-controls__playback-controls {
-  margin-left: auto;
+.session-controls__playback-inline.playback-panel--inline {
+  padding: 0;
+  background: none;
+  border: none;
+  box-shadow: none;
+}
+
+.session-controls__playback-inline.playback-panel--inline .button {
+  min-width: 80px;
+  padding: 6px 16px;
+}
+
+.session-controls__playback-inline.playback-panel--inline .playback-panel__speed input[type='range'] {
+  width: 120px;
 }
 
 .timeline-section {
