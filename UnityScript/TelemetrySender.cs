@@ -66,7 +66,7 @@ public class TelemetrySender : MonoBehaviour
     private bool resourceSnapshotInProgress = false;
     private float nextResourceSnapshotTime = 0f;
     private CancellationTokenSource resourceProcessingCts;
-    private Task resourceProcessingTask;
+    private Task<ResourceProcessingResult> resourceProcessingTask;
     private readonly object resourceStateLock = new object();
     private ResourceProcessingResult pendingResourceState;
     private bool resourceStateDirty = false;
@@ -590,18 +590,10 @@ public class TelemetrySender : MonoBehaviour
             byte[] jpg = null;
 #if UNITY_2020_1_OR_NEWER
             var rawData = request.GetData<byte>();
-            var rawCopy = new NativeArray<byte>(rawData.Length, Allocator.Persistent);
-            NativeArray<byte>.Copy(rawData, rawCopy);
+            var rawCopy = rawData.ToArray();
             var encodeTask = Task.Run(() =>
             {
-                try
-                {
-                    return ImageConversion.EncodeArrayToJPG(rawCopy, tempRt.graphicsFormat, (uint)tempRt.width, (uint)tempRt.height, (uint)Mathf.Clamp(jpegQuality, 10, 90));
-                }
-                finally
-                {
-                    if (rawCopy.IsCreated) rawCopy.Dispose();
-                }
+                return ImageConversion.EncodeArrayToJPG(rawCopy, tempRt.graphicsFormat, (uint)tempRt.width, (uint)tempRt.height, (uint)Mathf.Clamp(jpegQuality, 10, 90));
             });
             while (!encodeTask.IsCompleted)
             {
