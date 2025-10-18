@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Text;
 using System.Threading;
@@ -44,6 +45,10 @@ public class TelemetrySender : MonoBehaviour
     private ClientWebSocket ws;
     private CancellationTokenSource wsCts;
     private Task wsReceiveTask;
+    private CancellationTokenSource sendWorkerCts;
+    private Task sendWorkerTask;
+    private readonly ConcurrentQueue<PendingMessage> pendingMessages = new ConcurrentQueue<PendingMessage>();
+    private readonly SemaphoreSlim pendingMessageSignal = new SemaphoreSlim(0);
 #endif
 
     // simple last-sent snapshot hash to avoid flooding
@@ -55,6 +60,7 @@ public class TelemetrySender : MonoBehaviour
         startTime = Time.realtimeSinceStartup;
         nextCaptureTime = Time.realtimeSinceStartup;
         if (string.IsNullOrEmpty(clientId)) clientId = SystemInfo.deviceName + "-" + Application.productName;
+        StartSendWorker();
         ConnectWebSocket();
         DontDestroyOnLoad(this.gameObject);
     }
@@ -91,6 +97,7 @@ public class TelemetrySender : MonoBehaviour
     void OnDestroy()
     {
 #if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
+        StopSendWorker();
         try {
             if (wsCts != null) wsCts.Cancel();
             if (ws != null) ws.Dispose();
@@ -148,8 +155,7 @@ public class TelemetrySender : MonoBehaviour
                 lastSnapshotHash = hash;
                 var snapshotMsg = new SnapshotMessage { clientId = clientId, resources = latestSnapshot, replace = true };
 #if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
-                var j = JsonConvert.SerializeObject(snapshotMsg);
-                _ = SendTextAsync(j);
+                QueueMessage(snapshotMsg);
 #endif
                 StartCoroutine(UploadResourceThumbnailsAsync(latestSnapshot));
             }
@@ -195,8 +201,7 @@ public class TelemetrySender : MonoBehaviour
                 };
                 if (!string.IsNullOrEmpty(url)) fm.thumbnailUrl = url;
 #if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
-                var fj = JsonConvert.SerializeObject(fm);
-                _ = SendTextAsync(fj);
+                QueueMessage(fm);
 #endif
             }));
         } else {
@@ -213,8 +218,7 @@ public class TelemetrySender : MonoBehaviour
                 resourceCount = resourceCount
             };
 #if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
-            var fj = JsonConvert.SerializeObject(fm);
-            _ = SendTextAsync(fj);
+            QueueMessage(fm);
 #endif
         }
     }
@@ -504,9 +508,8 @@ public class TelemetrySender : MonoBehaviour
                             rwt.entry.thumbnailUrl = respObj.url;
                             UpdateCachedResource(rwt.entry);
                             var snapshotMsg = new SnapshotMessage { clientId = clientId, resources = new List<ResourceEntry> { rwt.entry }, replace = false };
-                            var j = JsonConvert.SerializeObject(snapshotMsg);
 #if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
-                            _ = SendTextAsync(j);
+                            QueueMessage(snapshotMsg);
 #endif
                             uploadedResourceIds.Add(id);
                         }
@@ -627,29 +630,21 @@ public class TelemetrySender : MonoBehaviour
                 thumbnailIntervalFrames = thumbnailIntervalFrames
             }
         };
-        var json = JsonConvert.SerializeObject(ack);
-        _ = SendTextAsync(json);
+        QueueMessage(ack);
 #endif
     }
 
 #if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
-    private async Task SendJsonAsync(object obj)
+    private Task SendJsonAsync(object obj)
     {
-        var s = JsonConvert.SerializeObject(obj);
-        await SendTextAsync(s).ConfigureAwait(false);
+        QueueMessage(obj);
+        return Task.CompletedTask;
     }
 
-    private async Task SendTextAsync(string text)
+    private Task SendTextAsync(string text)
     {
-        try {
-            if (ws == null) return;
-            if (ws.State != WebSocketState.Open) return;
-            var bytes = Encoding.UTF8.GetBytes(text);
-            var seg = new ArraySegment<byte>(bytes);
-            await ws.SendAsync(seg, WebSocketMessageType.Text, true, wsCts.Token).ConfigureAwait(false);
-        } catch (Exception ex) {
-            Debug.LogWarning("WebSocket send failed: " + ex.Message);
-        }
+        QueueSerialized(text);
+        return Task.CompletedTask;
     }
 
     private async Task ReceiveLoopAsync(ClientWebSocket socket, CancellationToken token)
@@ -684,6 +679,161 @@ public class TelemetrySender : MonoBehaviour
             Debug.LogWarning("WebSocket receive loop ended: " + ex.Message);
         }
     }
+
+    private struct PendingMessage
+    {
+        public string Serialized;
+        public object Payload;
+    }
+
+    private void StartSendWorker()
+    {
+        if (sendWorkerTask != null && !sendWorkerTask.IsCompleted)
+        {
+            return;
+        }
+
+        sendWorkerCts = new CancellationTokenSource();
+        sendWorkerTask = Task.Run(() => ProcessSendQueueAsync(sendWorkerCts.Token));
+    }
+
+    private void StopSendWorker()
+    {
+        if (sendWorkerCts == null)
+        {
+            return;
+        }
+
+        try
+        {
+            sendWorkerCts.Cancel();
+            pendingMessageSignal.Release();
+        }
+        catch { }
+
+        try
+        {
+            sendWorkerTask?.Wait(250);
+        }
+        catch { }
+        finally
+        {
+            sendWorkerTask = null;
+        }
+
+        sendWorkerCts.Dispose();
+        sendWorkerCts = null;
+    }
+
+    private void QueueMessage(object payload)
+    {
+        if (payload == null)
+        {
+            return;
+        }
+
+        pendingMessages.Enqueue(new PendingMessage { Payload = payload });
+        pendingMessageSignal.Release();
+    }
+
+    private void QueueSerialized(string json)
+    {
+        if (string.IsNullOrEmpty(json))
+        {
+            return;
+        }
+
+        pendingMessages.Enqueue(new PendingMessage { Serialized = json });
+        pendingMessageSignal.Release();
+    }
+
+    private async Task ProcessSendQueueAsync(CancellationToken token)
+    {
+        while (!token.IsCancellationRequested)
+        {
+            try
+            {
+                await pendingMessageSignal.WaitAsync(token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+
+            while (!token.IsCancellationRequested && pendingMessages.TryDequeue(out var pending))
+            {
+                string json = pending.Serialized;
+                if (json == null && pending.Payload != null)
+                {
+                    try
+                    {
+                        json = JsonConvert.SerializeObject(pending.Payload);
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.LogWarning("Failed to serialize telemetry payload: " + ex.Message);
+                    }
+                }
+
+                if (string.IsNullOrEmpty(json))
+                {
+                    continue;
+                }
+
+                await SendTextInternalAsync(json, token).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private async Task SendTextInternalAsync(string text, CancellationToken token)
+    {
+        try
+        {
+            if (ws == null)
+            {
+                return;
+            }
+
+            if (ws.State != WebSocketState.Open)
+            {
+                return;
+            }
+
+            var bytes = Encoding.UTF8.GetBytes(text);
+            var seg = new ArraySegment<byte>(bytes);
+
+            if (wsCts != null)
+            {
+                if (wsCts.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                using (var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(token, wsCts.Token))
+                {
+                    await ws.SendAsync(seg, WebSocketMessageType.Text, true, linkedCts.Token).ConfigureAwait(false);
+                }
+            }
+            else
+            {
+                await ws.SendAsync(seg, WebSocketMessageType.Text, true, token).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning("WebSocket send failed: " + ex.Message);
+        }
+    }
+#endif
+
+#if !(UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS)
+    private void StartSendWorker() { }
+    private void StopSendWorker() { }
+    private void QueueMessage(object payload) { }
+    private void QueueSerialized(string json) { }
 #endif
 }
 
