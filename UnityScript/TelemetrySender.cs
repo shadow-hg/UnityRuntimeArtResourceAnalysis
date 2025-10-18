@@ -51,6 +51,7 @@ public class TelemetrySender : MonoBehaviour
     private Thread wsSenderThread;
     private CancellationTokenSource wsSenderCts;
     private readonly ConcurrentQueue<object> outboundQueue = new ConcurrentQueue<object>();
+    private readonly ConcurrentQueue<object> priorityQueue = new ConcurrentQueue<object>();
     private AutoResetEvent outboundSignal = new AutoResetEvent(false);
     private readonly ResourceValidationResult lastResourceValidation = new ResourceValidationResult();
     private string lastIntegrityFingerprint;
@@ -89,7 +90,7 @@ public class TelemetrySender : MonoBehaviour
                     await ws.ConnectAsync(uri, wsCts.Token).ConfigureAwait(false);
                     Debug.Log("Telemetry WS open (ClientWebSocket)");
                     var hello = new { role = "unity", clientId = clientId };
-                    EnqueueTelemetryPayload(hello);
+                    EnqueueTelemetryPayload(hello, true);
                     SendControlAck("initial_state");
                     wsReceiveTask = Task.Run(() => ReceiveLoopAsync(ws, wsCts.Token));
                 }
@@ -916,23 +917,28 @@ public class TelemetrySender : MonoBehaviour
         }
 
         while (outboundQueue.TryDequeue(out _)) { }
+        while (priorityQueue.TryDequeue(out _)) { }
     }
 
     private void ProcessOutboundQueue(CancellationToken token)
     {
         while (!token.IsCancellationRequested)
         {
-            if (!outboundQueue.TryDequeue(out var payload))
+            object payload = null;
+            if (!priorityQueue.TryDequeue(out payload))
             {
-                try
+                if (!outboundQueue.TryDequeue(out payload))
                 {
-                    outboundSignal?.WaitOne(10);
+                    try
+                    {
+                        outboundSignal?.WaitOne(10);
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        return;
+                    }
+                    continue;
                 }
-                catch (ObjectDisposedException)
-                {
-                    return;
-                }
-                continue;
             }
 
             string json = payload as string;
@@ -988,10 +994,17 @@ public class TelemetrySender : MonoBehaviour
         }
     }
 
-    private void EnqueueTelemetryPayload(object payload)
+    private void EnqueueTelemetryPayload(object payload, bool priority = false)
     {
         if (payload == null) return;
-        outboundQueue.Enqueue(payload);
+        if (priority)
+        {
+            priorityQueue.Enqueue(payload);
+        }
+        else
+        {
+            outboundQueue.Enqueue(payload);
+        }
         outboundSignal.Set();
     }
 
