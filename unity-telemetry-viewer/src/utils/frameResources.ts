@@ -36,7 +36,21 @@ export function collectActiveFrameResources(frame: any | null, resourceCatalog?:
       const fromCatalog = resourceCatalog?.[rid];
       const fromSnapshot = inlineResourceById.get(rid);
       if (fromCatalog || fromSnapshot) {
-        pushResource({ ...(fromCatalog || {}), ...(fromSnapshot || {}) });
+        const merged = { ...(fromCatalog || {}) } as Record<string, any>;
+        let appliedSnapshot = false;
+
+        if (fromSnapshot) {
+          for (const [key, value] of Object.entries(fromSnapshot)) {
+            if (value === undefined || value === null) {
+              continue;
+            }
+            merged[key] = value;
+            appliedSnapshot = true;
+          }
+        }
+
+        const result = fromCatalog || appliedSnapshot ? merged : fromSnapshot || {};
+        pushResource(result);
       }
     }
   }

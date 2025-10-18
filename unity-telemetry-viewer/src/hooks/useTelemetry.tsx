@@ -226,12 +226,45 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
   const [connectionState, setConnectionState] = useState<ConnectionState>('idle');
   const [controlStateMap, setControlStateMap] = useState<Record<string, ControlState>>({});
   const [sessionOverviewMap, setSessionOverviewMap] = useState<Record<string, SessionOverview>>({});
+  const [clientTypes, setClientTypes] = useState<Record<string, string>>({});
+  const [selfClientId, setSelfClientId] = useState<string | null>(null);
   const wsRef = useRef<TelemetryWS | null>(null);
   const frameStoreRef = useRef<FrameStore>(createFrameStore());
   const flushHandleRef = useRef<number | null>(null);
   const assetBaseRef = useRef<string | null>(null);
   const maxFramesRef = useRef<number>(Math.max(1, options.maxFrames ?? DEFAULT_MAX_FRAMES));
   const currentSessionRef = useRef<Record<string, string | null>>({});
+  const clientTypesRef = useRef<Record<string, string>>({});
+  const selfClientIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    clientTypesRef.current = clientTypes;
+  }, [clientTypes]);
+
+  useEffect(() => {
+    selfClientIdRef.current = selfClientId;
+  }, [selfClientId]);
+
+  useEffect(() => {
+    setSessionOverviewMap((prev) => {
+      if (!prev || (selfClientId === null && Object.keys(clientTypes).length === 0)) {
+        return prev;
+      }
+      const next = { ...prev };
+      let changed = false;
+      if (selfClientId && next[selfClientId]) {
+        delete next[selfClientId];
+        changed = true;
+      }
+      for (const [id, type] of Object.entries(clientTypes)) {
+        if (type && type !== 'unity' && next[id]) {
+          delete next[id];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [clientTypes, selfClientId]);
 
   useEffect(() => {
     const nextMax = Math.max(1, options.maxFrames ?? DEFAULT_MAX_FRAMES);
@@ -262,6 +295,8 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
     setCatalogMap({});
     setControlStateMap({});
     setSessionOverviewMap({});
+    setClientTypes({});
+    setSelfClientId(null);
     if (flushHandleRef.current !== null && typeof window !== 'undefined') {
       window.cancelAnimationFrame(flushHandleRef.current);
       flushHandleRef.current = null;
@@ -415,14 +450,30 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
       if (!isActive) return;
       setConnectionState('error');
     };
-    ws.onMessage = (msg) => {
-      if (!isActive) return;
-      if (msg.type === 'frame' && msg.clientId && msg.frame) {
-        ingestFrame(msg.clientId, msg.frame, msg.sessionId);
-        if (msg.frame?.resourceSnapshot) {
-          ingestResources(msg.clientId, msg.frame.resourceSnapshot, 'replace');
+      ws.onMessage = (msg) => {
+        if (!isActive) return;
+        if (msg.type === 'hello' && msg.clientId) {
+          setSelfClientId(msg.clientId);
+          selfClientIdRef.current = msg.clientId;
+          setClientTypes((prev) => {
+            if (prev[msg.clientId] === 'browser') return prev;
+            return { ...prev, [msg.clientId]: 'browser' };
+          });
+          setSessionOverviewMap((prev) => {
+            if (!prev[msg.clientId]) return prev;
+            const next = { ...prev };
+            delete next[msg.clientId];
+            return next;
+          });
+          return;
         }
-      } else if (msg.type === 'resource_snapshot' && msg.clientId) {
+
+        if (msg.type === 'frame' && msg.clientId && msg.frame) {
+          ingestFrame(msg.clientId, msg.frame, msg.sessionId);
+          if (msg.frame?.resourceSnapshot) {
+            ingestResources(msg.clientId, msg.frame.resourceSnapshot, 'replace');
+          }
+        } else if (msg.type === 'resource_snapshot' && msg.clientId) {
         const mode: ResourceIngestMode = msg.replace === false ? 'merge' : 'replace';
         ingestResources(msg.clientId, msg.resources, mode);
       } else if (msg.type === 'control_ack' && msg.clientId) {
@@ -528,11 +579,39 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
         for (const frame of msg.frames) {
           ingestFrame(msg.clientId, frame, msg.sessionId);
         }
-      } else if (msg.type === 'session_update' && msg.clientId) {
-        const overview: SessionOverview = {
-          currentSession: msg.currentSession || null,
-          history: Array.isArray(msg.history) ? msg.history : []
-        };
+        } else if (msg.type === 'session_update' && msg.clientId) {
+          if (selfClientIdRef.current && msg.clientId === selfClientIdRef.current) {
+            setSessionOverviewMap((prev) => {
+              if (!prev[msg.clientId]) return prev;
+              const next = { ...prev };
+              delete next[msg.clientId];
+              return next;
+            });
+            return;
+          }
+
+          const existingType = clientTypesRef.current[msg.clientId];
+          if (existingType && existingType !== 'unity') {
+            setSessionOverviewMap((prev) => {
+              if (!prev[msg.clientId]) return prev;
+              const next = { ...prev };
+              delete next[msg.clientId];
+              return next;
+            });
+            return;
+          }
+
+          if (!existingType) {
+            setClientTypes((prev) => {
+              if (prev[msg.clientId]) return prev;
+              return { ...prev, [msg.clientId]: 'unity' };
+            });
+          }
+
+          const overview: SessionOverview = {
+            currentSession: msg.currentSession || null,
+            history: Array.isArray(msg.history) ? msg.history : []
+          };
         const previousSessionId = currentSessionRef.current[msg.clientId] ?? null;
         const nextSessionId = overview.currentSession?.sessionId ?? null;
         currentSessionRef.current[msg.clientId] = nextSessionId;
@@ -584,6 +663,28 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
         if (!clientsResponse.ok) return;
         const data = await clientsResponse.json();
         if (!isActive) return;
+
+        const typeEntries: Record<string, string> = {};
+        if (Array.isArray(data.clients)) {
+          data.clients.forEach((entry: any) => {
+            if (!entry || typeof entry.id !== 'string') return;
+            const type = typeof entry.type === 'string' ? entry.type : 'unknown';
+            typeEntries[entry.id] = type;
+          });
+        }
+
+        if (Object.keys(typeEntries).length > 0) {
+          setClientTypes((prev) => {
+            const next = { ...prev };
+            let changed = false;
+            for (const [id, type] of Object.entries(typeEntries)) {
+              if (next[id] === type) continue;
+              next[id] = type;
+              changed = true;
+            }
+            return changed ? next : prev;
+          });
+        }
         const sessionSummaryRaw =
           (data && typeof data === 'object' && data.sessions ? data.sessions : null) ||
           (sessionsResponse && sessionsResponse.ok ? (await sessionsResponse.json()).sessions : null) ||
@@ -593,13 +694,16 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
 
         if (sessionSummaryRaw && typeof sessionSummaryRaw === 'object') {
           const entries: Array<{ clientId: string; overview: SessionOverview; historyProvided: boolean }> = [];
-          for (const [clientId, value] of Object.entries(sessionSummaryRaw)) {
-            if (!clientId) continue;
-            const currentSession =
-              value && typeof value === 'object' && 'currentSession' in value ? value.currentSession : null;
-            const historyValue = value && typeof value === 'object' ? (value as any).history : undefined;
-            const historyArray = Array.isArray(historyValue) ? historyValue : [];
-            entries.push({
+            for (const [clientId, value] of Object.entries(sessionSummaryRaw)) {
+              if (!clientId) continue;
+              if (selfClientIdRef.current && clientId === selfClientIdRef.current) continue;
+              const knownType = typeEntries[clientId] ?? clientTypesRef.current[clientId];
+              if (knownType && knownType !== 'unity') continue;
+              const currentSession =
+                value && typeof value === 'object' && 'currentSession' in value ? value.currentSession : null;
+              const historyValue = value && typeof value === 'object' ? (value as any).history : undefined;
+              const historyArray = Array.isArray(historyValue) ? historyValue : [];
+              entries.push({
               clientId,
               overview: {
                 currentSession: currentSession || null,
@@ -609,33 +713,54 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
             });
             currentSessionRef.current[clientId] = currentSession?.sessionId ?? null;
           }
-          setSessionOverviewMap((prev) => {
-            const next = { ...prev };
-            for (const { clientId, overview, historyProvided } of entries) {
-              const previous = prev[clientId];
-              next[clientId] = {
-                currentSession: overview.currentSession,
-                history: historyProvided ? overview.history : previous?.history ?? []
-              };
-            }
-            return next;
-          });
+            setSessionOverviewMap((prev) => {
+              const next = { ...prev };
+              for (const { clientId, overview, historyProvided } of entries) {
+                if (selfClientIdRef.current && clientId === selfClientIdRef.current) {
+                  if (next[clientId]) delete next[clientId];
+                  continue;
+                }
+                const knownType = typeEntries[clientId] ?? clientTypesRef.current[clientId];
+                if (knownType && knownType !== 'unity') {
+                  if (next[clientId]) delete next[clientId];
+                  continue;
+                }
+                const previous = prev[clientId];
+                next[clientId] = {
+                  currentSession: overview.currentSession,
+                  history: historyProvided ? overview.history : previous?.history ?? []
+                };
+              }
+              return next;
+            });
         }
 
         const clientIdSet = new Set<string>();
         if (Array.isArray(data.timelines)) {
           data.timelines.forEach((id: any) => {
-            if (typeof id === 'string') clientIdSet.add(id);
+            if (typeof id !== 'string') return;
+            if (selfClientIdRef.current && id === selfClientIdRef.current) return;
+            const knownType = typeEntries[id] ?? clientTypesRef.current[id];
+            if (knownType && knownType !== 'unity') return;
+            clientIdSet.add(id);
           });
         }
         if (Array.isArray(data.clients)) {
           data.clients.forEach((entry: any) => {
-            if (entry && typeof entry.id === 'string') clientIdSet.add(entry.id);
+            if (!entry || typeof entry.id !== 'string') return;
+            const type = typeof entry.type === 'string' ? entry.type : 'unknown';
+            if (selfClientIdRef.current && entry.id === selfClientIdRef.current) return;
+            if (type && type !== 'unity') return;
+            clientIdSet.add(entry.id);
           });
         }
         if (sessionSummaryRaw && typeof sessionSummaryRaw === 'object') {
           Object.keys(sessionSummaryRaw).forEach((id) => {
-            if (id) clientIdSet.add(id);
+            if (!id) return;
+            if (selfClientIdRef.current && id === selfClientIdRef.current) return;
+            const knownType = typeEntries[id] ?? clientTypesRef.current[id];
+            if (knownType && knownType !== 'unity') return;
+            clientIdSet.add(id);
           });
         }
         const clientIds = Array.from(clientIdSet);
@@ -705,6 +830,17 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
     }
     return result;
   }, [catalogMap]);
+
+  const filteredSessions = useMemo(() => {
+    const result: Record<string, SessionOverview> = {};
+    for (const [clientId, overview] of Object.entries(sessionOverviewMap)) {
+      if (selfClientId && clientId === selfClientId) continue;
+      const type = clientTypes[clientId];
+      if (type && type !== 'unity') continue;
+      result[clientId] = overview;
+    }
+    return result;
+  }, [sessionOverviewMap, clientTypes, selfClientId]);
 
   const sendMessage = useCallback((message: any) => {
     if (!message) return;
@@ -781,7 +917,7 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
     connectionState,
     controlState: controlStateMap,
     sendMessage,
-    sessions: sessionOverviewMap,
+    sessions: filteredSessions,
     fetchSessionData
   };
 }
