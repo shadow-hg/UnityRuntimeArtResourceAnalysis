@@ -8,6 +8,7 @@ const multer = require('multer');
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 8080;
 const DATA_DIR = path.join(__dirname, 'data');
 const THUMBS_DIR = path.join(DATA_DIR, 'thumbs');
+const HISTORY_FILE = path.join(DATA_DIR, 'session_history.json');
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
 if (!fs.existsSync(THUMBS_DIR)) fs.mkdirSync(THUMBS_DIR);
@@ -42,6 +43,102 @@ const currentSessions = {};
 const sessionHistory = {};
 const MAX_TIMELINE_LENGTH = 10000;
 const MAX_SESSION_HISTORY = 20;
+const HISTORY_SAVE_DEBOUNCE_MS = 250;
+
+let historySaveTimer = null;
+
+function normaliseSessionHistoryRecord(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const sessionId = typeof raw.sessionId === 'string' && raw.sessionId.trim().length > 0 ? raw.sessionId.trim() : null;
+  if (!sessionId) return null;
+  const startedAt = normaliseTimestampValue(raw.startedAt) ?? Date.now();
+  const endedAt = normaliseTimestampValue(raw.endedAt);
+  const frames = Array.isArray(raw.frames) ? raw.frames : [];
+  const catalog = raw.catalog && typeof raw.catalog === 'object' ? raw.catalog : {};
+  const frameCount =
+    typeof raw.frameCount === 'number' && Number.isFinite(raw.frameCount) ? raw.frameCount : frames.length;
+  const resourceCount =
+    typeof raw.resourceCount === 'number' && Number.isFinite(raw.resourceCount)
+      ? raw.resourceCount
+      : Object.keys(catalog).length;
+  const reason =
+    typeof raw.reason === 'string'
+      ? raw.reason
+      : raw.reason === null || raw.reason === undefined
+        ? null
+        : String(raw.reason);
+
+  return { sessionId, startedAt, endedAt, frameCount, resourceCount, frames, catalog, reason };
+}
+
+function loadSessionHistoryFromDisk() {
+  if (!fs.existsSync(HISTORY_FILE)) return;
+  try {
+    const contents = fs.readFileSync(HISTORY_FILE, 'utf8');
+    if (!contents) return;
+    const parsed = JSON.parse(contents);
+    if (!parsed || typeof parsed !== 'object') return;
+    for (const [clientId, value] of Object.entries(parsed)) {
+      if (typeof clientId !== 'string' || !Array.isArray(value)) continue;
+      const records = value
+        .map((entry) => normaliseSessionHistoryRecord(entry))
+        .filter((entry) => entry !== null)
+        .slice(0, MAX_SESSION_HISTORY);
+      if (records.length > 0) {
+        sessionHistory[clientId] = records;
+      }
+    }
+  } catch (error) {
+    console.warn('failed to load session history', error);
+  }
+}
+
+function snapshotSessionHistory() {
+  const snapshot = {};
+  for (const [clientId, entries] of Object.entries(sessionHistory)) {
+    if (!Array.isArray(entries) || entries.length === 0) continue;
+    snapshot[clientId] = entries.slice(0, MAX_SESSION_HISTORY).map((entry) => {
+      const frames = Array.isArray(entry.frames) ? entry.frames : [];
+      const catalog = entry.catalog && typeof entry.catalog === 'object' ? entry.catalog : {};
+      const frameCount =
+        typeof entry.frameCount === 'number' && Number.isFinite(entry.frameCount) ? entry.frameCount : frames.length;
+      const resourceCount =
+        typeof entry.resourceCount === 'number' && Number.isFinite(entry.resourceCount)
+          ? entry.resourceCount
+          : Object.keys(catalog).length;
+      return {
+        sessionId: entry.sessionId,
+        startedAt: normaliseTimestampValue(entry.startedAt) ?? null,
+        endedAt: normaliseTimestampValue(entry.endedAt),
+        frameCount,
+        resourceCount,
+        reason: entry.reason ?? null,
+        frames,
+        catalog
+      };
+    });
+  }
+  return snapshot;
+}
+
+function saveSessionHistoryToDisk() {
+  try {
+    const snapshot = snapshotSessionHistory();
+    fs.writeFileSync(HISTORY_FILE, JSON.stringify(snapshot));
+  } catch (error) {
+    console.warn('failed to save session history', error);
+  }
+}
+
+function scheduleSessionHistorySave() {
+  if (historySaveTimer) return;
+  historySaveTimer = setTimeout(() => {
+    historySaveTimer = null;
+    saveSessionHistoryToDisk();
+  }, HISTORY_SAVE_DEBOUNCE_MS);
+}
+
+loadSessionHistoryFromDisk();
 
 function sanitiseFilenameSegment(value, fallback) {
   const str = String(value ?? '').trim();
@@ -122,6 +219,10 @@ function applyThumbnailToTimelineFrames(clientId, target, url) {
     });
   }
 
+  if (updated) {
+    scheduleSessionHistorySave();
+  }
+
   return updated;
 }
 
@@ -168,6 +269,8 @@ function archiveCurrentSession(clientId, reason = 'archive') {
   currentSessions[clientId] = null;
   timelines[clientId] = [];
   resourceCatalog[clientId] = {};
+
+  scheduleSessionHistorySave();
 
   return record;
 }
@@ -387,21 +490,46 @@ function handleWsMessage(ws, msg) {
   if (obj.type === 'frame') {
     const session = currentSessions[clientId] || (role === 'unity' ? beginNewSession(clientId, 'frame') : null);
     const thumb = obj.thumbnailUrl || obj.thumbnail || null;
+    const resourceSnapshot = Array.isArray(obj.resourceSnapshot)
+      ? obj.resourceSnapshot
+          .filter((entry) => entry && typeof entry === 'object')
+          .map((entry) => {
+            const copy = { ...entry };
+            if (copy.id !== undefined && copy.id !== null) {
+              copy.id = String(copy.id);
+            }
+            return copy;
+          })
+      : null;
+
+    const resourcesFromSnapshot = Array.isArray(resourceSnapshot)
+      ? resourceSnapshot
+          .map((entry) => (entry && entry.id ? String(entry.id) : null))
+          .filter((id) => id)
+      : [];
+
     const frameEntry = {
       frameIndex: obj.frameIndex,
       timestamp: obj.timestamp || Date.now(),
       sceneName: obj.sceneName || obj.state || null,
       dt: obj.dt !== undefined ? obj.dt : null,
       metrics: obj.metrics || {},
-      resources: obj.resources || [],
+      resources: Array.isArray(obj.resources) && obj.resources.length > 0 ? obj.resources : resourcesFromSnapshot,
       resourceStats: Array.isArray(obj.resourceStats) ? obj.resourceStats : [],
       resourceTotalKB: typeof obj.resourceTotalKB === 'number' ? obj.resourceTotalKB : 0,
-      resourceCount: typeof obj.resourceCount === 'number' ? obj.resourceCount : (Array.isArray(obj.resources) ? obj.resources.length : 0),
+      resourceCount:
+        typeof obj.resourceCount === 'number'
+          ? obj.resourceCount
+          : (Array.isArray(obj.resources) ? obj.resources.length : resourcesFromSnapshot.length),
       thumbnail: thumb,
       thumbnailUrl: thumb,
       buildVersion: obj.buildVersion || null,
       sessionId: session ? session.sessionId : null
     };
+
+    if (resourceSnapshot && resourceSnapshot.length > 0) {
+      frameEntry.resourceSnapshot = resourceSnapshot;
+    }
 
     const passthroughKeys = [
       'camera',
@@ -428,8 +556,8 @@ function handleWsMessage(ws, msg) {
       }
     }
 
-    if (obj.resourceSnapshot) {
-      for (const r of obj.resourceSnapshot) {
+    if (resourceSnapshot) {
+      for (const r of resourceSnapshot) {
         if (!r || !r.id) continue;
         const existing = resourceCatalog[clientId][r.id] || {};
         resourceCatalog[clientId][r.id] = { ...existing, ...r };

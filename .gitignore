@@ -98,3 +98,8 @@ InitTestScene*.unity*
 
 # Auto-generated scenes by play mode tests
 /[Aa]ssets/[Ii]nit[Tt]est[Ss]cene*.unity*
+
+# Telemetry runtime artifacts
+telemetry-server/data/session_history.json
+telemetry-server/data/session_history.json.*
+telemetry-server/data/thumbs/*.jpg

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { TelemetryWS } from '../services/websocket';
+import { collectActiveFrameResources } from '../utils/frameResources';
+import { getDisplayMemoryKB, getResourceCategory } from '../utils/resourceMetadata';
 
 export type Frame = {
   clientId: string;
@@ -58,11 +60,108 @@ type FrameStore = {
   entries: Map<string, FrameBucket>;
 };
 
+const DERIVED_STATS_FLAG = Symbol('derivedResourceStats');
+
 function createFrameStore(): FrameStore {
   return {
     order: [],
     entries: new Map()
   };
+}
+
+function augmentFrameWithResourceStats(
+  frame: any,
+  resourceIndex: Record<string, ResourceEntry> | undefined
+) {
+  if (!frame || typeof frame !== 'object') return frame;
+
+  const activeResources = collectActiveFrameResources(frame, resourceIndex);
+  if (!activeResources || activeResources.length === 0) return frame;
+
+  const groupMap = new Map<string, { category: string; count: number; sizeKB: number }>();
+
+  for (const resource of activeResources) {
+    if (!resource) continue;
+    const category = getResourceCategory(resource) || '未分类';
+    const sizeKB = getDisplayMemoryKB(resource);
+    const entry = groupMap.get(category) || { category, count: 0, sizeKB: 0 };
+    entry.count += 1;
+    if (Number.isFinite(sizeKB)) {
+      entry.sizeKB += sizeKB;
+    }
+    groupMap.set(category, entry);
+  }
+
+  if (groupMap.size === 0) return frame;
+
+  const derivedStats = Array.from(groupMap.values())
+    .map((entry) => {
+      const memoryKB = Number.isFinite(entry.sizeKB) ? entry.sizeKB : 0;
+      return {
+        category: entry.category,
+        count: entry.count,
+        memoryKB,
+        sizeKB: memoryKB
+      };
+    })
+    .filter((stat) => stat.count > 0 || (Number.isFinite(stat.memoryKB) && stat.memoryKB > 0))
+    .sort((a, b) => (b.memoryKB ?? 0) - (a.memoryKB ?? 0));
+
+  if (derivedStats.length === 0) return frame;
+
+  const totalKB = derivedStats.reduce(
+    (sum, stat) => sum + (Number.isFinite(stat.memoryKB) ? stat.memoryKB : 0),
+    0
+  );
+  const totalCount = derivedStats.reduce(
+    (sum, stat) => sum + (Number.isFinite(stat.count) ? stat.count : 0),
+    0
+  );
+
+  const hasExistingStats = Array.isArray(frame.resourceStats) && frame.resourceStats.length > 0;
+  const statsWereDerived = Boolean(frame[DERIVED_STATS_FLAG]);
+  const canReplaceStats = statsWereDerived || !hasExistingStats;
+
+  const hasTotal =
+    typeof frame.resourceTotalKB === 'number' &&
+    Number.isFinite(frame.resourceTotalKB) &&
+    frame.resourceTotalKB > 0;
+  const hasCount =
+    typeof frame.resourceCount === 'number' &&
+    Number.isFinite(frame.resourceCount) &&
+    frame.resourceCount > 0;
+
+  let mutated = false;
+  let nextFrame = frame;
+
+  const ensureNext = () => {
+    if (!mutated) {
+      nextFrame = { ...frame };
+      mutated = true;
+    }
+  };
+
+  if (canReplaceStats) {
+    ensureNext();
+    nextFrame.resourceStats = derivedStats;
+    nextFrame[DERIVED_STATS_FLAG] = true;
+  }
+
+  if (!hasTotal && totalKB > 0) {
+    ensureNext();
+    nextFrame.resourceTotalKB = totalKB;
+  }
+
+  if (!hasCount && totalCount > 0) {
+    ensureNext();
+    nextFrame.resourceCount = totalCount;
+  }
+
+  if (!canReplaceStats && mutated && !statsWereDerived && nextFrame[DERIVED_STATS_FLAG]) {
+    delete nextFrame[DERIVED_STATS_FLAG];
+  }
+
+  return mutated ? nextFrame : frame;
 }
 
 function makeFrameKey(clientId: string, sessionId: string | null, frame: any) {
@@ -198,6 +297,7 @@ function findInsertIndex(store: FrameStore, sortValue: number) {
 export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions = {}) {
   const [frames, setFrames] = useState<Frame[]>([]);
   const [catalogMap, setCatalogMap] = useState<ResourceCatalog>({});
+  const catalogMapRef = useRef<ResourceCatalog>({});
   const [connectionState, setConnectionState] = useState<ConnectionState>('idle');
   const [controlStateMap, setControlStateMap] = useState<Record<string, ControlState>>({});
   const [sessionOverviewMap, setSessionOverviewMap] = useState<Record<string, SessionOverview>>({});
@@ -207,6 +307,14 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
   const assetBaseRef = useRef<string | null>(null);
   const maxFramesRef = useRef<number>(Math.max(1, options.maxFrames ?? DEFAULT_MAX_FRAMES));
   const currentSessionRef = useRef<Record<string, string | null>>({});
+
+  const commitCatalogUpdate = useCallback((updater: (prev: ResourceCatalog) => ResourceCatalog) => {
+    setCatalogMap((prev) => {
+      const next = updater(prev);
+      catalogMapRef.current = next;
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     const nextMax = Math.max(1, options.maxFrames ?? DEFAULT_MAX_FRAMES);
@@ -234,7 +342,7 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
   useEffect(() => {
     // reset when URL changes
     setFrames([]);
-    setCatalogMap({});
+    commitCatalogUpdate(() => ({}));
     setControlStateMap({});
     setSessionOverviewMap({});
     if (flushHandleRef.current !== null && typeof window !== 'undefined') {
@@ -299,22 +407,43 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
       });
     };
 
+    const refreshFramesForClient = (targetClientId: string) => {
+      const store = frameStoreRef.current;
+      const resourceIndex = catalogMapRef.current[targetClientId];
+      let updated = false;
+
+      store.entries.forEach((bucket) => {
+        if (!bucket || bucket.clientId !== targetClientId) return;
+        const nextFrame = augmentFrameWithResourceStats(bucket.frame, resourceIndex);
+        if (nextFrame !== bucket.frame) {
+          bucket.frame = nextFrame;
+          updated = true;
+        }
+      });
+
+      if (updated) {
+        scheduleFlush();
+      }
+    };
+
     const ingestFrame = (clientId: string, frame: any, sessionId?: string | null) => {
       if (!isActive) return;
       if (!clientId || !frame) return;
       const normalisedFrame = normaliseFramePayload(frame, assetBaseRef.current);
-      const resolvedSessionId = sessionId ?? normalisedFrame.sessionId ?? currentSessionRef.current[clientId] ?? null;
+      const resourceIndex = catalogMapRef.current[clientId];
+      const frameWithStats = augmentFrameWithResourceStats(normalisedFrame, resourceIndex);
+      const resolvedSessionId = sessionId ?? frameWithStats.sessionId ?? currentSessionRef.current[clientId] ?? null;
       if (resolvedSessionId && currentSessionRef.current[clientId] !== resolvedSessionId) {
         currentSessionRef.current[clientId] = resolvedSessionId;
       }
-      const key = makeFrameKey(clientId, resolvedSessionId, normalisedFrame);
+      const key = makeFrameKey(clientId, resolvedSessionId, frameWithStats);
       const store = frameStoreRef.current;
-      const sortValue = getFrameSortValue(normalisedFrame);
+      const sortValue = getFrameSortValue(frameWithStats);
       const existing = store.entries.get(key);
 
       if (existing) {
         const previousSortValue = existing.sortValue;
-        existing.frame = normalisedFrame;
+        existing.frame = frameWithStats;
         existing.sortValue = sortValue;
         existing.sessionId = resolvedSessionId ?? null;
         if (previousSortValue !== sortValue) {
@@ -326,7 +455,7 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
           }
         }
       } else {
-        store.entries.set(key, { clientId, sessionId: resolvedSessionId ?? null, frame: normalisedFrame, sortValue });
+        store.entries.set(key, { clientId, sessionId: resolvedSessionId ?? null, frame: frameWithStats, sortValue });
         const insertIndex = findInsertIndex(store, sortValue);
         store.order.splice(insertIndex, 0, key);
 
@@ -354,20 +483,20 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
             .map((resource) => normaliseResourceEntry(resource, assetBaseRef.current))
             .filter((resource): resource is ResourceEntry => Boolean(resource && resource.id))
         : [];
-      setCatalogMap((prev) => {
-        const next = { ...prev };
-        const base = mode === 'replace' ? {} : { ...(next[clientId] || {}) };
+      commitCatalogUpdate((prev) => {
+        const base = mode === 'replace' ? {} : { ...(prev[clientId] || {}) };
         const updated: Record<string, ResourceEntry> = { ...base };
         for (const resource of normalisedResources) {
           const id = resource.id;
           const existing = updated[id] || {};
           updated[id] = { ...existing, ...resource };
         }
-        if (mode === 'replace' || normalisedResources.length > 0 || next[clientId]) {
-          next[clientId] = updated;
+        if (mode === 'replace' || normalisedResources.length > 0 || prev[clientId]) {
+          return { ...prev, [clientId]: updated };
         }
-        return next;
+        return prev;
       });
+      refreshFramesForClient(clientId);
     };
 
     ws.onOpen = () => {
@@ -387,7 +516,7 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
       if (msg.type === 'frame' && msg.clientId && msg.frame) {
         ingestFrame(msg.clientId, msg.frame, msg.sessionId);
         if (msg.frame?.resourceSnapshot) {
-          ingestResources(msg.clientId, msg.frame.resourceSnapshot, 'replace');
+          ingestResources(msg.clientId, msg.frame.resourceSnapshot, 'merge');
         }
       } else if (msg.type === 'resource_snapshot' && msg.clientId) {
         const mode: ResourceIngestMode = msg.replace === false ? 'merge' : 'replace';
@@ -517,7 +646,7 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
           }
           store.order = nextOrder;
           setFrames((prev) => prev.filter((entry) => entry.clientId !== msg.clientId));
-          setCatalogMap((prev) => {
+          commitCatalogUpdate((prev) => {
             if (!prev[msg.clientId]) return prev;
             const next = { ...prev };
             delete next[msg.clientId];
@@ -673,7 +802,7 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
       const timelineUrl = `${base}/api/timeline/${clientId}?sessionId=${encodeURIComponent(sessionId)}`;
       const catalogUrl = `${base}/api/catalog/${clientId}?sessionId=${encodeURIComponent(sessionId)}`;
       const [timelineResp, catalogResp] = await Promise.all([fetch(timelineUrl), fetch(catalogUrl)]);
-      const framesResult: Frame[] = [];
+      let framesResult: Frame[] = [];
       const catalogIndex: Record<string, ResourceEntry> = {};
 
       if (timelineResp.ok) {
@@ -708,6 +837,15 @@ export function useTelemetry(wsUrl?: string | null, options: UseTelemetryOptions
         const sizeA = getResourceSortSize(a);
         const sizeB = getResourceSortSize(b);
         return sizeB - sizeA;
+      });
+
+      const resourceIndexForAugment = catalogIndex;
+      framesResult = framesResult.map((entry) => {
+        const augmented = augmentFrameWithResourceStats(entry.frame, resourceIndexForAugment);
+        if (augmented === entry.frame) {
+          return entry;
+        }
+        return { ...entry, frame: augmented };
       });
 
       return { frames: framesResult, catalog: catalogArray, catalogIndex };
