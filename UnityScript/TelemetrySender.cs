@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -35,20 +36,36 @@ public class TelemetrySender : MonoBehaviour
 
     [Header("Resources")]
     public bool sendResourceSnapshots = true; // use existing analyzer to build resource list and send on change
+    [Tooltip("How many frames to wait between resource snapshot refreshes.")]
+    public int resourceSnapshotIntervalFrames = 30;
 
     private int frameCounter = 0;
     private float startTime;
     private float nextCaptureTime = 0f;
+    private int lastResourceSnapshotFrame = int.MinValue;
 
 #if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
     private ClientWebSocket ws;
     private CancellationTokenSource wsCts;
     private Task wsReceiveTask;
+    private Thread wsSenderThread;
+    private CancellationTokenSource wsSenderCts;
+    private readonly ConcurrentQueue<object> outboundQueue = new ConcurrentQueue<object>();
+    private AutoResetEvent outboundSignal = new AutoResetEvent(false);
+    private readonly ResourceValidationResult lastResourceValidation = new ResourceValidationResult();
+    private string lastIntegrityFingerprint;
 #endif
 
     // simple last-sent snapshot hash to avoid flooding
     private string lastSnapshotHash = null;
     private List<ResourceEntry> currentResourceSnapshot = new List<ResourceEntry>();
+
+    void Awake()
+    {
+#if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
+        EnsureSenderWorker();
+#endif
+    }
 
     void Start()
     {
@@ -63,6 +80,7 @@ public class TelemetrySender : MonoBehaviour
     {
 #if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
         try {
+            EnsureSenderWorker();
             ws = new ClientWebSocket();
             wsCts = new CancellationTokenSource();
             var uri = new Uri(serverWsUrl);
@@ -71,7 +89,7 @@ public class TelemetrySender : MonoBehaviour
                     await ws.ConnectAsync(uri, wsCts.Token).ConfigureAwait(false);
                     Debug.Log("Telemetry WS open (ClientWebSocket)");
                     var hello = new { role = "unity", clientId = clientId };
-                    await SendJsonAsync(hello).ConfigureAwait(false);
+                    EnqueueTelemetryPayload(hello);
                     SendControlAck("initial_state");
                     wsReceiveTask = Task.Run(() => ReceiveLoopAsync(ws, wsCts.Token));
                 }
@@ -92,9 +110,15 @@ public class TelemetrySender : MonoBehaviour
     {
 #if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
         try {
+            StopSenderWorker();
             if (wsCts != null) wsCts.Cancel();
             if (ws != null) ws.Dispose();
             ws = null;
+            if (outboundSignal != null)
+            {
+                outboundSignal.Dispose();
+                outboundSignal = null;
+            }
         } catch { }
 #endif
     }
@@ -121,38 +145,46 @@ public class TelemetrySender : MonoBehaviour
         var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
         // Collect metrics (basic)
-        var metrics = new Dictionary<string, object>();
-        metrics["fps"] = 1.0f / Mathf.Max(0.0001f, Time.deltaTime);
-        metrics["dt"] = Time.deltaTime;
+        float deltaTime = Time.deltaTime;
+        float fpsValue = 1.0f / Mathf.Max(0.0001f, deltaTime);
 
         // Collect resources: integrate with runtime collector
         List<ResourceEntry> latestSnapshot = null;
         if (sendResourceSnapshots)
         {
-            try
+            bool shouldRefreshSnapshot = (frameCounter - lastResourceSnapshotFrame) >= Mathf.Max(1, resourceSnapshotIntervalFrames) || lastSnapshotHash == null;
+            if (shouldRefreshSnapshot)
             {
-                latestSnapshot = CollectResourceSnapshot() ?? new List<ResourceEntry>();
-            }
-            catch
-            {
-                latestSnapshot = new List<ResourceEntry>();
-            }
-            currentResourceSnapshot = latestSnapshot;
+                lastResourceSnapshotFrame = frameCounter;
+                try
+                {
+                    latestSnapshot = CollectResourceSnapshot() ?? new List<ResourceEntry>();
+                }
+                catch
+                {
+                    latestSnapshot = new List<ResourceEntry>();
+                }
+                UpdateResourceValidation(latestSnapshot);
+                currentResourceSnapshot = latestSnapshot;
 
-            // send resource snapshot only when changed
-            var snapWrapper = new ResourceEntryListWrapper { items = latestSnapshot };
-            var snapJson = JsonUtility.ToJson(snapWrapper);
-            var hash = Hash128.Compute(snapJson).ToString();
-            if (hash != lastSnapshotHash)
-            {
-                lastSnapshotHash = hash;
-                var snapshotMsg = new SnapshotMessage { clientId = clientId, resources = latestSnapshot, replace = true };
+                // send resource snapshot only when changed
+                var snapWrapper = new ResourceEntryListWrapper { items = latestSnapshot };
+                var snapJson = JsonUtility.ToJson(snapWrapper);
+                var hash = Hash128.Compute(snapJson).ToString();
+                if (hash != lastSnapshotHash)
+                {
+                    lastSnapshotHash = hash;
+                    var snapshotMsg = new SnapshotMessage { clientId = clientId, resources = latestSnapshot, replace = true };
 #if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
-                var j = JsonConvert.SerializeObject(snapshotMsg);
-                _ = SendTextAsync(j);
+                    EnqueueTelemetryPayload(snapshotMsg);
 #endif
-                StartCoroutine(UploadResourceThumbnailsAsync(latestSnapshot));
+                    StartCoroutine(UploadResourceThumbnailsAsync(latestSnapshot));
+                }
             }
+        }
+        else
+        {
+            UpdateResourceValidation(null);
         }
 
         var activeResources = currentResourceSnapshot ?? new List<ResourceEntry>();
@@ -160,23 +192,8 @@ public class TelemetrySender : MonoBehaviour
         int resourceCount;
         var resourceStats = SummarizeResourceStats(activeResources, out resourceTotalKB, out resourceCount);
         var resourceIds = ResourceIdsFrom(activeResources);
-
-        // Build frame message dictionary snapshot (for debugging / potential extensions)
-        var frameMsg = new Dictionary<string, object>() {
-            { "type", "frame" },
-            { "clientId", clientId },
-            { "frameIndex", frameIndex },
-            { "timestamp", ts },
-            { "sceneName", SceneManager.GetActiveScene().name },
-            { "dt", Time.deltaTime },
-            { "metrics", metrics },
-            { "resources", resourceIds },
-            { "resourceStats", resourceStats },
-            { "resourceTotalKB", resourceTotalKB },
-            { "resourceCount", resourceCount }
-        };
-
-        var fpsValue = metrics.ContainsKey("fps") ? (float)metrics["fps"] : 0f;
+        var sceneName = SceneManager.GetActiveScene().name;
+        var frameValidation = ValidateFrameData(deltaTime, fpsValue, sceneName, resourceIds, resourceCount);
 
         // thumbnail capture/upload
         if (sendThumbnail && (frameCounter % thumbnailIntervalFrames == 0)) {
@@ -185,9 +202,9 @@ public class TelemetrySender : MonoBehaviour
                     clientId = clientId,
                     frameIndex = frameIndex,
                     timestamp = ts,
-                    sceneName = SceneManager.GetActiveScene().name,
-                    dt = Time.deltaTime,
-                    metrics = new Metrics { fps = fpsValue, dt = Time.deltaTime },
+                    sceneName = sceneName,
+                    dt = deltaTime,
+                    metrics = new Metrics { fps = fpsValue, dt = deltaTime },
                     resources = resourceIds,
                     resourceStats = resourceStats,
                     resourceTotalKB = resourceTotalKB,
@@ -195,8 +212,8 @@ public class TelemetrySender : MonoBehaviour
                 };
                 if (!string.IsNullOrEmpty(url)) fm.thumbnailUrl = url;
 #if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
-                var fj = JsonConvert.SerializeObject(fm);
-                _ = SendTextAsync(fj);
+                EnqueueTelemetryPayload(fm);
+                MaybeEmitIntegrityReport(frameIndex, ts, frameValidation, resourceIds, resourceCount);
 #endif
             }));
         } else {
@@ -204,17 +221,17 @@ public class TelemetrySender : MonoBehaviour
                 clientId = clientId,
                 frameIndex = frameIndex,
                 timestamp = ts,
-                sceneName = SceneManager.GetActiveScene().name,
-                dt = Time.deltaTime,
-                metrics = new Metrics { fps = fpsValue, dt = Time.deltaTime },
+                sceneName = sceneName,
+                dt = deltaTime,
+                metrics = new Metrics { fps = fpsValue, dt = deltaTime },
                 resources = resourceIds,
                 resourceStats = resourceStats,
                 resourceTotalKB = resourceTotalKB,
                 resourceCount = resourceCount
             };
 #if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
-            var fj = JsonConvert.SerializeObject(fm);
-            _ = SendTextAsync(fj);
+            EnqueueTelemetryPayload(fm);
+            MaybeEmitIntegrityReport(frameIndex, ts, frameValidation, resourceIds, resourceCount);
 #endif
         }
     }
@@ -227,6 +244,228 @@ public class TelemetrySender : MonoBehaviour
             if (!string.IsNullOrEmpty(r.id)) ids.Add(r.id);
         }
         return ids;
+    }
+
+    private void UpdateResourceValidation(List<ResourceEntry> resources)
+    {
+        lastResourceValidation.Reset();
+        if (resources == null)
+        {
+            return;
+        }
+
+        lastResourceValidation.totalEntries = resources.Count;
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var entry in resources)
+        {
+            if (entry == null)
+            {
+                lastResourceValidation.nullEntries++;
+                continue;
+            }
+
+            if (string.IsNullOrEmpty(entry.id))
+            {
+                lastResourceValidation.missingId++;
+            }
+            else if (!seen.Add(entry.id))
+            {
+                lastResourceValidation.duplicateId++;
+            }
+
+            if (string.IsNullOrEmpty(entry.name))
+            {
+                lastResourceValidation.missingName++;
+            }
+
+            if (string.IsNullOrEmpty(entry.type) && string.IsNullOrEmpty(entry.category))
+            {
+                lastResourceValidation.missingType++;
+            }
+
+            if (entry.sizeKB <= 0 && entry.runtimeSizeKB <= 0 && entry.compressedSizeKB <= 0 && entry.sizeAfterCompressionKB <= 0)
+            {
+                lastResourceValidation.missingSize++;
+            }
+        }
+    }
+
+    private FrameValidationResult ValidateFrameData(float deltaTime, float fpsValue, string sceneName, List<string> resourceIds, int resourceCount)
+    {
+        var result = new FrameValidationResult();
+
+        if (float.IsNaN(deltaTime) || float.IsInfinity(deltaTime) || deltaTime < 0f)
+        {
+            result.invalidDelta = true;
+        }
+
+        if (float.IsNaN(fpsValue) || float.IsInfinity(fpsValue) || fpsValue <= 0f)
+        {
+            result.invalidFps = true;
+        }
+
+        if (string.IsNullOrEmpty(sceneName))
+        {
+            result.missingSceneName = true;
+        }
+
+        int idCount = resourceIds != null ? resourceIds.Count : 0;
+        if (resourceCount != idCount)
+        {
+            result.resourceIdMismatch = resourceCount - idCount;
+        }
+
+        return result;
+    }
+
+    private void MaybeEmitIntegrityReport(int frameIndex, long timestamp, FrameValidationResult frameValidation, List<string> resourceIds, int resourceCount)
+    {
+        var issues = BuildIntegrityIssues(frameValidation);
+        bool healthy = issues.Count == 0;
+
+        var fingerprintBuilder = new StringBuilder();
+        fingerprintBuilder.Append(healthy ? "healthy" : "issues");
+        foreach (var issue in issues)
+        {
+            fingerprintBuilder.Append('|').Append(issue.code).Append(':').Append(issue.count);
+        }
+        string fingerprint = fingerprintBuilder.ToString();
+        if (fingerprint == lastIntegrityFingerprint)
+        {
+            return;
+        }
+
+        lastIntegrityFingerprint = fingerprint;
+
+        var report = new IntegrityReportMessage
+        {
+            clientId = clientId,
+            timestamp = timestamp,
+            frameIndex = frameIndex,
+            healthy = healthy,
+            issues = issues,
+            resourceSnapshotCount = lastResourceValidation.totalEntries,
+            resourceTotalCount = resourceCount,
+            resourceIdCount = resourceIds != null ? resourceIds.Count : 0,
+            resourceNullEntries = lastResourceValidation.nullEntries,
+            resourceMissingIds = lastResourceValidation.missingId,
+            resourceDuplicateIds = lastResourceValidation.duplicateId,
+            resourceMissingName = lastResourceValidation.missingName,
+            resourceMissingType = lastResourceValidation.missingType,
+            resourceMissingSize = lastResourceValidation.missingSize,
+            resourceIdMismatch = frameValidation.resourceIdMismatch,
+            invalidFrameDelta = frameValidation.invalidDelta,
+            invalidFps = frameValidation.invalidFps,
+            missingSceneName = frameValidation.missingSceneName
+        };
+
+#if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
+        EnqueueTelemetryPayload(report);
+#endif
+
+        if (!healthy)
+        {
+            foreach (var issue in issues)
+            {
+                Debug.LogWarning($"Telemetry integrity issue [{issue.code}] x{issue.count}: {issue.message}");
+            }
+        }
+        else
+        {
+            Debug.Log("Telemetry data integrity verified.");
+        }
+    }
+
+    private List<TelemetryIntegrityIssue> BuildIntegrityIssues(FrameValidationResult frameValidation)
+    {
+        var issues = new List<TelemetryIntegrityIssue>();
+
+        if (lastResourceValidation.nullEntries > 0)
+        {
+            issues.Add(new TelemetryIntegrityIssue { code = "resource_null_entries", message = "Resource snapshot contained null entries.", count = lastResourceValidation.nullEntries });
+        }
+
+        if (lastResourceValidation.missingId > 0)
+        {
+            issues.Add(new TelemetryIntegrityIssue { code = "resource_missing_id", message = "Resources were missing stable identifiers.", count = lastResourceValidation.missingId });
+        }
+
+        if (lastResourceValidation.duplicateId > 0)
+        {
+            issues.Add(new TelemetryIntegrityIssue { code = "resource_duplicate_id", message = "Duplicate resource identifiers detected in snapshot.", count = lastResourceValidation.duplicateId });
+        }
+
+        if (lastResourceValidation.missingName > 0)
+        {
+            issues.Add(new TelemetryIntegrityIssue { code = "resource_missing_name", message = "Resources without a readable name were found.", count = lastResourceValidation.missingName });
+        }
+
+        if (lastResourceValidation.missingType > 0)
+        {
+            issues.Add(new TelemetryIntegrityIssue { code = "resource_missing_type", message = "Resources were missing type or category metadata.", count = lastResourceValidation.missingType });
+        }
+
+        if (lastResourceValidation.missingSize > 0)
+        {
+            issues.Add(new TelemetryIntegrityIssue { code = "resource_missing_size", message = "Resources had no size information populated.", count = lastResourceValidation.missingSize });
+        }
+
+        if (frameValidation.resourceIdMismatch != 0)
+        {
+            int magnitude = Mathf.Abs(frameValidation.resourceIdMismatch);
+            string message = frameValidation.resourceIdMismatch > 0
+                ? $"{magnitude} resources were missing IDs in the frame payload."
+                : $"Frame payload reported {magnitude} more resource IDs than entries in the snapshot.";
+            issues.Add(new TelemetryIntegrityIssue { code = "resource_id_mismatch", message = message, count = magnitude });
+        }
+
+        if (frameValidation.invalidDelta)
+        {
+            issues.Add(new TelemetryIntegrityIssue { code = "invalid_delta_time", message = "Frame delta time was invalid (NaN/Inf/negative).", count = 1 });
+        }
+
+        if (frameValidation.invalidFps)
+        {
+            issues.Add(new TelemetryIntegrityIssue { code = "invalid_fps", message = "Calculated FPS was invalid (NaN/Inf/non-positive).", count = 1 });
+        }
+
+        if (frameValidation.missingSceneName)
+        {
+            issues.Add(new TelemetryIntegrityIssue { code = "missing_scene_name", message = "Active scene name was empty when building frame payload.", count = 1 });
+        }
+
+        return issues;
+    }
+
+    private sealed class ResourceValidationResult
+    {
+        public int totalEntries;
+        public int nullEntries;
+        public int missingId;
+        public int duplicateId;
+        public int missingName;
+        public int missingType;
+        public int missingSize;
+
+        public void Reset()
+        {
+            totalEntries = 0;
+            nullEntries = 0;
+            missingId = 0;
+            duplicateId = 0;
+            missingName = 0;
+            missingType = 0;
+            missingSize = 0;
+        }
+    }
+
+    private struct FrameValidationResult
+    {
+        public bool invalidDelta;
+        public bool invalidFps;
+        public bool missingSceneName;
+        public int resourceIdMismatch;
     }
 
     private static int GetResourceContributionSizeKB(ResourceEntry entry)
@@ -504,9 +743,8 @@ public class TelemetrySender : MonoBehaviour
                             rwt.entry.thumbnailUrl = respObj.url;
                             UpdateCachedResource(rwt.entry);
                             var snapshotMsg = new SnapshotMessage { clientId = clientId, resources = new List<ResourceEntry> { rwt.entry }, replace = false };
-                            var j = JsonConvert.SerializeObject(snapshotMsg);
 #if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
-                            _ = SendTextAsync(j);
+                            EnqueueTelemetryPayload(snapshotMsg);
 #endif
                             uploadedResourceIds.Add(id);
                         }
@@ -627,29 +865,133 @@ public class TelemetrySender : MonoBehaviour
                 thumbnailIntervalFrames = thumbnailIntervalFrames
             }
         };
-        var json = JsonConvert.SerializeObject(ack);
-        _ = SendTextAsync(json);
+        EnqueueTelemetryPayload(ack);
 #endif
     }
 
 #if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
-    private async Task SendJsonAsync(object obj)
+    private void EnsureSenderWorker()
     {
-        var s = JsonConvert.SerializeObject(obj);
-        await SendTextAsync(s).ConfigureAwait(false);
+        if (wsSenderThread != null && wsSenderThread.IsAlive) return;
+
+        if (outboundSignal == null)
+        {
+            outboundSignal = new AutoResetEvent(false);
+        }
+
+        wsSenderCts?.Dispose();
+        wsSenderCts = new CancellationTokenSource();
+        wsSenderThread = new Thread(() => ProcessOutboundQueue(wsSenderCts.Token))
+        {
+            IsBackground = true,
+            Name = "TelemetrySenderQueue"
+        };
+        wsSenderThread.Start();
     }
 
-    private async Task SendTextAsync(string text)
+    private void StopSenderWorker()
     {
-        try {
-            if (ws == null) return;
-            if (ws.State != WebSocketState.Open) return;
-            var bytes = Encoding.UTF8.GetBytes(text);
-            var seg = new ArraySegment<byte>(bytes);
-            await ws.SendAsync(seg, WebSocketMessageType.Text, true, wsCts.Token).ConfigureAwait(false);
-        } catch (Exception ex) {
-            Debug.LogWarning("WebSocket send failed: " + ex.Message);
+        if (wsSenderCts != null && !wsSenderCts.IsCancellationRequested)
+        {
+            wsSenderCts.Cancel();
         }
+        if (outboundSignal != null)
+        {
+            outboundSignal.Set();
+        }
+        if (wsSenderThread != null)
+        {
+            try
+            {
+                wsSenderThread.Join(200);
+            }
+            catch { }
+            wsSenderThread = null;
+        }
+        if (wsSenderCts != null)
+        {
+            wsSenderCts.Dispose();
+            wsSenderCts = null;
+        }
+
+        while (outboundQueue.TryDequeue(out _)) { }
+    }
+
+    private void ProcessOutboundQueue(CancellationToken token)
+    {
+        while (!token.IsCancellationRequested)
+        {
+            if (!outboundQueue.TryDequeue(out var payload))
+            {
+                try
+                {
+                    outboundSignal?.WaitOne(10);
+                }
+                catch (ObjectDisposedException)
+                {
+                    return;
+                }
+                continue;
+            }
+
+            string json = payload as string;
+            if (json == null)
+            {
+                try
+                {
+                    json = JsonConvert.SerializeObject(payload);
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning("Failed to serialize telemetry payload: " + ex.Message);
+                    continue;
+                }
+            }
+
+            if (string.IsNullOrEmpty(json))
+            {
+                continue;
+            }
+
+            var bytes = Encoding.UTF8.GetBytes(json);
+            var seg = new ArraySegment<byte>(bytes);
+
+            bool sent = false;
+            while (!sent && !token.IsCancellationRequested)
+            {
+                try
+                {
+                    if (ws == null || ws.State != WebSocketState.Open)
+                    {
+                        Thread.Sleep(5);
+                        continue;
+                    }
+
+                    ws.SendAsync(seg, WebSocketMessageType.Text, true, token).GetAwaiter().GetResult();
+                    sent = true;
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+                catch (ObjectDisposedException)
+                {
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning("Telemetry send failed: " + ex.Message);
+                    Thread.Sleep(20);
+                }
+            }
+        }
+    }
+
+    private void EnqueueTelemetryPayload(object payload)
+    {
+        if (payload == null) return;
+        outboundQueue.Enqueue(payload);
+        outboundSignal.Set();
     }
 
     private async Task ReceiveLoopAsync(ClientWebSocket socket, CancellationToken token)
@@ -744,5 +1086,37 @@ public class ControlAckMessage
     public string command;
     public ControlAckState state;
     public long timestamp;
+}
+
+[Serializable]
+public class TelemetryIntegrityIssue
+{
+    public string code;
+    public string message;
+    public int count;
+}
+
+[Serializable]
+public class IntegrityReportMessage
+{
+    public string type = "integrity_report";
+    public string clientId;
+    public long timestamp;
+    public int frameIndex;
+    public bool healthy;
+    public List<TelemetryIntegrityIssue> issues;
+    public int resourceSnapshotCount;
+    public int resourceTotalCount;
+    public int resourceIdCount;
+    public int resourceNullEntries;
+    public int resourceMissingIds;
+    public int resourceDuplicateIds;
+    public int resourceMissingName;
+    public int resourceMissingType;
+    public int resourceMissingSize;
+    public int resourceIdMismatch;
+    public bool invalidFrameDelta;
+    public bool invalidFps;
+    public bool missingSceneName;
 }
 
