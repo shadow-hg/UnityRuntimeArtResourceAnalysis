@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
@@ -19,92 +20,249 @@ public static class RuntimeResourceCollector
         public int materialCount;
     }
 
+    private class SnapshotContext
+    {
+        public readonly List<ResourceEntry> entries = new List<ResourceEntry>();
+        public readonly HashSet<int> textureSeen = new HashSet<int>();
+        public readonly HashSet<int> materialSeen = new HashSet<int>();
+        public readonly HashSet<int> meshSeen = new HashSet<int>();
+        public readonly HashSet<int> shaderSeen = new HashSet<int>();
+        public readonly Dictionary<Shader, ShaderAggregate> shaderAggregates = new Dictionary<Shader, ShaderAggregate>();
+    }
+
     public static List<ResourceEntry> GetSnapshot()
     {
-        var list = new List<ResourceEntry>();
-        var textureSeen = new HashSet<int>();
-        var materialSeen = new HashSet<int>();
-        var meshSeen = new HashSet<int>();
-        var shaderSeen = new HashSet<int>();
-        var shaderAggregates = new Dictionary<Shader, ShaderAggregate>();
+        var ctx = new SnapshotContext();
+        CollectRenderers(ctx);
+        CollectCameras(ctx);
+        CollectRenderTextures(ctx);
+        CollectMeshFilters(ctx);
+        CollectSkinnedMeshes(ctx);
+        FinalizeShaders(ctx);
+        SortEntries(ctx.entries);
+        return ctx.entries;
+    }
 
-        // Collect from Renderers' materials
-        var renderers = UnityEngine.Object.FindObjectsOfType<Renderer>(true);
-        foreach (var r in renderers)
+    public static IEnumerator CaptureSnapshotAsync(Action<List<ResourceEntry>> onCompleted, int batchSize = 32)
+    {
+        if (onCompleted == null)
         {
-            var mats = r.sharedMaterials;
-            if (mats == null) continue;
-            foreach (var m in mats)
-            {
-                if (m == null || m.shader == null) continue;
-                // try iterate shader properties if available
-                int propCount = 0;
-                try { propCount = m.shader.GetPropertyCount(); } catch { propCount = 0; }
-                if (propCount > 0)
-                {
-                    for (int i = 0; i < propCount; i++)
-                    {
-                        try
-                        {
-                            var propType = m.shader.GetPropertyType(i);
-                            if (propType == ShaderPropertyType.Texture)
-                            {
-                                var propName = m.shader.GetPropertyName(i);
-                                var tex = m.GetTexture(propName);
-                                AddTextureEntry(tex, list, textureSeen, $"{m.name}/{propName}");
-                            }
-                        }
-                        catch { }
-                    }
-                }
-                else
-                {
-                    // fallback common names
-                    AddTextureEntry(m.GetTexture("_MainTex"), list, textureSeen, $"{m.name}/_MainTex");
-                    AddTextureEntry(m.GetTexture("_BaseMap"), list, textureSeen, $"{m.name}/_BaseMap");
-                    AddTextureEntry(m.GetTexture("_BumpMap"), list, textureSeen, $"{m.name}/_BumpMap");
-                    AddTextureEntry(m.GetTexture("_EmissionMap"), list, textureSeen, $"{m.name}/_EmissionMap");
-                }
+            yield break;
+        }
 
-                bool addedMaterial = AddMaterialEntry(m, list, materialSeen);
-                RegisterShaderUsage(m, list, shaderAggregates, addedMaterial);
+        var ctx = new SnapshotContext();
+        yield return CollectRenderersAsync(ctx, batchSize);
+        yield return CollectCamerasAsync(ctx, batchSize);
+        yield return CollectRenderTexturesAsync(ctx, batchSize);
+        yield return CollectMeshFiltersAsync(ctx, batchSize);
+        yield return CollectSkinnedMeshesAsync(ctx, batchSize);
+        yield return FinalizeShadersAsync(ctx, batchSize);
+        onCompleted(ctx.entries);
+    }
+
+    private static void CollectRenderers(SnapshotContext ctx)
+    {
+        var renderers = UnityEngine.Object.FindObjectsOfType<Renderer>(true);
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            ProcessRenderer(renderers[i], ctx);
+        }
+    }
+
+    private static IEnumerator CollectRenderersAsync(SnapshotContext ctx, int batchSize)
+    {
+        var renderers = UnityEngine.Object.FindObjectsOfType<Renderer>(true);
+        int processed = 0;
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            ProcessRenderer(renderers[i], ctx);
+            if (++processed >= batchSize)
+            {
+                processed = 0;
+                yield return null;
             }
         }
+    }
 
-        // Cameras target RenderTexture
+    private static void ProcessRenderer(Renderer renderer, SnapshotContext ctx)
+    {
+        if (renderer == null)
+        {
+            return;
+        }
+
+        var mats = renderer.sharedMaterials;
+        if (mats == null) return;
+        foreach (var m in mats)
+        {
+            ProcessMaterial(m, ctx);
+        }
+    }
+
+    private static void ProcessMaterial(Material m, SnapshotContext ctx)
+    {
+        if (m == null || m.shader == null) return;
+
+        int propCount = 0;
+        try { propCount = m.shader.GetPropertyCount(); } catch { propCount = 0; }
+        if (propCount > 0)
+        {
+            for (int i = 0; i < propCount; i++)
+            {
+                try
+                {
+                    var propType = m.shader.GetPropertyType(i);
+                    if (propType == ShaderPropertyType.Texture)
+                    {
+                        var propName = m.shader.GetPropertyName(i);
+                        var tex = m.GetTexture(propName);
+                        AddTextureEntry(tex, ctx.entries, ctx.textureSeen, $"{m.name}/{propName}");
+                    }
+                }
+                catch { }
+            }
+        }
+        else
+        {
+            AddTextureEntry(m.GetTexture("_MainTex"), ctx.entries, ctx.textureSeen, $"{m.name}/_MainTex");
+            AddTextureEntry(m.GetTexture("_BaseMap"), ctx.entries, ctx.textureSeen, $"{m.name}/_BaseMap");
+            AddTextureEntry(m.GetTexture("_BumpMap"), ctx.entries, ctx.textureSeen, $"{m.name}/_BumpMap");
+            AddTextureEntry(m.GetTexture("_EmissionMap"), ctx.entries, ctx.textureSeen, $"{m.name}/_EmissionMap");
+        }
+
+        bool addedMaterial = AddMaterialEntry(m, ctx.entries, ctx.materialSeen);
+        RegisterShaderUsage(m, ctx.entries, ctx.shaderAggregates, addedMaterial);
+    }
+
+    private static void CollectCameras(SnapshotContext ctx)
+    {
         var cams = UnityEngine.Object.FindObjectsOfType<Camera>(true);
-        foreach (var c in cams)
+        for (int i = 0; i < cams.Length; i++)
         {
-            var rt = c.targetTexture;
-            AddTextureEntry(rt, list, textureSeen, $"{c.name}.targetTexture");
+            ProcessCamera(cams[i], ctx);
         }
+    }
 
-        // Optionally, include any loaded RenderTextures (may include temporary RTs)
+    private static IEnumerator CollectCamerasAsync(SnapshotContext ctx, int batchSize)
+    {
+        var cams = UnityEngine.Object.FindObjectsOfType<Camera>(true);
+        int processed = 0;
+        for (int i = 0; i < cams.Length; i++)
+        {
+            ProcessCamera(cams[i], ctx);
+            if (++processed >= batchSize)
+            {
+                processed = 0;
+                yield return null;
+            }
+        }
+    }
+
+    private static void ProcessCamera(Camera cam, SnapshotContext ctx)
+    {
+        if (cam == null) return;
+        var rt = cam.targetTexture;
+        AddTextureEntry(rt, ctx.entries, ctx.textureSeen, $"{cam.name}.targetTexture");
+    }
+
+    private static void CollectRenderTextures(SnapshotContext ctx)
+    {
         var allRTs = UnityEngine.Object.FindObjectsOfType<RenderTexture>(true);
-        foreach (var r in allRTs)
+        for (int i = 0; i < allRTs.Length; i++)
         {
-            AddTextureEntry(r, list, textureSeen, "RenderTexture");
+            AddTextureEntry(allRTs[i], ctx.entries, ctx.textureSeen, "RenderTexture");
         }
+    }
 
-        // Materials referenced by renderers
-        // Meshes referenced by MeshFilter / SkinnedMeshRenderer
+    private static IEnumerator CollectRenderTexturesAsync(SnapshotContext ctx, int batchSize)
+    {
+        var allRTs = UnityEngine.Object.FindObjectsOfType<RenderTexture>(true);
+        int processed = 0;
+        for (int i = 0; i < allRTs.Length; i++)
+        {
+            AddTextureEntry(allRTs[i], ctx.entries, ctx.textureSeen, "RenderTexture");
+            if (++processed >= batchSize)
+            {
+                processed = 0;
+                yield return null;
+            }
+        }
+    }
+
+    private static void CollectMeshFilters(SnapshotContext ctx)
+    {
         var meshFilters = UnityEngine.Object.FindObjectsOfType<MeshFilter>(true);
-        foreach (var mf in meshFilters)
+        for (int i = 0; i < meshFilters.Length; i++)
         {
-            AddMeshEntry(mf.sharedMesh, list, meshSeen);
+            AddMeshEntry(meshFilters[i].sharedMesh, ctx.entries, ctx.meshSeen);
         }
+    }
 
+    private static IEnumerator CollectMeshFiltersAsync(SnapshotContext ctx, int batchSize)
+    {
+        var meshFilters = UnityEngine.Object.FindObjectsOfType<MeshFilter>(true);
+        int processed = 0;
+        for (int i = 0; i < meshFilters.Length; i++)
+        {
+            AddMeshEntry(meshFilters[i].sharedMesh, ctx.entries, ctx.meshSeen);
+            if (++processed >= batchSize)
+            {
+                processed = 0;
+                yield return null;
+            }
+        }
+    }
+
+    private static void CollectSkinnedMeshes(SnapshotContext ctx)
+    {
         var skinnedRenderers = UnityEngine.Object.FindObjectsOfType<SkinnedMeshRenderer>(true);
-        foreach (var smr in skinnedRenderers)
+        for (int i = 0; i < skinnedRenderers.Length; i++)
         {
-            AddMeshEntry(smr.sharedMesh, list, meshSeen);
+            AddMeshEntry(skinnedRenderers[i].sharedMesh, ctx.entries, ctx.meshSeen);
         }
+    }
 
-        foreach (var kvp in shaderAggregates.OrderBy(k => k.Key != null ? k.Key.name : string.Empty, StringComparer.Ordinal))
+    private static IEnumerator CollectSkinnedMeshesAsync(SnapshotContext ctx, int batchSize)
+    {
+        var skinnedRenderers = UnityEngine.Object.FindObjectsOfType<SkinnedMeshRenderer>(true);
+        int processed = 0;
+        for (int i = 0; i < skinnedRenderers.Length; i++)
         {
-            AddShaderEntry(kvp.Key, kvp.Value, list, shaderSeen);
+            AddMeshEntry(skinnedRenderers[i].sharedMesh, ctx.entries, ctx.meshSeen);
+            if (++processed >= batchSize)
+            {
+                processed = 0;
+                yield return null;
+            }
         }
+    }
 
+    private static void FinalizeShaders(SnapshotContext ctx)
+    {
+        foreach (var kvp in ctx.shaderAggregates.OrderBy(k => k.Key != null ? k.Key.name : string.Empty, StringComparer.Ordinal))
+        {
+            AddShaderEntry(kvp.Key, kvp.Value, ctx.entries, ctx.shaderSeen);
+        }
+    }
+
+    private static IEnumerator FinalizeShadersAsync(SnapshotContext ctx, int batchSize)
+    {
+        var ordered = ctx.shaderAggregates.OrderBy(k => k.Key != null ? k.Key.name : string.Empty, StringComparer.Ordinal).ToArray();
+        int processed = 0;
+        for (int i = 0; i < ordered.Length; i++)
+        {
+            var kvp = ordered[i];
+            AddShaderEntry(kvp.Key, kvp.Value, ctx.entries, ctx.shaderSeen);
+            if (++processed >= batchSize)
+            {
+                processed = 0;
+                yield return null;
+            }
+        }
+    }
+
+    private static void SortEntries(List<ResourceEntry> list)
+    {
         list.Sort((a, b) =>
         {
             var catA = a.category ?? a.type ?? string.Empty;
@@ -115,8 +273,6 @@ public static class RuntimeResourceCollector
             if (sizeCompare != 0) return sizeCompare;
             return string.CompareOrdinal(a.name ?? string.Empty, b.name ?? string.Empty);
         });
-
-        return list;
     }
 
     // Returns list of ResourceWithTexture containing Texture references for runtime thumbnail extraction

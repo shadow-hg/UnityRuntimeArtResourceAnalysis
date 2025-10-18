@@ -3,11 +3,15 @@ using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Text;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
+using Unity.Collections;
 using UnityEngine.Networking;
 using UnityEngine.SceneManagement;
+using UnityEngine.Rendering;
+using UnityEngine.Experimental.Rendering;
 
 #if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
 using System.Net.WebSockets;
@@ -37,6 +41,10 @@ public class TelemetrySender : MonoBehaviour
     [Header("Resources")]
     public bool sendResourceSnapshots = true; // use existing analyzer to build resource list and send on change
 
+    [Header("Performance")]
+    [Tooltip("Minimum time in seconds between resource snapshot captures.")]
+    public float resourceSnapshotInterval = 1f;
+
     private int frameCounter = 0;
     private float startTime;
     private float nextCaptureTime = 0f;
@@ -53,12 +61,48 @@ public class TelemetrySender : MonoBehaviour
 
     // simple last-sent snapshot hash to avoid flooding
     private string lastSnapshotHash = null;
-    private List<ResourceEntry> currentResourceSnapshot = new List<ResourceEntry>();
+    private readonly List<ResourceEntry> currentResourceSnapshot = new List<ResourceEntry>();
+    private Coroutine resourceSnapshotRoutine;
+    private bool resourceSnapshotInProgress = false;
+    private float nextResourceSnapshotTime = 0f;
+    private CancellationTokenSource resourceProcessingCts;
+    private Task resourceProcessingTask;
+    private readonly object resourceStateLock = new object();
+    private ResourceProcessingResult pendingResourceState;
+    private bool resourceStateDirty = false;
+    private ResourceProcessingResult currentResourceState = ResourceProcessingResult.CreateEmpty();
+
+    private static readonly List<ResourceCategoryStat> EmptyCategoryStats = new List<ResourceCategoryStat>(0);
+    private static readonly List<string> EmptyResourceIds = new List<string>(0);
+
+    private class ResourceProcessingResult
+    {
+        public List<ResourceEntry> Snapshot;
+        public List<ResourceCategoryStat> Stats;
+        public List<string> ResourceIds;
+        public int TotalKB;
+        public int TotalCount;
+        public string Hash;
+
+        public static ResourceProcessingResult CreateEmpty()
+        {
+            return new ResourceProcessingResult
+            {
+                Snapshot = new List<ResourceEntry>(),
+                Stats = new List<ResourceCategoryStat>(),
+                ResourceIds = new List<string>(),
+                TotalKB = 0,
+                TotalCount = 0,
+                Hash = null
+            };
+        }
+    }
 
     void Start()
     {
         startTime = Time.realtimeSinceStartup;
         nextCaptureTime = Time.realtimeSinceStartup;
+        nextResourceSnapshotTime = Time.realtimeSinceStartup;
         if (string.IsNullOrEmpty(clientId)) clientId = SystemInfo.deviceName + "-" + Application.productName;
         StartSendWorker();
         ConnectWebSocket();
@@ -97,6 +141,8 @@ public class TelemetrySender : MonoBehaviour
     void OnDestroy()
     {
 #if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
+        CancelResourceSnapshotCoroutine();
+        CancelResourceProcessingTask();
         StopSendWorker();
         try {
             if (wsCts != null) wsCts.Cancel();
@@ -132,40 +178,31 @@ public class TelemetrySender : MonoBehaviour
         metrics["fps"] = 1.0f / Mathf.Max(0.0001f, Time.deltaTime);
         metrics["dt"] = Time.deltaTime;
 
-        // Collect resources: integrate with runtime collector
-        List<ResourceEntry> latestSnapshot = null;
         if (sendResourceSnapshots)
         {
-            try
+            TryStartResourceSnapshot();
+            ApplyCompletedResourceState();
+        }
+        else
+        {
+            CancelResourceSnapshotCoroutine();
+            CancelResourceProcessingTask();
+            if (currentResourceSnapshot.Count > 0)
             {
-                latestSnapshot = CollectResourceSnapshot() ?? new List<ResourceEntry>();
+                currentResourceSnapshot.Clear();
             }
-            catch
-            {
-                latestSnapshot = new List<ResourceEntry>();
-            }
-            currentResourceSnapshot = latestSnapshot;
-
-            // send resource snapshot only when changed
-            var snapWrapper = new ResourceEntryListWrapper { items = latestSnapshot };
-            var snapJson = JsonUtility.ToJson(snapWrapper);
-            var hash = Hash128.Compute(snapJson).ToString();
-            if (hash != lastSnapshotHash)
-            {
-                lastSnapshotHash = hash;
-                var snapshotMsg = new SnapshotMessage { clientId = clientId, resources = latestSnapshot, replace = true };
-#if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
-                QueueMessage(snapshotMsg);
-#endif
-                StartCoroutine(UploadResourceThumbnailsAsync(latestSnapshot));
-            }
+            currentResourceState = ResourceProcessingResult.CreateEmpty();
+            lastSnapshotHash = null;
         }
 
-        var activeResources = currentResourceSnapshot ?? new List<ResourceEntry>();
-        int resourceTotalKB;
-        int resourceCount;
-        var resourceStats = SummarizeResourceStats(activeResources, out resourceTotalKB, out resourceCount);
-        var resourceIds = ResourceIdsFrom(activeResources);
+        var resourceStats = (currentResourceState != null && currentResourceState.Stats != null && currentResourceState.Stats.Count > 0)
+            ? currentResourceState.Stats
+            : EmptyCategoryStats;
+        int resourceTotalKB = currentResourceState != null ? currentResourceState.TotalKB : 0;
+        int resourceCount = currentResourceState != null ? currentResourceState.TotalCount : 0;
+        var resourceIds = (currentResourceState != null && currentResourceState.ResourceIds != null && currentResourceState.ResourceIds.Count > 0)
+            ? currentResourceState.ResourceIds
+            : EmptyResourceIds;
 
         // Build frame message dictionary snapshot (for debugging / potential extensions)
         var frameMsg = new Dictionary<string, object>() {
@@ -223,14 +260,231 @@ public class TelemetrySender : MonoBehaviour
         }
     }
 
-    private List<string> ResourceIdsFrom(List<ResourceEntry> resources)
+    private void TryStartResourceSnapshot()
     {
-        var ids = new List<string>();
-        if (resources == null) return ids;
-        foreach (var r in resources) {
-            if (!string.IsNullOrEmpty(r.id)) ids.Add(r.id);
+        if (resourceSnapshotInProgress)
+        {
+            return;
         }
-        return ids;
+
+        if (!sendResourceSnapshots)
+        {
+            return;
+        }
+
+        if (resourceProcessingTask != null && !resourceProcessingTask.IsCompleted)
+        {
+            return;
+        }
+
+        if (Time.realtimeSinceStartup + 0.0001f < nextResourceSnapshotTime)
+        {
+            return;
+        }
+
+        if (!gameObject.activeInHierarchy)
+        {
+            return;
+        }
+
+        resourceSnapshotInProgress = true;
+        resourceSnapshotRoutine = StartCoroutine(RuntimeResourceCollector.CaptureSnapshotAsync(OnResourceSnapshotReady, 64));
+    }
+
+    private void CancelResourceSnapshotCoroutine()
+    {
+        if (resourceSnapshotRoutine != null)
+        {
+            StopCoroutine(resourceSnapshotRoutine);
+            resourceSnapshotRoutine = null;
+        }
+        resourceSnapshotInProgress = false;
+    }
+
+    private void OnResourceSnapshotReady(List<ResourceEntry> snapshot)
+    {
+        resourceSnapshotInProgress = false;
+        resourceSnapshotRoutine = null;
+        nextResourceSnapshotTime = Time.realtimeSinceStartup + Mathf.Max(0.1f, resourceSnapshotInterval);
+
+        if (!sendResourceSnapshots)
+        {
+            return;
+        }
+
+        if (snapshot == null)
+        {
+            snapshot = new List<ResourceEntry>();
+        }
+
+        StartResourceProcessing(snapshot);
+    }
+
+    private void StartResourceProcessing(List<ResourceEntry> snapshot)
+    {
+        CancelResourceProcessingTask();
+        resourceProcessingCts = new CancellationTokenSource();
+        var token = resourceProcessingCts.Token;
+        resourceProcessingTask = Task.Run(() => ProcessResourceSnapshot(snapshot, token), token);
+        resourceProcessingTask.ContinueWith(t =>
+        {
+            if (t.Status == TaskStatus.RanToCompletion && !token.IsCancellationRequested)
+            {
+                lock (resourceStateLock)
+                {
+                    pendingResourceState = t.Result;
+                    resourceStateDirty = true;
+                }
+            }
+        }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+    }
+
+    private void CancelResourceProcessingTask()
+    {
+        if (resourceProcessingCts != null)
+        {
+            try { resourceProcessingCts.Cancel(); } catch { }
+            resourceProcessingCts.Dispose();
+            resourceProcessingCts = null;
+        }
+        resourceProcessingTask = null;
+        lock (resourceStateLock)
+        {
+            resourceStateDirty = false;
+            pendingResourceState = null;
+        }
+    }
+
+    private void ApplyCompletedResourceState()
+    {
+        ResourceProcessingResult next = null;
+        lock (resourceStateLock)
+        {
+            if (resourceStateDirty)
+            {
+                next = pendingResourceState;
+                pendingResourceState = null;
+                resourceStateDirty = false;
+            }
+        }
+
+        if (next == null)
+        {
+            return;
+        }
+
+        currentResourceState = next;
+        currentResourceSnapshot.Clear();
+        if (next.Snapshot != null && next.Snapshot.Count > 0)
+        {
+            currentResourceSnapshot.AddRange(next.Snapshot);
+        }
+
+        if (!string.IsNullOrEmpty(next.Hash) && next.Hash != lastSnapshotHash)
+        {
+            lastSnapshotHash = next.Hash;
+            var snapshotMsg = new SnapshotMessage { clientId = clientId, resources = next.Snapshot, replace = true };
+#if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
+            QueueMessage(snapshotMsg);
+#endif
+            StartCoroutine(UploadResourceThumbnailsAsync(next.Snapshot));
+        }
+    }
+
+    private static ResourceProcessingResult ProcessResourceSnapshot(List<ResourceEntry> snapshot, CancellationToken token)
+    {
+        if (snapshot == null)
+        {
+            snapshot = new List<ResourceEntry>();
+        }
+
+        snapshot.Sort((a, b) =>
+        {
+            var catA = a?.category ?? a?.type ?? string.Empty;
+            var catB = b?.category ?? b?.type ?? string.Empty;
+            int catCompare = string.CompareOrdinal(catA, catB);
+            if (catCompare != 0) return catCompare;
+            int sizeA = a != null ? a.sizeKB : 0;
+            int sizeB = b != null ? b.sizeKB : 0;
+            int sizeCompare = sizeB.CompareTo(sizeA);
+            if (sizeCompare != 0) return sizeCompare;
+            return string.CompareOrdinal(a?.name ?? string.Empty, b?.name ?? string.Empty);
+        });
+
+        var ids = new List<string>(snapshot.Count);
+        for (int i = 0; i < snapshot.Count; i++)
+        {
+            if (token.IsCancellationRequested) break;
+            var entry = snapshot[i];
+            if (entry != null && !string.IsNullOrEmpty(entry.id))
+            {
+                ids.Add(entry.id);
+            }
+        }
+
+        int totalKB;
+        int totalCount;
+        var stats = SummarizeResourceStats(snapshot, out totalKB, out totalCount);
+        var hash = ComputeSnapshotHash(snapshot, token);
+
+        return new ResourceProcessingResult
+        {
+            Snapshot = snapshot,
+            ResourceIds = ids,
+            Stats = stats,
+            TotalKB = totalKB,
+            TotalCount = totalCount,
+            Hash = hash
+        };
+    }
+
+    private static string ComputeSnapshotHash(List<ResourceEntry> snapshot, CancellationToken token)
+    {
+        if (snapshot == null || snapshot.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var sb = new StringBuilder(snapshot.Count * 64);
+        for (int i = 0; i < snapshot.Count; i++)
+        {
+            if (token.IsCancellationRequested)
+            {
+                return string.Empty;
+            }
+
+            var entry = snapshot[i];
+            if (entry == null)
+            {
+                continue;
+            }
+
+            sb.Append(entry.id ?? string.Empty).Append('|')
+              .Append(entry.name ?? string.Empty).Append('|')
+              .Append(entry.type ?? string.Empty).Append('|')
+              .Append(entry.category ?? string.Empty).Append('|')
+              .Append(entry.sizeKB).Append('|')
+              .Append(entry.runtimeSizeKB).Append('|')
+              .Append(entry.compressedSizeKB).Append('|')
+              .Append(entry.sizeAfterCompressionKB).Append('|')
+              .Append(entry.width).Append('x').Append(entry.height).Append('|')
+              .Append(entry.format ?? string.Empty).Append('|')
+              .Append(entry.variantId ?? string.Empty).Append('|');
+
+            if (entry.keywords != null && entry.keywords.Length > 0)
+            {
+                sb.Append(string.Join(",", entry.keywords));
+            }
+
+            sb.Append("||");
+        }
+
+        using (var sha = SHA256.Create())
+        {
+            var bytes = Encoding.UTF8.GetBytes(sb.ToString());
+            var hash = sha.ComputeHash(bytes);
+            return Convert.ToBase64String(hash);
+        }
     }
 
     private static int GetResourceContributionSizeKB(ResourceEntry entry)
@@ -250,7 +504,7 @@ public class TelemetrySender : MonoBehaviour
         return 0;
     }
 
-    private List<ResourceCategoryStat> SummarizeResourceStats(List<ResourceEntry> resources, out int totalKB, out int totalCount)
+    private static List<ResourceCategoryStat> SummarizeResourceStats(List<ResourceEntry> resources, out int totalKB, out int totalCount)
     {
         totalKB = 0;
         totalCount = 0;
@@ -290,108 +544,113 @@ public class TelemetrySender : MonoBehaviour
     {
         yield return new WaitForEndOfFrame();
 
-        Texture2D tex = null;
-        RenderTexture initialActive = RenderTexture.active;
         RenderTexture tempRt = null;
-        RenderTexture scaleRt = null;
         Camera captureCamera = null;
         RenderTexture originalTarget = null;
+        var initialActive = RenderTexture.active;
 
         try
         {
-#if UNITY_2018_2_OR_NEWER
-            try
-            {
-                tex = ScreenCapture.CaptureScreenshotAsTexture();
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning("Thumbnail screen capture failed, falling back to camera render: " + ex.Message);
-                tex = null;
-            }
-#endif
-
-            if (tex == null)
-            {
-                captureCamera = FindBestCamera();
-                if (captureCamera == null)
-                {
-                    onComplete(null);
-                    yield break;
-                }
-
-                int w = Mathf.Clamp(thumbnailWidth, 32, 4096);
-                float aspect = Screen.width > 0 ? (float)Screen.height / Screen.width : 1f;
-                int h = Mathf.Max(1, Mathf.RoundToInt(w * aspect));
-
-                tempRt = RenderTexture.GetTemporary(w, h, 24, RenderTextureFormat.ARGB32);
-                originalTarget = captureCamera.targetTexture;
-
-                captureCamera.targetTexture = tempRt;
-                captureCamera.Render();
-
-                RenderTexture.active = tempRt;
-                tex = new Texture2D(w, h, TextureFormat.RGB24, false);
-                tex.ReadPixels(new Rect(0, 0, w, h), 0, 0);
-                tex.Apply();
-                RenderTexture.active = initialActive;
-            }
-
-            if (tex == null)
+            captureCamera = FindBestCamera();
+            if (captureCamera == null)
             {
                 onComplete(null);
                 yield break;
             }
 
-            if (thumbnailWidth > 0 && tex.width > thumbnailWidth)
+            int targetWidth = thumbnailWidth > 0 ? Mathf.Clamp(thumbnailWidth, 32, 4096) : Screen.width;
+            if (targetWidth <= 0) targetWidth = 256;
+            float aspect = captureCamera.pixelWidth > 0
+                ? (float)captureCamera.pixelHeight / Mathf.Max(1, captureCamera.pixelWidth)
+                : (Screen.width > 0 ? (float)Screen.height / Mathf.Max(1, Screen.width) : 1f);
+            int targetHeight = Mathf.Max(1, Mathf.RoundToInt(targetWidth * aspect));
+
+            tempRt = RenderTexture.GetTemporary(targetWidth, targetHeight, 24, RenderTextureFormat.ARGB32);
+            originalTarget = captureCamera.targetTexture;
+            captureCamera.targetTexture = tempRt;
+            captureCamera.Render();
+
+            var request = AsyncGPUReadback.Request(tempRt, 0, TextureFormat.RGB24);
+            while (!request.done)
             {
-                float aspect = tex.width > 0 ? (float)tex.height / tex.width : 1f;
-                int targetW = Mathf.Clamp(thumbnailWidth, 32, 4096);
-                int targetH = Mathf.Max(1, Mathf.RoundToInt(targetW * aspect));
-                var scaled = new Texture2D(targetW, targetH, TextureFormat.RGB24, false);
-                scaleRt = RenderTexture.GetTemporary(targetW, targetH, 0, RenderTextureFormat.ARGB32);
-                Graphics.Blit(tex, scaleRt);
-                RenderTexture.active = scaleRt;
-                scaled.ReadPixels(new Rect(0, 0, targetW, targetH), 0, 0);
-                scaled.Apply();
-                RenderTexture.active = initialActive;
-                RenderTexture.ReleaseTemporary(scaleRt);
-                scaleRt = null;
-                UnityEngine.Object.Destroy(tex);
-                tex = scaled;
+                if (request.hasError)
+                {
+                    onComplete(null);
+                    yield break;
+                }
+                yield return null;
             }
 
-            byte[] jpg = tex.EncodeToJPG(Mathf.Clamp(jpegQuality, 10, 90));
-            UnityEngine.Object.Destroy(tex);
-
-            if (jpg != null && jpg.Length > 0)
+            if (request.hasError)
             {
-                var form = new WWWForm();
-                form.AddBinaryData("thumb", jpg, "thumb.jpg", "image/jpeg");
-                form.AddField("clientId", clientId);
-                form.AddField("frameIndex", frameIndex.ToString());
+                onComplete(null);
+                yield break;
+            }
 
-                using (var uwr = UnityWebRequest.Post(serverHttpUrl + "/upload/thumb", form))
+            byte[] jpg = null;
+#if UNITY_2020_1_OR_NEWER
+            var rawData = request.GetData<byte>();
+            var rawCopy = new NativeArray<byte>(rawData.Length, Allocator.Persistent);
+            NativeArray<byte>.Copy(rawData, rawCopy);
+            var encodeTask = Task.Run(() =>
+            {
+                try
                 {
-                    yield return uwr.SendWebRequest();
-                    if (uwr.result == UnityWebRequest.Result.Success)
+                    return ImageConversion.EncodeArrayToJPG(rawCopy, tempRt.graphicsFormat, (uint)tempRt.width, (uint)tempRt.height, (uint)Mathf.Clamp(jpegQuality, 10, 90));
+                }
+                finally
+                {
+                    if (rawCopy.IsCreated) rawCopy.Dispose();
+                }
+            });
+            while (!encodeTask.IsCompleted)
+            {
+                yield return null;
+            }
+            if (encodeTask.Status == TaskStatus.RanToCompletion)
+            {
+                jpg = encodeTask.Result;
+            }
+#else
+            var rawData = request.GetData<byte>();
+            var tex = new Texture2D(tempRt.width, tempRt.height, TextureFormat.RGB24, false);
+            tex.LoadRawTextureData(rawData);
+            tex.Apply();
+            jpg = tex.EncodeToJPG(Mathf.Clamp(jpegQuality, 10, 90));
+            UnityEngine.Object.Destroy(tex);
+#endif
+
+            if (jpg == null || jpg.Length == 0)
+            {
+                onComplete(null);
+                yield break;
+            }
+
+            var form = new WWWForm();
+            form.AddBinaryData("thumb", jpg, "thumb.jpg", "image/jpeg");
+            form.AddField("clientId", clientId);
+            form.AddField("frameIndex", frameIndex.ToString());
+
+            using (var uwr = UnityWebRequest.Post(serverHttpUrl + "/upload/thumb", form))
+            {
+                yield return uwr.SendWebRequest();
+                if (uwr.result == UnityWebRequest.Result.Success)
+                {
+                    var resp = uwr.downloadHandler.text;
+                    try
                     {
-                        var resp = uwr.downloadHandler.text;
-                        try
+                        var respObj = JsonConvert.DeserializeObject<ThumbUploadResponse>(resp);
+                        if (!string.IsNullOrEmpty(respObj.url))
                         {
-                            var respObj = JsonConvert.DeserializeObject<ThumbUploadResponse>(resp);
-                            if (!string.IsNullOrEmpty(respObj.url))
-                            {
-                                onComplete(respObj.url);
-                                yield break;
-                            }
+                            onComplete(respObj.url);
+                            yield break;
                         }
-                        catch { }
                     }
-                    else
-                    {
-                        Debug.LogWarning("Thumb upload failed: " + uwr.error);
-                    }
+                    catch { }
+                }
+                else
+                {
+                    Debug.LogWarning("Thumb upload failed: " + uwr.error);
                 }
             }
         }
@@ -405,10 +664,6 @@ public class TelemetrySender : MonoBehaviour
             if (tempRt != null)
             {
                 RenderTexture.ReleaseTemporary(tempRt);
-            }
-            if (scaleRt != null)
-            {
-                RenderTexture.ReleaseTemporary(scaleRt);
             }
         }
 
@@ -523,31 +778,22 @@ public class TelemetrySender : MonoBehaviour
     private void UpdateCachedResource(ResourceEntry updated)
     {
         if (updated == null || string.IsNullOrEmpty(updated.id)) return;
-        if (currentResourceSnapshot == null) return;
         for (int i = 0; i < currentResourceSnapshot.Count; i++)
         {
             var entry = currentResourceSnapshot[i];
             if (entry != null && entry.id == updated.id)
             {
                 currentResourceSnapshot[i] = updated;
+                if (currentResourceState != null && currentResourceState.Snapshot != null && i < currentResourceState.Snapshot.Count)
+                {
+                    var stateEntry = currentResourceState.Snapshot[i];
+                    if (stateEntry != null && stateEntry.id == updated.id)
+                    {
+                        currentResourceState.Snapshot[i] = updated;
+                    }
+                }
                 break;
             }
-        }
-    }
-
-    // Placeholder: Collect resources via existing analyzer code in your project.
-    // This method should be adapted to call into your RuntimeArtResourceAnalysis analyzer and return an array
-    // of objects with id/name/type/size/thumbnailUrl etc.
-    private List<ResourceEntry> CollectResourceSnapshot()
-    {
-        try
-        {
-            return RuntimeResourceCollector.GetSnapshot();
-        }
-        catch (Exception ex)
-        {
-            Debug.LogWarning("CollectResourceSnapshot failed: " + ex.Message);
-            return new List<ResourceEntry>();
         }
     }
 
