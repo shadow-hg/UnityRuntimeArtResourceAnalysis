@@ -53,28 +53,6 @@ function pickThumbnail(frame: any | null, resourceCatalog?: Record<string, any>)
   const cameraImage = pickCameraImage(frame.camera);
   if (cameraImage) return cameraImage;
 
-  if (Array.isArray(frame.resourceSnapshot)) {
-    for (const res of frame.resourceSnapshot) {
-      if (!res) continue;
-      const thumb = res.thumbnailUrl || res.thumbnail || res.previewUrl || res.preview;
-      if (typeof thumb === 'string' && thumb.trim()) {
-        return thumb;
-      }
-    }
-  }
-
-  if (resourceCatalog && Array.isArray(frame.resources)) {
-    for (const rid of frame.resources) {
-      if (typeof rid !== 'string') continue;
-      const res = resourceCatalog[rid];
-      if (!res) continue;
-      const thumb = res.thumbnailUrl || res.thumbnail || res.previewUrl || res.preview;
-      if (typeof thumb === 'string' && thumb.trim()) {
-        return thumb;
-      }
-    }
-  }
-
   if (frame.lastRenderTexture && typeof frame.lastRenderTexture === 'object') {
     const thumb = frame.lastRenderTexture.thumbnailUrl || frame.lastRenderTexture.thumbnail;
     if (typeof thumb === 'string' && thumb.trim()) {
