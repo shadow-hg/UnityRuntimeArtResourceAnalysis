@@ -8,7 +8,18 @@ export type TextureReference = {
 };
 
 export function getResourceCategory(resource: any): string {
-  return resource?.category || resource?.type || '未分类';
+  const raw =
+    resource && typeof resource === 'object'
+      ? resource.category ?? resource.type ?? null
+      : null;
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    return trimmed.length > 0 ? trimmed : '未分类';
+  }
+  if (raw != null) {
+    return String(raw);
+  }
+  return '未分类';
 }
 
 export function isTextureCategory(category: string | null | undefined): boolean {

@@ -134,25 +134,37 @@ const SessionControls: React.FC<Props> = ({
               />
             </label>
             <div className="session-controls__actions">
-              <button
-                type={actionType}
-                className={actionClassName}
-                disabled={actionDisabled}
-                onClick={isConnected ? onDisconnect : undefined}
-              >
-                {actionLabel}
-              </button>
-              <button
-                type="button"
-                className={`button button--ghost session-controls__capture-toggle ${
-                  captureControlsExpanded ? 'session-controls__capture-toggle--active' : ''
-                }`}
-                onClick={() => onToggleCaptureControls && onToggleCaptureControls()}
-                aria-pressed={captureControlsExpanded}
-                ref={captureToggleRef}
-              >
-                {captureControlsExpanded ? '收起采集控制' : '展开采集控制'}
-              </button>
+              <div className="session-controls__action-buttons">
+                <button
+                  type={actionType}
+                  className={actionClassName}
+                  disabled={actionDisabled}
+                  onClick={isConnected ? onDisconnect : undefined}
+                >
+                  {actionLabel}
+                </button>
+                <button
+                  type="button"
+                  className={`button button--ghost session-controls__capture-toggle ${
+                    captureControlsExpanded ? 'session-controls__capture-toggle--active' : ''
+                  }`}
+                  onClick={() => onToggleCaptureControls && onToggleCaptureControls()}
+                  aria-pressed={captureControlsExpanded}
+                  ref={captureToggleRef}
+                >
+                  {captureControlsExpanded ? '收起采集控制' : '展开采集控制'}
+                </button>
+              </div>
+              <PlaybackControls
+                appearance="inline"
+                playing={playing}
+                onPlayPause={onTogglePlay}
+                speed={speed}
+                setSpeed={onSpeedChange}
+                onStepForward={onStepForward}
+                onStepBack={onStepBack}
+                className="session-controls__playback-inline"
+              />
             </div>
           </div>
         </form>
@@ -207,19 +219,6 @@ const SessionControls: React.FC<Props> = ({
               </optgroup>
             </select>
           </div>
-        </div>
-        <div className="session-controls__playback">
-          <span className="session-controls__label">播放控制</span>
-          <PlaybackControls
-            appearance="inline"
-            playing={playing}
-            onPlayPause={onTogglePlay}
-            speed={speed}
-            setSpeed={onSpeedChange}
-            onStepForward={onStepForward}
-            onStepBack={onStepBack}
-            className="session-controls__playback-controls"
-          />
         </div>
       </div>
     </section>
