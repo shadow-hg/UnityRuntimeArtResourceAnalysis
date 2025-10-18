@@ -150,41 +150,42 @@ public class TelemetrySender : MonoBehaviour
 
         // Collect resources: integrate with runtime collector
         List<ResourceEntry> latestSnapshot = null;
-        if (sendResourceSnapshots)
+        int snapshotInterval = Mathf.Max(1, resourceSnapshotIntervalFrames);
+        bool shouldRefreshSnapshot = (frameCounter - lastResourceSnapshotFrame) >= snapshotInterval;
+        if (shouldRefreshSnapshot || currentResourceSnapshot == null)
         {
-            bool shouldRefreshSnapshot = (frameCounter - lastResourceSnapshotFrame) >= Mathf.Max(1, resourceSnapshotIntervalFrames) || lastSnapshotHash == null;
-            if (shouldRefreshSnapshot)
+            lastResourceSnapshotFrame = frameCounter;
+            try
             {
-                lastResourceSnapshotFrame = frameCounter;
-                try
-                {
-                    latestSnapshot = CollectResourceSnapshot() ?? new List<ResourceEntry>();
-                }
-                catch
-                {
-                    latestSnapshot = new List<ResourceEntry>();
-                }
-                UpdateResourceValidation(latestSnapshot);
-                currentResourceSnapshot = latestSnapshot;
-
-                // send resource snapshot only when changed
-                var snapWrapper = new ResourceEntryListWrapper { items = latestSnapshot };
-                var snapJson = JsonUtility.ToJson(snapWrapper);
-                var hash = Hash128.Compute(snapJson).ToString();
-                if (hash != lastSnapshotHash)
-                {
-                    lastSnapshotHash = hash;
-                    var snapshotMsg = new SnapshotMessage { clientId = clientId, resources = latestSnapshot, replace = true };
-#if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
-                    EnqueueTelemetryPayload(snapshotMsg);
-#endif
-                    StartCoroutine(UploadResourceThumbnailsAsync(latestSnapshot));
-                }
+                latestSnapshot = CollectResourceSnapshot() ?? new List<ResourceEntry>();
             }
+            catch
+            {
+                latestSnapshot = new List<ResourceEntry>();
+            }
+
+            UpdateResourceValidation(latestSnapshot);
+            currentResourceSnapshot = latestSnapshot;
+
+            var snapWrapper = new ResourceEntryListWrapper { items = latestSnapshot };
+            var snapJson = JsonUtility.ToJson(snapWrapper);
+            var hash = Hash128.Compute(snapJson).ToString();
+            bool snapshotChanged = !string.Equals(hash, lastSnapshotHash, StringComparison.Ordinal);
+
+            if (snapshotChanged && sendResourceSnapshots)
+            {
+                var snapshotMsg = new SnapshotMessage { clientId = clientId, resources = latestSnapshot, replace = true };
+#if UNITY_EDITOR || UNITY_STANDALONE || UNITY_ANDROID || UNITY_IOS
+                EnqueueTelemetryPayload(snapshotMsg);
+#endif
+                StartCoroutine(UploadResourceThumbnailsAsync(latestSnapshot));
+            }
+
+            lastSnapshotHash = hash;
         }
         else
         {
-            UpdateResourceValidation(null);
+            UpdateResourceValidation(currentResourceSnapshot);
         }
 
         var activeResources = currentResourceSnapshot ?? new List<ResourceEntry>();
