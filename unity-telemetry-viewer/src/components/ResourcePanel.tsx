@@ -175,7 +175,11 @@ const ResourcePanel: React.FC<Props> = ({ resources, onSelect, onRequestFullscre
                 {expanded && (
                   <div className="resource-panel__items">
                     {group.resources.map((resource) => {
-                      const key = resource.id || `${resource.name || 'resource'}-${resource.type || 'unknown'}`;
+                      const rawId = resource?.id;
+                      const key =
+                        rawId !== undefined && rawId !== null && rawId !== ''
+                          ? String(rawId)
+                          : `${resource.name || 'resource'}-${resource.type || 'unknown'}`;
                       const summaryInfo = summaryCache.get(resource) || buildResourceSummary(resource);
                       if (!summaryCache.has(resource)) {
                         summaryCache.set(resource, summaryInfo);
@@ -197,7 +201,9 @@ const ResourcePanel: React.FC<Props> = ({ resources, onSelect, onRequestFullscre
                         summaryInfo.runtimeKB > 0 &&
                         summaryInfo.runtimeKB !== summaryInfo.originalKB;
                       const resourceId =
-                        resource.id && resource.id !== resource.name ? String(resource.id) : null;
+                        rawId !== undefined && rawId !== null && rawId !== '' && rawId !== resource.name
+                          ? String(rawId)
+                          : null;
 
                       const collapsedMetrics: { key: string; label: string; value: string }[] = [
                         { key: 'memory', label: '内存', value: formatMemoryFromKB(displayMemoryKB) }
