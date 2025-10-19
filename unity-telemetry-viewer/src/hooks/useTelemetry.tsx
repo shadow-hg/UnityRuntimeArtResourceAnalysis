@@ -72,9 +72,45 @@ function makeFrameKey(clientId: string, sessionId: string | null, frame: any) {
   return `${clientId}:${sessionKey}:${index}:${timestamp}`;
 }
 
+function extractAssetUrl(value: unknown): string | null {
+  if (!value) return null;
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'object') {
+    const candidateFields = ['url', 'uri', 'href', 'src'] as const;
+    for (const field of candidateFields) {
+      const maybeValue = (value as Record<string, unknown>)[field];
+      if (typeof maybeValue === 'string' && maybeValue.trim()) {
+        return maybeValue;
+      }
+    }
+
+    const dataFields = ['data', 'base64', 'content'] as const;
+    for (const field of dataFields) {
+      const maybeData = (value as Record<string, unknown>)[field];
+      if (typeof maybeData === 'string' && maybeData.trim()) {
+        const trimmedData = maybeData.trim();
+        if (/^data:/i.test(trimmedData)) {
+          return trimmedData;
+        }
+        const mimeCandidate = (value as Record<string, unknown>).mime ||
+          (value as Record<string, unknown>).contentType ||
+          (value as Record<string, unknown>).type;
+        const mime = typeof mimeCandidate === 'string' && mimeCandidate.trim()
+          ? mimeCandidate.trim()
+          : 'image/png';
+        return `data:${mime};base64,${trimmedData}`;
+      }
+    }
+  }
+  return null;
+}
+
 function normaliseAssetUrl(url: unknown, baseUrl: string | null) {
-  if (typeof url !== 'string') return null;
-  const trimmed = url.trim();
+  const raw = extractAssetUrl(url);
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
   if (!trimmed) return null;
   if (/^data:/i.test(trimmed)) return trimmed;
   if (/^https?:\/\//i.test(trimmed)) return trimmed;

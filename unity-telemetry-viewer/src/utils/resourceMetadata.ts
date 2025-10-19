@@ -84,6 +84,47 @@ export function gatherTextureReferences(resource: any): TextureReference[] {
   return Array.from(references.values()).filter((ref) => ref.id || ref.name);
 }
 
+function coercePreviewValue(value: any): string | null {
+  if (!value) return null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (typeof value === 'object') {
+    const candidateFields = ['url', 'uri', 'href', 'src'] as const;
+    for (const field of candidateFields) {
+      const maybeValue = (value as Record<string, unknown>)[field];
+      if (typeof maybeValue === 'string') {
+        const trimmed = maybeValue.trim();
+        if (trimmed) {
+          return trimmed;
+        }
+      }
+    }
+
+    const dataFields = ['data', 'base64', 'content'] as const;
+    for (const field of dataFields) {
+      const maybeData = (value as Record<string, unknown>)[field];
+      if (typeof maybeData === 'string') {
+        const trimmedData = maybeData.trim();
+        if (!trimmedData) continue;
+        if (/^data:/i.test(trimmedData)) {
+          return trimmedData;
+        }
+        const mimeCandidate =
+          (value as Record<string, unknown>).mime ||
+          (value as Record<string, unknown>).contentType ||
+          (value as Record<string, unknown>).type;
+        const mime = typeof mimeCandidate === 'string' && mimeCandidate.trim()
+          ? mimeCandidate.trim()
+          : 'image/png';
+        return `data:${mime};base64,${trimmedData}`;
+      }
+    }
+  }
+  return null;
+}
+
 export function buildResourceSummary(resource: any) {
   const originalKB = coerceSize(resource?.sizeKB ?? resource?.size);
   const compressedKB = coerceSize(
@@ -102,7 +143,12 @@ export function buildResourceSummary(resource: any) {
       (compressedKB > 0 ? compressedKB : originalKB)
   );
 
-  const thumbnail = resource?.thumbnailUrl || resource?.thumbnail || resource?.previewUrl || resource?.preview || null;
+  const thumbnail =
+    coercePreviewValue(resource?.thumbnailUrl) ||
+    coercePreviewValue(resource?.thumbnail) ||
+    coercePreviewValue(resource?.previewUrl) ||
+    coercePreviewValue(resource?.preview) ||
+    null;
   const dimensions = resource?.width && resource?.height ? `${resource.width}×${resource.height}` : null;
   const keywords = Array.isArray(resource?.keywords) ? resource.keywords.filter(Boolean) : [];
   const textureRefs = gatherTextureReferences(resource);
