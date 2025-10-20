@@ -6,7 +6,25 @@ const DATA_FILE = path.join(process.cwd(), 'data', 'telemetry-history.json');
 async function readHistory() {
   try {
     const file = await fs.readFile(DATA_FILE, 'utf-8');
-    return JSON.parse(file);
+    try {
+      return JSON.parse(file);
+    } catch (parseErr) {
+      if (parseErr instanceof SyntaxError) {
+        const corruptPath = `${DATA_FILE}.corrupt-${Date.now()}`;
+        try {
+          await fs.rename(DATA_FILE, corruptPath);
+          console.warn(
+            `Telemetry history file was corrupt and has been moved to ${path.basename(corruptPath)}.`
+          );
+        } catch (renameErr) {
+          console.warn(
+            `Telemetry history file was corrupt but could not be moved: ${renameErr.message}`
+          );
+        }
+        return { sessions: [] };
+      }
+      throw parseErr;
+    }
   } catch (err) {
     if (err.code === 'ENOENT') {
       return { sessions: [] };
