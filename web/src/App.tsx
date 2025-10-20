@@ -15,7 +15,6 @@ import { BulbFilled, BulbOutlined, LinkOutlined, ReloadOutlined } from '@ant-des
 import { useTelemetryStream } from './hooks/useTelemetryStream';
 import type { TelemetrySession, TelemetrySnapshot } from './types';
 import SessionSidebar from './components/SessionSidebar';
-import TimelinePanel from './components/TimelinePanel';
 import ResourceExplorer from './components/ResourceExplorer';
 import PerformanceChart from './components/PerformanceChart';
 import { formatBytes, formatFps } from './utils/format';
@@ -149,9 +148,9 @@ function AppShell({ sessions, connectionState, networkInfo, isDarkMode, onToggle
   }, [frames]);
 
   const headerSubtitle = selectedFrame
-    ? `${formatFps(selectedFrame.fps)} • 纹理 ${formatBytes(selectedFrame.totalTextureBytes)} • 网格 ${formatBytes(
-        selectedFrame.totalMeshBytes
-      )}`
+    ? `${formatFps(selectedFrame.fps)} • 纹理 ${formatBytes(selectedFrame.totalTextureBytes)} • RenderTexture ${formatBytes(
+        selectedFrame.totalRenderTextureBytes ?? 0
+      )} • 网格 ${formatBytes(selectedFrame.totalMeshBytes)}`
     : connectionState === 'connected'
     ? '等待采集帧数据…'
     : '等待客户端连接…';
@@ -243,15 +242,8 @@ function AppShell({ sessions, connectionState, networkInfo, isDarkMode, onToggle
         </Sider>
         <Content style={{ padding: 24, background: token.colorBgBase }}>
           <Flex vertical gap={16} style={{ height: '100%' }}>
-            <TimelinePanel
-              frames={frames}
-              onSelectFrame={handleFrameSelect}
-              selectedFrame={selectedFrame}
-              isAutoFollowing={isAutoFollowLatest}
-              onResumeLive={resumeLive}
-            />
             <PerformanceChart frames={frames} selectedFrame={selectedFrame} onSelectFrame={handleFrameSelect} />
-            <ResourceExplorer frame={selectedFrame} />
+            <ResourceExplorer frame={selectedFrame} serverBaseUrl={SERVER_URL} />
           </Flex>
         </Content>
       </Layout>

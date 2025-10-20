@@ -3,10 +3,13 @@ export interface TextureInfo {
   path: string;
   width: number;
   height: number;
-  format: string;
+  format: string | number;
+  formatName?: string;
+  graphicsFormat?: string;
   compressionFormat?: string;
   wrapMode: string;
   filterMode: string;
+  mipCount?: number;
   originalBytes: number;
   EstimatedBytes: number;
   previewUrl?: string;
@@ -18,6 +21,25 @@ export interface MeshInfo {
   path: string;
   vertexCount: number;
   subMeshCount: number;
+  boundsSizeX?: number;
+  boundsSizeY?: number;
+  boundsSizeZ?: number;
+  vertexAttributes?: string[];
+  assetBytes?: number;
+  EstimatedBytes: number;
+}
+
+export interface RenderTextureInfo {
+  name: string;
+  width: number;
+  height: number;
+  depth: number;
+  mipCount: number;
+  useMipMap: boolean;
+  dimension: string;
+  format: string;
+  graphicsFormat: string;
+  antiAliasing: number;
   EstimatedBytes: number;
 }
 
@@ -35,8 +57,10 @@ export interface TelemetrySnapshot {
   deltaTime: number;
   totalTextureBytes: number;
   totalMeshBytes: number;
+  totalRenderTextureBytes?: number;
   textures: TextureInfo[];
   meshes: MeshInfo[];
+  renderTextures?: RenderTextureInfo[];
   shaders: ShaderInfo[];
 }
 
