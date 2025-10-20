@@ -3,7 +3,7 @@ import { Card, Empty, Typography } from 'antd';
 import ReactEChartsCore from 'echarts-for-react/lib/core';
 import type { EChartsOption } from 'echarts';
 import * as echarts from 'echarts/core';
-import type { ECharts } from 'echarts/core';
+import type { EChartsType } from 'echarts/core';
 import {
   GridComponent,
   TooltipComponent,
@@ -53,7 +53,7 @@ function bytesToMegabytes(value: unknown) {
 }
 
 export default function PerformanceChart({ frames, selectedFrame, onSelectFrame }: PerformanceChartProps) {
-  const chartRef = useRef<ECharts | null>(null);
+  const chartRef = useRef<EChartsType | null>(null);
 
   const frameNumbers = useMemo(() => frames.map((frame) => frame.frameNumber), [frames]);
 
@@ -240,9 +240,36 @@ export default function PerformanceChart({ frames, selectedFrame, onSelectFrame 
   }, [frameNumbers, timestamps, fpsValues, textureValues, meshValues]);
 
   useEffect(() => {
-    if (!chartRef.current) return;
+    return () => {
+      if (!chartRef.current) return;
+      const instance = chartRef.current;
+      chartRef.current = null;
 
+      if (typeof instance.isDisposed === 'function' && instance.isDisposed()) {
+        return;
+      }
+
+      if (typeof instance.dispose === 'function') {
+        instance.dispose();
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     const instance = chartRef.current;
+    if (!instance) return;
+
+    // The echarts instance can be disposed while React is rendering, in which case
+    // calling dispatchAction will trigger runtime errors (e.g. scheduler pipeline
+    // lookups on an undefined map). Guard against this by ensuring the instance is
+    // still alive before attempting to control it.
+    if (typeof instance.isDisposed === 'function' && instance.isDisposed()) {
+      return;
+    }
+
+    if (typeof instance.dispatchAction !== 'function') {
+      return;
+    }
 
     const seriesCount = 3;
     for (let index = 0; index < seriesCount; index += 1) {
