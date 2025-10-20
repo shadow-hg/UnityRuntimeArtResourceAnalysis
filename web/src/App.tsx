@@ -85,7 +85,14 @@ function AppShell({ sessions, connectionState, networkInfo, isDarkMode, onToggle
 
   const frames = useMemo(() => {
     if (!selectedSession) return [];
-    return [...(selectedSession.frames ?? [])].sort((a, b) => a.frameNumber - b.frameNumber);
+
+    const deduped = new Map<number, TelemetrySnapshot>();
+    for (const frame of selectedSession.frames ?? []) {
+      if (!frame) continue;
+      deduped.set(frame.frameNumber, frame);
+    }
+
+    return Array.from(deduped.values()).sort((a, b) => a.frameNumber - b.frameNumber);
   }, [selectedSession]);
 
   useEffect(() => {
