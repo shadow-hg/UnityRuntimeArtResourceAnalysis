@@ -48,8 +48,17 @@ export default function PerformanceChart({ frames, selectedFrame, onSelectFrame 
 
   useEffect(() => {
     if (!chartRef.current) return;
-    chartRef.current.setState('active', (item: any) => item.data?.frameNumber === selectedFrame?.frameNumber);
-  }, [selectedFrame]);
+
+    const plot = chartRef.current;
+    const targetFrameNumber = selectedFrame?.frameNumber;
+
+    plot.chart?.geometries?.forEach((geometry: any) => {
+      geometry.elements?.forEach((element: any) => {
+        const frameNumber = element.data?.frameNumber;
+        element.setState('active', targetFrameNumber != null && frameNumber === targetFrameNumber);
+      });
+    });
+  }, [frames, selectedFrame]);
 
   if (frames.length === 0) {
     return (
