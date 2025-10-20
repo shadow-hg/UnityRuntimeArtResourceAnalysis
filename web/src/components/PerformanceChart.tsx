@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { Card, Empty, Typography } from 'antd';
 import ReactEChartsCore from 'echarts-for-react/lib/core';
 import type { EChartsOption } from 'echarts';
@@ -58,6 +58,25 @@ export default function PerformanceChart({ frames, selectedFrame, onSelectFrame 
   const frameNumbers = useMemo(() => frames.map((frame) => frame.frameNumber), [frames]);
 
   const timestamps = useMemo(() => frames.map((frame) => frame.timestampUtc), [frames]);
+
+  const safelyDispatch = useCallback((instance: EChartsType, action: Parameters<EChartsType['dispatchAction']>[0]) => {
+    if (typeof instance.isDisposed === 'function' && instance.isDisposed()) {
+      return;
+    }
+
+    if (typeof instance.dispatchAction !== 'function') {
+      return;
+    }
+
+    try {
+      instance.dispatchAction(action);
+    } catch (error) {
+      if (!import.meta.env.PROD) {
+        // eslint-disable-next-line no-console -- Debugging aid for unexpected lifecycle issues.
+        console.debug('Failed to dispatch action on chart instance', error);
+      }
+    }
+  }, []);
 
   const fpsValues = useMemo(
     () =>
@@ -273,9 +292,9 @@ export default function PerformanceChart({ frames, selectedFrame, onSelectFrame 
 
     const seriesCount = 3;
     for (let index = 0; index < seriesCount; index += 1) {
-      instance.dispatchAction({ type: 'downplay', seriesIndex: index });
+      safelyDispatch(instance, { type: 'downplay', seriesIndex: index });
     }
-    instance.dispatchAction({ type: 'hideTip' });
+    safelyDispatch(instance, { type: 'hideTip' });
 
     if (!selectedFrame) return;
 
@@ -285,12 +304,16 @@ export default function PerformanceChart({ frames, selectedFrame, onSelectFrame 
     }
 
     for (let index = 0; index < seriesCount; index += 1) {
-      instance.dispatchAction({ type: 'highlight', seriesIndex: index, dataIndex: targetIndex });
+      safelyDispatch(instance, { type: 'highlight', seriesIndex: index, dataIndex: targetIndex });
     }
 
-    instance.dispatchAction({ type: 'showTip', seriesIndex: 0, dataIndex: targetIndex });
-    instance.dispatchAction({ type: 'updateAxisPointer', seriesIndex: 0, value: frameNumbers[targetIndex] });
-  }, [frameNumbers, selectedFrame]);
+    safelyDispatch(instance, { type: 'showTip', seriesIndex: 0, dataIndex: targetIndex });
+    safelyDispatch(instance, {
+      type: 'updateAxisPointer',
+      seriesIndex: 0,
+      value: frameNumbers[targetIndex],
+    });
+  }, [frameNumbers, safelyDispatch, selectedFrame]);
 
   if (frames.length === 0) {
     return (
