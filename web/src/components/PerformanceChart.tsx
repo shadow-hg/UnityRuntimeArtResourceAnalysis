@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { Card, Empty, Typography } from 'antd';
-import { DualAxes } from '@ant-design/plots';
+import { DualAxes, type DualAxesInstance } from '@ant-design/plots';
 import type { TelemetrySnapshot } from '../types';
 import { formatFps } from '../utils/format';
 
@@ -10,20 +10,36 @@ interface PerformanceChartProps {
   onSelectFrame: (frame: TelemetrySnapshot | null, meta?: { userInitiated?: boolean }) => void;
 }
 
-function bytesToMegabytes(value: number) {
-  return value / (1024 * 1024);
+function ensureFiniteNumber(value: unknown, fallback = 0) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return fallback;
+}
+
+function bytesToMegabytes(value: unknown) {
+  const finite = ensureFiniteNumber(value);
+  return finite / (1024 * 1024);
 }
 
 export default function PerformanceChart({ frames, selectedFrame, onSelectFrame }: PerformanceChartProps) {
-  const chartRef = useRef<any>(null);
+  const chartRef = useRef<DualAxesInstance | null>(null);
 
   const fpsSeries = useMemo(
     () =>
-      frames.map((frame) => ({
-        frameNumber: frame.frameNumber,
-        timestamp: frame.timestampUtc,
-        fps: frame.fps,
-      })),
+      frames
+        .map((frame) => ({
+          frameNumber: frame.frameNumber,
+          timestamp: frame.timestampUtc,
+          fps: ensureFiniteNumber(frame.fps),
+        }))
+        .filter((point) => Number.isFinite(point.fps)),
     [frames]
   );
 
@@ -34,15 +50,22 @@ export default function PerformanceChart({ frames, selectedFrame, onSelectFrame 
           frameNumber: frame.frameNumber,
           timestamp: frame.timestampUtc,
           metric: '纹理 (MB)',
-          value: bytesToMegabytes(frame.totalTextureBytes),
+          value: bytesToMegabytes(
+            frame.totalTextureBytes ??
+              frame.textures.reduce((sum, texture) => sum + ensureFiniteNumber(texture.EstimatedBytes), 0)
+          ),
         },
         {
           frameNumber: frame.frameNumber,
           timestamp: frame.timestampUtc,
           metric: '网格 (MB)',
-          value: bytesToMegabytes(frame.totalMeshBytes),
+          value: bytesToMegabytes(
+            frame.totalMeshBytes ??
+              frame.meshes.reduce((sum, mesh) => sum + ensureFiniteNumber(mesh.EstimatedBytes), 0)
+          ),
         },
-      ]),
+      ])
+        .filter((point) => Number.isFinite(point.value)),
     [frames]
   );
 
@@ -52,9 +75,9 @@ export default function PerformanceChart({ frames, selectedFrame, onSelectFrame 
     const plot = chartRef.current;
     const targetFrameNumber = selectedFrame?.frameNumber;
 
-    plot.chart?.geometries?.forEach((geometry: any) => {
-      geometry.elements?.forEach((element: any) => {
-        const frameNumber = element.data?.frameNumber;
+    plot.chart?.geometries?.forEach((geometry) => {
+      geometry.elements?.forEach((element) => {
+        const frameNumber = element.data?.frameNumber as number | undefined;
         element.setState('active', targetFrameNumber != null && frameNumber === targetFrameNumber);
       });
     });
@@ -118,7 +141,7 @@ export default function PerformanceChart({ frames, selectedFrame, onSelectFrame 
         tooltip={{
           shared: true,
           showCrosshairs: true,
-          title: (title) => {
+          title: (title: string) => {
             const frame = frames.find((item) => item.frameNumber === Number(title));
             if (!frame) return `#${title}`;
             return `#${frame.frameNumber} · ${new Date(frame.timestampUtc).toLocaleTimeString()}`;
@@ -142,9 +165,9 @@ export default function PerformanceChart({ frames, selectedFrame, onSelectFrame 
         legend={{ position: 'top' }}
         animation={false}
         interactions={[{ type: 'element-highlight' }, { type: 'element-active' }]}
-        onReady={(plot) => {
+        onReady={(plot: DualAxesInstance) => {
           chartRef.current = plot;
-          plot.on('element:click', (event: any) => {
+          plot.on?.('element:click', (event: any) => {
             const frameNumber = event.data?.data?.frameNumber;
             if (!frameNumber) return;
             const frame = frames.find((item) => item.frameNumber === frameNumber) ?? null;
