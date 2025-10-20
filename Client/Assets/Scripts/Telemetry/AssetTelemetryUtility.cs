@@ -18,7 +18,10 @@ namespace UnityProfileV2.Telemetry
                 .Where(t => !(t is Texture2D tex && tex.hideFlags.HasFlag(HideFlags.DontSave)))
                 .Select(TextureInfo.FromTexture)
                 .Where(info => info.IsValid)
+                .Where(info => !IsTinyTexture(info.width, info.height))
                 .OrderByDescending(info => info.EstimatedBytes)
+                .GroupBy(info => info.name, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
                 .Take(maxAssetsPerCategory)
                 .ToArray();
 
@@ -34,6 +37,8 @@ namespace UnityProfileV2.Telemetry
                 .Select(RenderTextureInfo.FromRenderTexture)
                 .Where(info => info.IsValid)
                 .OrderByDescending(info => info.EstimatedBytes)
+                .GroupBy(info => info.name, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
                 .Take(maxAssetsPerCategory)
                 .ToArray();
 
@@ -93,6 +98,11 @@ namespace UnityProfileV2.Telemetry
             }
 
             return total;
+        }
+
+        private static bool IsTinyTexture(int width, int height)
+        {
+            return width <= 4 && height <= 4;
         }
 
         internal static long GetTextureOriginalBytes(Texture2D tex)
