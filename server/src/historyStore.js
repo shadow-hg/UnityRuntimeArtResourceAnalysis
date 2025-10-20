@@ -35,7 +35,21 @@ async function readHistory() {
 
 async function writeHistory(history) {
   await fs.mkdir(path.dirname(DATA_FILE), { recursive: true });
-  await fs.writeFile(DATA_FILE, JSON.stringify(history, null, 2), 'utf-8');
+  const tempPath = `${DATA_FILE}.tmp-${process.pid}-${Date.now()}`;
+  const serialized = JSON.stringify(history, null, 2);
+  await fs.writeFile(tempPath, serialized, 'utf-8');
+
+  try {
+    await fs.rename(tempPath, DATA_FILE);
+  } catch (err) {
+    if (err.code === 'EEXIST') {
+      await fs.rm(DATA_FILE, { force: true });
+      await fs.rename(tempPath, DATA_FILE);
+    } else {
+      await fs.rm(tempPath, { force: true });
+      throw err;
+    }
+  }
 }
 
 export class HistoryStore {
