@@ -1,0 +1,8 @@
+Client/Library/
+Client/Temp/
+Client/Logs/
+Client/Obj/
+Client/Build/
+Client/Builds/
+server/node_modules/
+web/node_modules/
