@@ -1,8 +1,18 @@
 import { useMemo, useState } from 'react';
-import { Card, Empty, Input, Segmented, Space, Table, Tabs, Tag, Typography } from 'antd';
+import {
+  Card,
+  Collapse,
+  Empty,
+  Input,
+  Segmented,
+  Space,
+  Table,
+  Tag,
+  Typography,
+} from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { MeshInfo, ShaderInfo, TelemetrySnapshot, TextureInfo } from '../types';
-import { formatBytes } from '../utils/format';
+import { formatBytes, formatFps, formatPercentage } from '../utils/format';
 
 interface ResourceExplorerProps {
   frame: TelemetrySnapshot | null;
@@ -10,7 +20,9 @@ interface ResourceExplorerProps {
 
 type SortKey = 'size' | 'name';
 
-function sortBy<T>(items: T[], selector: (item: T) => number | string, order: 'asc' | 'desc'): T[] {
+type SortOrder = 'asc' | 'desc';
+
+function sortBy<T>(items: T[], selector: (item: T) => number | string, order: SortOrder): T[] {
   return [...items].sort((a, b) => {
     const valueA = selector(a);
     const valueB = selector(b);
@@ -23,70 +35,134 @@ function sortBy<T>(items: T[], selector: (item: T) => number | string, order: 'a
   });
 }
 
+function TextureNameCell({ texture }: { texture: TextureInfo }) {
+  const hasPreview = Boolean(texture.previewUrl);
+  const placeholderLabel = texture.name.slice(0, 2).toUpperCase();
+  return (
+    <Space align="start">
+      <div
+        style={{
+          width: 56,
+          height: 56,
+          borderRadius: 8,
+          background: hasPreview
+            ? `center / cover no-repeat url(${texture.previewUrl})`
+            : 'linear-gradient(135deg, #5b8ff9, #1e3a8a)',
+          color: '#fff',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontWeight: 600,
+          fontSize: 14,
+        }}
+      >
+        {!hasPreview ? placeholderLabel : null}
+      </div>
+      <Space direction="vertical" size={2} style={{ maxWidth: 320 }}>
+        <Typography.Text strong>{texture.name}</Typography.Text>
+        <Typography.Text type="secondary" ellipsis style={{ maxWidth: 320 }}>
+          {texture.path || '未提供资源路径'}
+        </Typography.Text>
+      </Space>
+    </Space>
+  );
+}
+
 export default function ResourceExplorer({ frame }: ResourceExplorerProps) {
   const [sortKey, setSortKey] = useState<SortKey>('size');
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [sortOrder, setSortOrder] = useState<SortOrder>('desc');
   const [searchTerm, setSearchTerm] = useState('');
+
+  const normalizedSearch = searchTerm.trim().toLowerCase();
 
   const filteredTextures = useMemo(() => {
     if (!frame) return [];
-    const subset = frame.textures.filter((texture) => texture.name.toLowerCase().includes(searchTerm.toLowerCase()));
+    const subset = frame.textures.filter((texture) =>
+      `${texture.name} ${texture.path}`.toLowerCase().includes(normalizedSearch)
+    );
     if (sortKey === 'size') {
       return sortBy(subset, (t) => t.EstimatedBytes, sortOrder);
     }
     return sortBy(subset, (t) => t.name, sortOrder);
-  }, [frame, searchTerm, sortKey, sortOrder]);
+  }, [frame, normalizedSearch, sortKey, sortOrder]);
 
   const filteredMeshes = useMemo(() => {
     if (!frame) return [];
-    const subset = frame.meshes.filter((mesh) => mesh.name.toLowerCase().includes(searchTerm.toLowerCase()));
+    const subset = frame.meshes.filter((mesh) =>
+      `${mesh.name} ${mesh.path}`.toLowerCase().includes(normalizedSearch)
+    );
     if (sortKey === 'size') {
       return sortBy(subset, (m) => m.EstimatedBytes, sortOrder);
     }
     return sortBy(subset, (m) => m.name, sortOrder);
-  }, [frame, searchTerm, sortKey, sortOrder]);
+  }, [frame, normalizedSearch, sortKey, sortOrder]);
 
   const filteredShaders = useMemo(() => {
     if (!frame) return [];
-    const subset = frame.shaders.filter((shader) => shader.name.toLowerCase().includes(searchTerm.toLowerCase()));
+    const subset = frame.shaders.filter((shader) =>
+      `${shader.name} ${shader.path}`.toLowerCase().includes(normalizedSearch)
+    );
     if (sortKey === 'size') {
       return sortBy(subset, (s) => s.passCount, sortOrder);
     }
     return sortBy(subset, (s) => s.name, sortOrder);
-  }, [frame, searchTerm, sortKey, sortOrder]);
+  }, [frame, normalizedSearch, sortKey, sortOrder]);
 
   const textureColumns: ColumnsType<TextureInfo> = [
-    { title: 'Texture', dataIndex: 'name', key: 'name', width: 240 },
     {
-      title: 'Resolution',
+      title: '纹理',
+      key: 'texture',
+      render: (_, record) => <TextureNameCell texture={record} />,
+      width: 360,
+    },
+    {
+      title: '分辨率',
       key: 'resolution',
-      render: (_, record) => `${record.width}×${record.height}`,
+      render: (_, record) => `${record.width} × ${record.height}`,
     },
     {
-      title: 'Runtime Size',
-      dataIndex: 'EstimatedBytes',
-      key: 'runtimeSize',
-      render: (value: number) => formatBytes(value),
-    },
-    {
-      title: 'Original Size',
+      title: '源图大小',
       dataIndex: 'originalBytes',
-      key: 'originalSize',
+      key: 'originalBytes',
+      render: (value: number) => (value ? formatBytes(value) : '未知'),
+    },
+    {
+      title: '压缩后大小',
+      dataIndex: 'EstimatedBytes',
+      key: 'estimatedBytes',
       render: (value: number) => formatBytes(value),
     },
     {
-      title: 'Format',
-      dataIndex: 'format',
-      key: 'format',
+      title: '压缩率',
+      key: 'compressionRate',
+      render: (_, record) =>
+        record.originalBytes > 0 ? formatPercentage(record.EstimatedBytes / record.originalBytes) : '—',
+    },
+    {
+      title: '压缩格式',
+      key: 'compression',
+      render: (_, record) => record.compressionFormat ?? record.format ?? '未知',
     },
   ];
 
   const meshColumns: ColumnsType<MeshInfo> = [
-    { title: 'Mesh', dataIndex: 'name', key: 'name', width: 240 },
-    { title: 'Vertices', dataIndex: 'vertexCount', key: 'vertices' },
-    { title: 'Sub Meshes', dataIndex: 'subMeshCount', key: 'subMeshes' },
     {
-      title: 'Runtime Size',
+      title: '网格',
+      key: 'mesh',
+      render: (_, record) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text strong>{record.name}</Typography.Text>
+          <Typography.Text type="secondary" ellipsis style={{ maxWidth: 320 }}>
+            {record.path || '未提供资源路径'}
+          </Typography.Text>
+        </Space>
+      ),
+      width: 320,
+    },
+    { title: '顶点数', dataIndex: 'vertexCount', key: 'vertexCount' },
+    { title: '子网格数', dataIndex: 'subMeshCount', key: 'subMeshCount' },
+    {
+      title: '运行时大小',
       dataIndex: 'EstimatedBytes',
       key: 'runtimeSize',
       render: (value: number) => formatBytes(value),
@@ -94,17 +170,30 @@ export default function ResourceExplorer({ frame }: ResourceExplorerProps) {
   ];
 
   const shaderColumns: ColumnsType<ShaderInfo> = [
-    { title: 'Shader', dataIndex: 'name', key: 'name', width: 260 },
     {
-      title: 'Passes',
+      title: 'Shader',
+      key: 'shader',
+      render: (_, record) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text strong>{record.name}</Typography.Text>
+          <Typography.Text type="secondary" ellipsis style={{ maxWidth: 360 }}>
+            {record.path || '未提供资源路径'}
+          </Typography.Text>
+        </Space>
+      ),
+      width: 360,
+    },
+    {
+      title: 'Pass 数量',
       dataIndex: 'passCount',
       key: 'passes',
     },
     {
-      title: 'Keywords',
+      title: '关键字',
       key: 'keywords',
       render: (_, record) => (
         <Space wrap size={[4, 4]}>
+          {record.keywords.length === 0 ? <Tag color="default">无</Tag> : null}
           {record.keywords.map((keyword) => (
             <Tag key={keyword}>{keyword}</Tag>
           ))}
@@ -115,65 +204,109 @@ export default function ResourceExplorer({ frame }: ResourceExplorerProps) {
 
   if (!frame) {
     return (
-      <Card title="Resource Browser" style={{ flex: 1 }}>
-        <Empty description="Select a frame from the timeline to inspect resources" />
+      <Card title="资源总览" style={{ flex: 1 }}>
+        <Empty description="请选择时间轴上的某一帧查看资源详情" />
       </Card>
     );
   }
+
+  const textureTotal = formatBytes(frame.totalTextureBytes);
+  const meshTotal = formatBytes(frame.totalMeshBytes);
+  const filteredTextureTotal = formatBytes(
+    filteredTextures.reduce((sum, texture) => sum + texture.EstimatedBytes, 0)
+  );
+  const filteredMeshTotal = formatBytes(filteredMeshes.reduce((sum, mesh) => sum + mesh.EstimatedBytes, 0));
+  const shaderKeywordTotal = filteredShaders.reduce((acc, shader) => acc + shader.keywords.length, 0);
 
   return (
     <Card
       title={
         <Space direction="vertical" size={0}>
-          <Typography.Text strong>{`Frame #${frame.frameNumber}`}</Typography.Text>
-          <Typography.Text type="secondary">Captured at {new Date(frame.timestampUtc).toLocaleString()}</Typography.Text>
+          <Typography.Text strong>{`第 ${frame.frameNumber} 帧资源详情`}</Typography.Text>
+          <Typography.Text type="secondary">
+            捕获时间 {new Date(frame.timestampUtc).toLocaleString()} · {frame.textures.length} 纹理 ·{' '}
+            {frame.meshes.length} 网格 · {frame.shaders.length} Shader
+          </Typography.Text>
         </Space>
       }
       style={{ flex: 1 }}
     >
-      <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-        <Space style={{ width: '100%' }}>
+      <Space direction="vertical" size="large" style={{ width: '100%' }}>
+        <Space wrap size={[16, 12]}>
+          <Tag color="geekblue">纹理总大小 {textureTotal}</Tag>
+          <Tag color="purple">网格总大小 {meshTotal}</Tag>
+          <Tag color="gold">帧率 {formatFps(frame.fps)}</Tag>
+        </Space>
+        <Space style={{ width: '100%', flexWrap: 'wrap' }} size={12}>
           <Input.Search
             allowClear
-            placeholder="Search resources by name"
+            placeholder="根据名称或路径过滤资源"
             value={searchTerm}
             onChange={(event) => setSearchTerm(event.target.value)}
             style={{ maxWidth: 320 }}
           />
           <Segmented
             options={[
-              { label: 'Size', value: 'size' },
-              { label: 'Name', value: 'name' },
+              { label: '按大小', value: 'size' },
+              { label: '按名称', value: 'name' },
             ]}
             value={sortKey}
             onChange={(value) => setSortKey(value as SortKey)}
           />
           <Segmented
             options={[
-              { label: 'Desc', value: 'desc' },
-              { label: 'Asc', value: 'asc' },
+              { label: '降序', value: 'desc' },
+              { label: '升序', value: 'asc' },
             ]}
             value={sortOrder}
-            onChange={(value) => setSortOrder(value as 'asc' | 'desc')}
+            onChange={(value) => setSortOrder(value as SortOrder)}
           />
         </Space>
-        <Tabs
-          defaultActiveKey="textures"
+        <Collapse
+          bordered={false}
+          defaultActiveKey={[]}
           items={[
             {
               key: 'textures',
-              label: `Textures (${filteredTextures.length})`,
-              children: <Table rowKey={(record) => record.name + record.width} dataSource={filteredTextures} columns={textureColumns} pagination={false} size="small" />, 
+              label: `纹理 (${filteredTextures.length})`,
+              extra: <Typography.Text type="secondary">当前列表大小 {filteredTextureTotal}</Typography.Text>,
+              children: (
+                <Table
+                  rowKey={(record) => `${record.name}-${record.width}-${record.height}`}
+                  dataSource={filteredTextures}
+                  columns={textureColumns}
+                  pagination={{ pageSize: 8, hideOnSinglePage: true }}
+                  size="small"
+                />
+              ),
             },
             {
               key: 'meshes',
-              label: `Meshes (${filteredMeshes.length})`,
-              children: <Table rowKey={(record) => record.name + record.vertexCount} dataSource={filteredMeshes} columns={meshColumns} pagination={false} size="small" />, 
+              label: `网格 (${filteredMeshes.length})`,
+              extra: <Typography.Text type="secondary">当前列表大小 {filteredMeshTotal}</Typography.Text>,
+              children: (
+                <Table
+                  rowKey={(record) => `${record.name}-${record.vertexCount}`}
+                  dataSource={filteredMeshes}
+                  columns={meshColumns}
+                  pagination={{ pageSize: 8, hideOnSinglePage: true }}
+                  size="small"
+                />
+              ),
             },
             {
               key: 'shaders',
-              label: `Shaders (${filteredShaders.length})`,
-              children: <Table rowKey={(record) => record.name} dataSource={filteredShaders} columns={shaderColumns} pagination={false} size="small" />, 
+              label: `Shader (${filteredShaders.length})`,
+              extra: <Typography.Text type="secondary">关键词 {shaderKeywordTotal}</Typography.Text>,
+              children: (
+                <Table
+                  rowKey={(record) => record.name}
+                  dataSource={filteredShaders}
+                  columns={shaderColumns}
+                  pagination={{ pageSize: 8, hideOnSinglePage: true }}
+                  size="small"
+                />
+              ),
             },
           ]}
         />

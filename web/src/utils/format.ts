@@ -9,3 +9,8 @@ export function formatBytes(bytes: number): string {
 export function formatFps(fps: number): string {
   return `${fps.toFixed(1)} FPS`;
 }
+
+export function formatPercentage(value: number, fractionDigits = 1): string {
+  if (!Number.isFinite(value)) return '—';
+  return `${(value * 100).toFixed(fractionDigits)}%`;
+}
