@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using UnityEngine;
 #if UNITY_EDITOR
 using UnityEditor;
@@ -55,12 +57,105 @@ namespace UnityProfileV2.Telemetry
         {
 #if UNITY_EDITOR
             if (tex == null) return 0;
-            var bitsPerPixel = TextureUtil.GetBitsPerPixel(tex.format);
+            var bitsPerPixel = EstimateBitsPerPixel(tex.format);
             return (long)(tex.width * tex.height * bitsPerPixel / 8f);
 #else
             return 0;
 #endif
         }
+
+#if UNITY_EDITOR
+        private static readonly Dictionary<TextureFormat, int> TextureFormatBits = new()
+        {
+            { TextureFormat.Alpha8, 8 },
+            { TextureFormat.R8, 8 },
+            { TextureFormat.R16, 16 },
+            { TextureFormat.RGB24, 24 },
+            { TextureFormat.RGBA32, 32 },
+            { TextureFormat.ARGB32, 32 },
+            { TextureFormat.BGRA32, 32 },
+            { TextureFormat.RG16, 16 },
+            { TextureFormat.RG32, 32 },
+            { TextureFormat.RGBA4444, 16 },
+            { TextureFormat.RGB565, 16 },
+            { TextureFormat.RGFloat, 64 },
+            { TextureFormat.RGHalf, 32 },
+            { TextureFormat.RFloat, 32 },
+            { TextureFormat.RHalf, 16 },
+            { TextureFormat.RGBAFloat, 128 },
+            { TextureFormat.RGBAHalf, 64 },
+            { TextureFormat.BC4, 4 },
+            { TextureFormat.BC5, 8 },
+            { TextureFormat.BC6H, 8 },
+            { TextureFormat.BC7, 8 },
+            { TextureFormat.DXT1, 4 },
+            { TextureFormat.DXT1Crunched, 4 },
+            { TextureFormat.DXT5, 8 },
+            { TextureFormat.DXT5Crunched, 8 },
+            { TextureFormat.ETC_RGB4, 4 },
+            { TextureFormat.ETC_RGB4Crunched, 4 },
+            { TextureFormat.ETC2_RGBA8, 8 },
+            { TextureFormat.ETC2_RGB, 4 },
+            { TextureFormat.ETC2_RGBA1, 4 },
+            { TextureFormat.ASTC_4x4, 8 },
+            { TextureFormat.ASTC_5x5, 5 },
+            { TextureFormat.ASTC_6x6, 3 },
+            { TextureFormat.ASTC_8x8, 2 },
+            { TextureFormat.ASTC_10x10, 1 },
+            { TextureFormat.ASTC_12x12, 1 },
+        };
+
+        private static int EstimateBitsPerPixel(TextureFormat format)
+        {
+            if (TextureFormatBits.TryGetValue(format, out var bits))
+            {
+                return bits;
+            }
+
+            // Fallback to 32 bits per pixel for unlisted formats.
+            return 32;
+        }
+
+        internal static string[] GetShaderKeywords(Shader shader)
+        {
+            if (shader == null)
+            {
+                return Array.Empty<string>();
+            }
+
+            try
+            {
+                var keywordSpace = shader.keywordSpace;
+                var keywordSpaceType = keywordSpace.GetType();
+
+                var namesProperty = keywordSpaceType.GetProperty("keywordNames", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (namesProperty?.GetValue(keywordSpace) is string[] names && names.Length > 0)
+                {
+                    return names;
+                }
+
+                var getKeywords = keywordSpaceType.GetMethod("GetKeywords", BindingFlags.Instance | BindingFlags.NonPublic);
+                if (getKeywords != null && getKeywords.Invoke(keywordSpace, null) is Array keywordArray)
+                {
+                    return keywordArray.Cast<object>()
+                        .Select(k => k?.ToString())
+                        .Where(s => !string.IsNullOrEmpty(s))
+                        .Distinct()
+                        .ToArray();
+                }
+            }
+            catch
+            {
+                // ignored - fall back to empty keyword list when reflection fails
+            }
+
+            return Array.Empty<string>();
+        }
+#else
+        private static int EstimateBitsPerPixel(TextureFormat format) => 32;
+
+        internal static string[] GetShaderKeywords(Shader shader) => Array.Empty<string>();
+#endif
     }
 
     [Serializable]
@@ -148,7 +243,7 @@ namespace UnityProfileV2.Telemetry
                 name = shader.name,
                 path = AssetTelemetryUtility.GetAssetPath(shader),
                 passCount = shader.passCount,
-                keywords = shader.keywordSpace.GetKeywords()
+                keywords = AssetTelemetryUtility.GetShaderKeywords(shader)
             };
         }
     }
