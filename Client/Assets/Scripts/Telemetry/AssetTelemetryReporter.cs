@@ -26,6 +26,9 @@ namespace UnityProfileV2.Telemetry
         private float _lastSampleRealtime;
         private int _lastFrameCount;
         private int _snapshotSequence;
+        private Coroutine _sampleCoroutine;
+
+        private static CoroutineRunner _coroutineRunner;
 
         private void OnEnable()
         {
@@ -37,9 +40,17 @@ namespace UnityProfileV2.Telemetry
 
         private void OnDisable()
         {
+            if (_sampleCoroutine != null)
+            {
+                StopCoroutine(_sampleCoroutine);
+                _sampleCoroutine = null;
+            }
+
             if (autoManageSession && !string.IsNullOrEmpty(_sessionId))
             {
-                StartCoroutine(EndSessionCoroutine());
+                var sessionId = _sessionId;
+                _sessionId = null;
+                EnsureCoroutineRunner().StartCoroutine(EndSessionCoroutine(sessionId));
             }
         }
 
@@ -70,14 +81,13 @@ namespace UnityProfileV2.Telemetry
             _lastSampleRealtime = _lastSampleTime;
             _lastFrameCount = Time.frameCount;
             _snapshotSequence = 0;
-            StartCoroutine(SampleCoroutine());
+            _sampleCoroutine = StartCoroutine(SampleCoroutine());
         }
 
-        private IEnumerator EndSessionCoroutine()
+        private IEnumerator EndSessionCoroutine(string sessionId)
         {
-            using var request = BuildJsonRequest($"/sessions/{_sessionId}/close", UnityWebRequest.kHttpVerbPOST, new {});
+            using var request = BuildJsonRequest($"/sessions/{sessionId}/close", UnityWebRequest.kHttpVerbPOST, new {});
             yield return request.SendWebRequest();
-            _sessionId = null;
         }
 
         private IEnumerator SampleCoroutine()
@@ -147,6 +157,26 @@ namespace UnityProfileV2.Telemetry
         private struct SessionRegistrationResponse
         {
             public string sessionId;
+        }
+
+        private static CoroutineRunner EnsureCoroutineRunner()
+        {
+            if (_coroutineRunner != null)
+            {
+                return _coroutineRunner;
+            }
+
+            var runnerGameObject = new GameObject("AssetTelemetryReporterCoroutineRunner")
+            {
+                hideFlags = HideFlags.HideAndDontSave
+            };
+            DontDestroyOnLoad(runnerGameObject);
+            _coroutineRunner = runnerGameObject.AddComponent<CoroutineRunner>();
+            return _coroutineRunner;
+        }
+
+        private sealed class CoroutineRunner : MonoBehaviour
+        {
         }
     }
 }
