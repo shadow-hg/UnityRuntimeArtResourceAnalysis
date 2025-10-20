@@ -23,6 +23,9 @@ namespace UnityProfileV2.Telemetry
 
         private string _sessionId;
         private float _lastSampleTime;
+        private float _lastSampleRealtime;
+        private int _lastFrameCount;
+        private int _snapshotSequence;
 
         private void OnEnable()
         {
@@ -64,6 +67,9 @@ namespace UnityProfileV2.Telemetry
             var response = JsonUtility.FromJson<SessionRegistrationResponse>(request.downloadHandler.text);
             _sessionId = response.sessionId;
             _lastSampleTime = Time.realtimeSinceStartup;
+            _lastSampleRealtime = _lastSampleTime;
+            _lastFrameCount = Time.frameCount;
+            _snapshotSequence = 0;
             StartCoroutine(SampleCoroutine());
         }
 
@@ -90,10 +96,19 @@ namespace UnityProfileV2.Telemetry
         private IEnumerator SendSnapshot()
         {
             var snapshot = AssetTelemetryUtility.CreateSnapshot(maxAssetsPerCategory);
-            snapshot.frameNumber = Time.frameCount;
+            var nowRealtime = Time.realtimeSinceStartup;
+            var currentFrameCount = Time.frameCount;
+            var frameDelta = Mathf.Max(currentFrameCount - _lastFrameCount, 0);
+            var elapsedRealtime = Mathf.Max(nowRealtime - _lastSampleRealtime, 1e-4f);
+            var averageDeltaTime = frameDelta > 0 ? elapsedRealtime / frameDelta : elapsedRealtime;
+
+            snapshot.frameNumber = ++_snapshotSequence;
             snapshot.timestampUtc = DateTime.UtcNow.ToString("o");
-            snapshot.deltaTime = Time.deltaTime;
-            snapshot.fps = 1f / Mathf.Max(Time.unscaledDeltaTime, 1e-4f);
+            snapshot.deltaTime = averageDeltaTime;
+            snapshot.fps = frameDelta > 0 ? frameDelta / elapsedRealtime : 0f;
+
+            _lastFrameCount = currentFrameCount;
+            _lastSampleRealtime = nowRealtime;
 
             using var request = BuildJsonRequest($"/sessions/{_sessionId}/frames", UnityWebRequest.kHttpVerbPOST, snapshot);
             yield return request.SendWebRequest();
