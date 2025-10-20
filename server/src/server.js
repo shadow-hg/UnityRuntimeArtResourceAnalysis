@@ -194,7 +194,42 @@ io.on('connection', (socket) => {
   });
 });
 
-server.listen(PORT, async () => {
+async function startServer() {
   await historyStore.init();
-  console.log(`UnityProfileV2 server listening on port ${PORT}`);
+  server.listen(PORT, () => {
+    console.log(`UnityProfileV2 server listening on port ${PORT}`);
+  });
+}
+
+function closeServer(callback) {
+  io.close(() => {
+    server.close((err) => {
+      if (err) {
+        console.error('Failed to close server gracefully', err);
+      }
+      callback();
+    });
+  });
+}
+
+function handleShutdown(signal) {
+  console.log(`Received ${signal}, shutting down server`);
+  closeServer(() => {
+    process.exit(0);
+  });
+}
+
+function handleNodemonRestart() {
+  closeServer(() => {
+    process.kill(process.pid, 'SIGUSR2');
+  });
+}
+
+process.once('SIGINT', handleShutdown);
+process.once('SIGTERM', handleShutdown);
+process.once('SIGUSR2', handleNodemonRestart);
+
+startServer().catch((err) => {
+  console.error('Failed to start server', err);
+  process.exit(1);
 });
