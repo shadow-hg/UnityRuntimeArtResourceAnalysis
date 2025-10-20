@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { Avatar, Badge, Empty, List, Space, Typography } from 'antd';
+import { Avatar, Badge, Empty, List, Space, Tag, Typography } from 'antd';
 import type { TelemetrySession } from '../types';
 import dayjs from 'dayjs';
 
@@ -12,7 +12,9 @@ interface SessionSidebarProps {
 function SessionItem({ session, isActive, onSelect }: { session: TelemetrySession; isActive: boolean; onSelect: () => void }) {
   const title = (session.client?.productName as string) ?? 'Unknown Product';
   const frameCount = session.frames?.length ?? 0;
-  const subtitle = `${dayjs(session.createdAt).format('MMM D HH:mm:ss')} • ${frameCount} frames`;
+  const deviceName = (session.client?.deviceName as string) ?? 'Unknown Device';
+  const platform = session.client?.platform as string | undefined;
+  const subtitle = `${dayjs(session.createdAt).format('MMM D HH:mm:ss')} • ${frameCount} 帧`;
   return (
     <List.Item
       onClick={() => {
@@ -30,9 +32,20 @@ function SessionItem({ session, isActive, onSelect }: { session: TelemetrySessio
         <Badge dot={!session.closedAt} offset={[-2, 6]}>
           <Avatar shape="square">{title.slice(0, 2).toUpperCase()}</Avatar>
         </Badge>
-        <Space direction="vertical" size={0}>
-          <Typography.Text strong>{title}</Typography.Text>
+        <Space direction="vertical" size={2} style={{ maxWidth: 200 }}>
+          <Space align="center" size={8}>
+            <Typography.Text strong ellipsis style={{ maxWidth: 140 }}>
+              {title}
+            </Typography.Text>
+            <Tag color={session.closedAt ? 'default' : 'success'}>
+              {session.closedAt ? '已结束' : '实时'}
+            </Tag>
+          </Space>
           <Typography.Text type="secondary">{subtitle}</Typography.Text>
+          <Typography.Text type="secondary" ellipsis style={{ maxWidth: 200 }}>
+            {deviceName}
+          </Typography.Text>
+          {platform ? <Tag color="blue">{platform}</Tag> : null}
         </Space>
       </Space>
     </List.Item>

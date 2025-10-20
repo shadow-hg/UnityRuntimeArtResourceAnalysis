@@ -1,6 +1,7 @@
 import express from 'express';
 import http from 'http';
 import cors from 'cors';
+import os from 'os';
 import { Server as SocketIOServer } from 'socket.io';
 import { v4 as uuidv4 } from 'uuid';
 import { HistoryStore } from './historyStore.js';
@@ -18,6 +19,23 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
 const historyStore = new HistoryStore();
+
+function listLanAddresses(port) {
+  const interfaces = os.networkInterfaces();
+  const addresses = [];
+  Object.entries(interfaces).forEach(([interfaceName, records = []]) => {
+    records
+      .filter((record) => record.family === 'IPv4' && !record.internal)
+      .forEach((record) => {
+        addresses.push({
+          interface: interfaceName,
+          address: record.address,
+          url: `http://${record.address}:${port}`,
+        });
+      });
+  });
+  return addresses;
+}
 
 function sanitizeFramePayload(payload) {
   const { textures = [], meshes = [], shaders = [], ...rest } = payload;
@@ -49,6 +67,14 @@ app.post('/sessions', async (req, res) => {
 app.get('/sessions', async (_req, res) => {
   const sessions = await historyStore.listSessions();
   res.json(sessions);
+});
+
+app.get('/network-info', (_req, res) => {
+  res.json({
+    hostname: os.hostname(),
+    port: Number(PORT),
+    addresses: listLanAddresses(PORT),
+  });
 });
 
 app.get('/sessions/:sessionId', async (req, res) => {

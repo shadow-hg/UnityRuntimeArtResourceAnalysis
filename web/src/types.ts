@@ -4,10 +4,12 @@ export interface TextureInfo {
   width: number;
   height: number;
   format: string;
+  compressionFormat?: string;
   wrapMode: string;
   filterMode: string;
   originalBytes: number;
   EstimatedBytes: number;
+  previewUrl?: string;
 }
 
 export interface MeshInfo {
@@ -46,8 +48,20 @@ export interface TelemetrySession {
 }
 
 export interface TimelinePoint {
-  id: string;
+  id: string | number;
   content: string;
   start: Date;
   frame: TelemetrySnapshot;
+}
+
+export interface NetworkInterfaceInfo {
+  interface: string;
+  address: string;
+  url: string;
+}
+
+export interface NetworkInfoResponse {
+  hostname: string;
+  port: number;
+  addresses: NetworkInterfaceInfo[];
 }

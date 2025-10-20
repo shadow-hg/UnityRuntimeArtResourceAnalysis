@@ -1,7 +1,18 @@
 :root {
+  color-scheme: light;
   font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  color: #0b1b2b;
-  background-color: #f4f6f8;
+  --bg-base: #f4f6f8;
+  --text-primary: #0b1b2b;
+  --timeline-bg: rgba(22, 119, 255, 0.12);
+  --timeline-text: #0b1b2b;
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+  --bg-base: #060d16;
+  --text-primary: #dbe7ff;
+  --timeline-bg: rgba(56, 121, 255, 0.28);
+  --timeline-text: #f2f6ff;
 }
 
 body,
@@ -13,14 +24,27 @@ html,
 }
 
 body {
-  background-color: #f4f6f8;
+  background-color: var(--bg-base);
+  color: var(--text-primary);
+  transition: background-color 0.3s ease, color 0.3s ease;
 }
 
 .timeline-item {
-  padding: 4px 8px;
-  background: rgba(22, 119, 255, 0.12);
-  color: #0b1b2b;
-  border-radius: 6px;
+  padding: 6px 10px;
+  background: var(--timeline-bg);
+  color: var(--timeline-text);
+  border-radius: 8px;
   font-size: 12px;
   font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.timeline-item__frame {
+  font-weight: 600;
+}
+
+.timeline-item__metric {
+  opacity: 0.8;
 }
