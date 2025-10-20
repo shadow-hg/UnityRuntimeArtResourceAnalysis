@@ -9,7 +9,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@ant-design/plots": "^2.6.5",
+    "echarts": "^5.5.0",
+    "echarts-for-react": "^3.0.2",
     "antd": "^5.12.2",
     "dayjs": "^1.11.10",
     "react": "^18.2.0",
