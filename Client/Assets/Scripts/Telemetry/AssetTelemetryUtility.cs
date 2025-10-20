@@ -135,7 +135,7 @@ namespace UnityProfileV2.Telemetry
             return UnityEngine.Profiling.Profiler.GetRuntimeMemorySizeLong(texture);
         }
 
-        private static bool TryCaptureTexturePreview(Texture texture, out string base64)
+        internal static bool TryCaptureTexturePreview(Texture texture, out string base64)
         {
             base64 = null;
             if (texture is not Texture2D tex2D)
@@ -456,7 +456,7 @@ namespace UnityProfileV2.Telemetry
             var tex2D = texture as Texture2D;
             var format = tex2D != null ? tex2D.format : TextureFormat.RGBA32;
             var mipCount = tex2D != null ? tex2D.mipmapCount : 1;
-            TryCaptureTexturePreview(texture, out var previewBase64);
+            AssetTelemetryUtility.TryCaptureTexturePreview(texture, out var previewBase64);
 
             return new TextureInfo
             {
