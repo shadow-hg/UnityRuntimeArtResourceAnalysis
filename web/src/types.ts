@@ -10,6 +10,7 @@ export interface TextureInfo {
   originalBytes: number;
   EstimatedBytes: number;
   previewUrl?: string;
+  previewBase64?: string;
 }
 
 export interface MeshInfo {

@@ -3,6 +3,7 @@ import {
   Card,
   Collapse,
   Empty,
+  Image,
   Input,
   Segmented,
   Space,
@@ -36,28 +37,48 @@ function sortBy<T>(items: T[], selector: (item: T) => number | string, order: So
 }
 
 function TextureNameCell({ texture }: { texture: TextureInfo }) {
-  const hasPreview = Boolean(texture.previewUrl);
+  const previewSrc = useMemo(() => {
+    if (texture.previewUrl) {
+      return texture.previewUrl;
+    }
+    if (texture.previewBase64) {
+      const trimmed = texture.previewBase64.trim();
+      return trimmed.startsWith('data:') ? trimmed : `data:image/png;base64,${trimmed}`;
+    }
+    return null;
+  }, [texture.previewUrl, texture.previewBase64]);
+
+  const hasPreview = Boolean(previewSrc);
   const placeholderLabel = texture.name.slice(0, 2).toUpperCase();
   return (
     <Space align="start">
-      <div
-        style={{
-          width: 56,
-          height: 56,
-          borderRadius: 8,
-          background: hasPreview
-            ? `center / cover no-repeat url(${texture.previewUrl})`
-            : 'linear-gradient(135deg, #5b8ff9, #1e3a8a)',
-          color: '#fff',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          fontWeight: 600,
-          fontSize: 14,
-        }}
-      >
-        {!hasPreview ? placeholderLabel : null}
-      </div>
+      {hasPreview ? (
+        <Image
+          src={previewSrc ?? undefined}
+          width={56}
+          height={56}
+          style={{ borderRadius: 8, objectFit: 'cover' }}
+          alt={texture.name}
+          preview={{ mask: '预览' }}
+        />
+      ) : (
+        <div
+          style={{
+            width: 56,
+            height: 56,
+            borderRadius: 8,
+            background: 'linear-gradient(135deg, #5b8ff9, #1e3a8a)',
+            color: '#fff',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontWeight: 600,
+            fontSize: 14,
+          }}
+        >
+          {placeholderLabel}
+        </div>
+      )}
       <Space direction="vertical" size={2} style={{ maxWidth: 320 }}>
         <Typography.Text strong>{texture.name}</Typography.Text>
         <Typography.Text type="secondary" ellipsis style={{ maxWidth: 320 }}>
