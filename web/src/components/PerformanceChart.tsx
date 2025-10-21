@@ -54,6 +54,7 @@ function bytesToMegabytes(value: unknown) {
 
 export default function PerformanceChart({ frames, selectedFrame, onSelectFrame }: PerformanceChartProps) {
   const chartRef = useRef<EChartsType | null>(null);
+  const hoveredFrameNumberRef = useRef<number | null>(null);
 
   const frameNumbers = useMemo(() => frames.map((frame) => frame.frameNumber), [frames]);
 
@@ -386,6 +387,55 @@ export default function PerformanceChart({ frames, selectedFrame, onSelectFrame 
     );
   }
 
+  const handleAxisPointerUpdate = useCallback(
+    (event: { axesInfo?: Array<{ value?: number | string | null | undefined }> } | undefined) => {
+      const rawValue = event?.axesInfo?.[0]?.value;
+      const numericValue =
+        typeof rawValue === 'number'
+          ? rawValue
+          : typeof rawValue === 'string'
+          ? Number(rawValue)
+          : Number.NaN;
+
+      if (Number.isFinite(numericValue) && frameNumbers.includes(numericValue)) {
+        hoveredFrameNumberRef.current = numericValue;
+      } else {
+        hoveredFrameNumberRef.current = null;
+      }
+    },
+    [frameNumbers]
+  );
+
+  const handleChartClick = useCallback(
+    (params: { dataIndex?: number }) => {
+      let frameNumber: number | null = null;
+
+      if (typeof params.dataIndex === 'number') {
+        frameNumber = frameNumbers[params.dataIndex] ?? null;
+      }
+
+      if (frameNumber == null && hoveredFrameNumberRef.current != null) {
+        frameNumber = hoveredFrameNumberRef.current;
+      }
+
+      if (frameNumber == null) {
+        return;
+      }
+
+      const frame = frames.find((item) => item.frameNumber === frameNumber) ?? null;
+      if (!frame) {
+        return;
+      }
+
+      onSelectFrame(frame, { userInitiated: true });
+    },
+    [frameNumbers, frames, onSelectFrame]
+  );
+
+  const handleGlobalOut = useCallback(() => {
+    hoveredFrameNumberRef.current = null;
+  }, []);
+
   return (
     <Card
       title={
@@ -404,17 +454,9 @@ export default function PerformanceChart({ frames, selectedFrame, onSelectFrame 
           chartRef.current = instance;
         }}
         onEvents={{
-          click: (params: { dataIndex?: number }) => {
-            if (typeof params.dataIndex !== 'number') {
-              return;
-            }
-            const frameNumber = frameNumbers[params.dataIndex];
-            const frame = frames.find((item) => item.frameNumber === frameNumber) ?? null;
-            if (!frame) {
-              return;
-            }
-            onSelectFrame(frame, { userInitiated: true });
-          },
+          click: handleChartClick,
+          updateAxisPointer: handleAxisPointerUpdate,
+          globalout: handleGlobalOut,
         }}
       />
     </Card>
