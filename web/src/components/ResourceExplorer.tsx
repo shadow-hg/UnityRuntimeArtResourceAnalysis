@@ -20,6 +20,7 @@ import type {
   TextureInfo,
 } from '../types';
 import { formatBytes, formatFps, formatPercentage } from '../utils/format';
+import { resolvePreviewSource } from '../utils/preview';
 
 interface ResourceExplorerProps {
   frame: TelemetrySnapshot | null;
@@ -100,32 +101,6 @@ function dedupeTextures(textures: TextureInfo[]): TextureInfo[] {
     }
   });
   return Array.from(map.values());
-}
-
-interface PreviewableResource {
-  previewBase64?: string;
-  previewUrl?: string;
-}
-
-function resolvePreviewSource(resource: PreviewableResource, serverBaseUrl: string): string | null {
-  if (resource.previewBase64) {
-    const trimmed = resource.previewBase64.trim();
-    if (trimmed.length > 0) {
-      return trimmed.startsWith('data:') ? trimmed : `data:image/png;base64,${trimmed}`;
-    }
-  }
-
-  if (resource.previewUrl) {
-    if (/^https?:/i.test(resource.previewUrl)) {
-      return resource.previewUrl;
-    }
-
-    const base = serverBaseUrl.endsWith('/') ? serverBaseUrl.slice(0, -1) : serverBaseUrl;
-    const relative = resource.previewUrl.startsWith('/') ? resource.previewUrl : `/${resource.previewUrl}`;
-    return `${base}${relative}`;
-  }
-
-  return null;
 }
 
 function TextureNameCell({ texture, serverBaseUrl }: { texture: TextureInfo; serverBaseUrl: string }) {

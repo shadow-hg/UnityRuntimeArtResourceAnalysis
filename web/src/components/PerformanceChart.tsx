@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { Card, Empty, InputNumber, Space, Tooltip, Typography } from 'antd';
+import { useCallback, useEffect, useMemo, useRef, type CSSProperties } from 'react';
+import { Card, Empty, Image, InputNumber, Space, Tooltip, Typography, theme } from 'antd';
 import ReactEChartsCore from 'echarts-for-react/lib/core';
 import type { EChartsOption } from 'echarts';
 import * as echarts from 'echarts/core';
@@ -16,6 +16,7 @@ import { LineChart } from 'echarts/charts';
 import { CanvasRenderer } from 'echarts/renderers';
 import type { TelemetrySnapshot } from '../types';
 import { formatFps } from '../utils/format';
+import { resolvePreviewSource } from '../utils/preview';
 
 echarts.use([
   GridComponent,
@@ -34,6 +35,7 @@ interface PerformanceChartProps {
   samplingIntervalMs: number;
   onChangeSamplingInterval: (value: number) => void;
   onSelectFrame: (frame: TelemetrySnapshot | null, meta?: { userInitiated?: boolean }) => void;
+  serverBaseUrl: string;
 }
 
 function ensureFiniteNumber(value: unknown, fallback = 0) {
@@ -80,9 +82,11 @@ export default function PerformanceChart({
   samplingIntervalMs,
   onChangeSamplingInterval,
   onSelectFrame,
+  serverBaseUrl,
 }: PerformanceChartProps) {
   const chartRef = useRef<EChartsType | null>(null);
   const hoveredFrameNumberRef = useRef<number | null>(null);
+  const { token } = theme.useToken();
 
   const sampledFrames = useMemo(() => {
     if (!Array.isArray(frames) || frames.length === 0) {
@@ -137,6 +141,30 @@ export default function PerformanceChart({
   const frameNumbers = useMemo(() => displayFrames.map((frame) => frame.frameNumber), [displayFrames]);
 
   const timestamps = useMemo(() => displayFrames.map((frame) => frame.timestampUtc), [displayFrames]);
+
+  const previewSrc = useMemo(
+    () => resolvePreviewSource(selectedFrame?.framePreview ?? null, serverBaseUrl),
+    [selectedFrame, serverBaseUrl]
+  );
+
+  const previewInfo = selectedFrame?.framePreview ?? null;
+  const previewHasImage = Boolean(previewSrc);
+  const previewWidth =
+    typeof previewInfo?.width === 'number' && Number.isFinite(previewInfo.width)
+      ? previewInfo.width
+      : null;
+  const previewHeight =
+    typeof previewInfo?.height === 'number' && Number.isFinite(previewInfo.height)
+      ? previewInfo.height
+      : null;
+  const previewResolution =
+    previewWidth != null && previewHeight != null ? `${previewWidth}×${previewHeight}` : null;
+  const previewTimestamp = previewInfo?.captureTimestampUtc ?? selectedFrame?.timestampUtc ?? null;
+  const previewTimestampLabel = previewTimestamp ? new Date(previewTimestamp).toLocaleString() : null;
+  const previewFpsLabel =
+    typeof selectedFrame?.fps === 'number' && Number.isFinite(selectedFrame.fps)
+      ? formatFps(selectedFrame.fps)
+      : null;
 
   const safelyDispatch = useCallback((instance: EChartsType, action: Parameters<EChartsType['dispatchAction']>[0]) => {
     if (typeof instance.isDisposed === 'function' && instance.isDisposed()) {
@@ -704,6 +732,9 @@ export default function PerformanceChart({
   const latestFrameNumberForTitle =
     frames.length > 0 ? frames[frames.length - 1]?.frameNumber ?? '-' : '-';
 
+  const cardBodyStyle: CSSProperties | undefined =
+    frames.length === 0 ? undefined : { display: 'flex', flexDirection: 'column', gap: 16 };
+
   return (
     <Card
       title={
@@ -749,25 +780,99 @@ export default function PerformanceChart({
           />
         </Space>
       }
+      bodyStyle={cardBodyStyle}
     >
       {frames.length === 0 ? (
         <Empty description="暂无数据" />
       ) : (
-        <ReactEChartsCore
-          echarts={echarts}
-          option={option}
-          style={{ height: 400 }}
-          notMerge
-          lazyUpdate={false}
-          onChartReady={(instance) => {
-            chartRef.current = instance;
-          }}
-          onEvents={{
-            click: handleChartClick,
-            updateAxisPointer: handleAxisPointerUpdate,
-            globalout: handleGlobalOut,
-          }}
-        />
+        <>
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
+            <Typography.Text strong>帧画面预览</Typography.Text>
+            <Typography.Text type="secondary">
+              {selectedFrame ? `帧 #${selectedFrame.frameNumber}` : '未选择帧'}
+            </Typography.Text>
+          </div>
+          <div
+            style={{
+              position: 'relative',
+              height: 200,
+              borderRadius: 12,
+              border: `1px solid ${token.colorBorderSecondary}`,
+              background: token.colorBgLayout,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              overflow: 'hidden',
+            }}
+          >
+            {previewHasImage ? (
+              <Image
+                src={previewSrc ?? undefined}
+                alt={selectedFrame ? `Frame #${selectedFrame.frameNumber} Preview` : 'Frame preview'}
+                style={{ height: '100%', width: '100%', objectFit: 'contain' }}
+                preview={previewHasImage ? { mask: '查看原图' } : false}
+              />
+            ) : (
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description={selectedFrame ? '当前帧未提供画面预览' : '请选择一帧查看画面'}
+              />
+            )}
+            {selectedFrame ? (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 12,
+                  left: 12,
+                  padding: '6px 12px',
+                  borderRadius: 999,
+                  background: 'rgba(0, 0, 0, 0.55)',
+                  color: '#fff',
+                  display: 'inline-flex',
+                  gap: 8,
+                  fontWeight: 600,
+                  fontSize: 12,
+                }}
+              >
+                <span>帧 #{selectedFrame.frameNumber}</span>
+                {previewResolution ? <span>{previewResolution}</span> : null}
+              </div>
+            ) : null}
+            {(previewTimestampLabel || previewFpsLabel) && (
+              <div
+                style={{
+                  position: 'absolute',
+                  left: 12,
+                  bottom: 12,
+                  borderRadius: 8,
+                  background: 'rgba(0, 0, 0, 0.45)',
+                  color: '#fff',
+                  padding: '8px 12px',
+                  fontSize: 12,
+                  lineHeight: 1.4,
+                }}
+              >
+                {previewTimestampLabel ? <div>{previewTimestampLabel}</div> : null}
+                {previewFpsLabel ? <div>{previewFpsLabel}</div> : null}
+              </div>
+            )}
+          </div>
+          <ReactEChartsCore
+            echarts={echarts}
+            option={option}
+            style={{ height: 400 }}
+            notMerge
+            lazyUpdate={false}
+            onChartReady={(instance) => {
+              chartRef.current = instance;
+            }}
+            onEvents={{
+              click: handleChartClick,
+              updateAxisPointer: handleAxisPointerUpdate,
+              globalout: handleGlobalOut,
+            }}
+          />
+        </>
       )}
     </Card>
   );

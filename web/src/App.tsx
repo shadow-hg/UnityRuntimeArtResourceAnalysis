@@ -419,6 +419,7 @@ function AppShell({ sessions, connectionState, networkInfo, isDarkMode, onToggle
               samplingIntervalMs={samplingIntervalMs}
               onChangeSamplingInterval={setSamplingIntervalMs}
               onSelectFrame={handleFrameSelect}
+              serverBaseUrl={SERVER_URL}
             />
             <ResourceExplorer frame={selectedFrame} serverBaseUrl={SERVER_URL} />
           </Flex>
