@@ -73,9 +73,14 @@ namespace UnityProfileV2.Telemetry
             };
         }
 
-        public static IEnumerator PopulateFramePreview(TelemetrySnapshot snapshot)
+        public static IEnumerator PopulateFramePreview(TelemetrySnapshot snapshot, float framePreviewScale)
         {
             if (snapshot == null)
+            {
+                yield break;
+            }
+
+            if (framePreviewScale <= 0f)
             {
                 yield break;
             }
@@ -83,6 +88,7 @@ namespace UnityProfileV2.Telemetry
             yield return new WaitForEndOfFrame();
 
             Texture2D screenshot = null;
+            Texture2D scaledScreenshot = null;
 
             try
             {
@@ -91,6 +97,17 @@ namespace UnityProfileV2.Telemetry
             catch (Exception ex)
             {
                 Debug.LogWarning($"[UnityProfileV2] Failed to capture frame preview: {ex.Message}\n{ex.StackTrace}");
+            }
+
+            var normalizedScale = Mathf.Clamp01(framePreviewScale);
+            if (screenshot != null && normalizedScale > 0f && normalizedScale < 0.999f)
+            {
+                scaledScreenshot = TryScaleFramePreview(screenshot, normalizedScale);
+                if (scaledScreenshot != null)
+                {
+                    UnityEngine.Object.Destroy(screenshot);
+                    screenshot = scaledScreenshot;
+                }
             }
 
             if (screenshot == null)
@@ -104,12 +121,14 @@ namespace UnityProfileV2.Telemetry
                 if (pngData != null && pngData.Length > 0)
                 {
                     var base64 = Convert.ToBase64String(pngData);
+                    var orientation = DetermineOrientation(screenshot.width, screenshot.height);
                     snapshot.framePreview = new FramePreviewInfo
                     {
                         width = screenshot.width,
                         height = screenshot.height,
                         captureTimestampUtc = DateTime.UtcNow.ToString("o"),
-                        previewBase64 = $"data:image/png;base64,{base64}"
+                        previewBase64 = $"data:image/png;base64,{base64}",
+                        orientation = string.IsNullOrEmpty(orientation) ? null : orientation
                     };
                 }
             }
@@ -121,6 +140,72 @@ namespace UnityProfileV2.Telemetry
             {
                 UnityEngine.Object.Destroy(screenshot);
             }
+        }
+
+        private static Texture2D TryScaleFramePreview(Texture2D source, float scale)
+        {
+            if (source == null)
+            {
+                return null;
+            }
+
+            scale = Mathf.Clamp(scale, 0.001f, 1f);
+            var targetWidth = Mathf.Max(1, Mathf.RoundToInt(source.width * scale));
+            var targetHeight = Mathf.Max(1, Mathf.RoundToInt(source.height * scale));
+
+            if (targetWidth <= 0 || targetHeight <= 0)
+            {
+                return null;
+            }
+
+            if (targetWidth == source.width && targetHeight == source.height)
+            {
+                return null;
+            }
+
+            RenderTexture temporary = null;
+            var previousActive = RenderTexture.active;
+            try
+            {
+                temporary = RenderTexture.GetTemporary(targetWidth, targetHeight, 0, RenderTextureFormat.Default);
+                Graphics.Blit(source, temporary);
+                RenderTexture.active = temporary;
+                var scaled = new Texture2D(targetWidth, targetHeight, TextureFormat.RGBA32, false)
+                {
+                    hideFlags = HideFlags.HideAndDontSave
+                };
+                scaled.ReadPixels(new Rect(0, 0, targetWidth, targetHeight), 0, 0);
+                scaled.Apply(false, false);
+                return scaled;
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[UnityProfileV2] Failed to scale frame preview: {ex.Message}\n{ex.StackTrace}");
+                return null;
+            }
+            finally
+            {
+                RenderTexture.active = previousActive;
+                if (temporary != null)
+                {
+                    RenderTexture.ReleaseTemporary(temporary);
+                }
+            }
+        }
+
+        private static string DetermineOrientation(int width, int height)
+        {
+            if (width <= 0 || height <= 0)
+            {
+                return string.Empty;
+            }
+
+            if (Mathf.Abs(width - height) <= 1)
+            {
+                return "square";
+            }
+
+            return width >= height ? "landscape" : "portrait";
         }
 
         internal static string GetAssetPath(UnityEngine.Object obj)
@@ -801,6 +886,7 @@ namespace UnityProfileV2.Telemetry
         public int width;
         public int height;
         public string captureTimestampUtc;
+        public string orientation;
     }
 
     [Serializable]

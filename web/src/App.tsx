@@ -12,7 +12,15 @@ import {
   Typography,
   theme,
 } from 'antd';
-import { BulbFilled, BulbOutlined, InfoCircleOutlined, LinkOutlined, ReloadOutlined } from '@ant-design/icons';
+import {
+  BulbFilled,
+  BulbOutlined,
+  InfoCircleOutlined,
+  LinkOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
+  ReloadOutlined,
+} from '@ant-design/icons';
 import { useTelemetryStream } from './hooks/useTelemetryStream';
 import type { NetworkInfoResponse, TelemetrySession, TelemetrySnapshot } from './types';
 import SessionSidebar from './components/SessionSidebar';
@@ -154,6 +162,7 @@ function AppShell({ sessions, connectionState, networkInfo, isDarkMode, onToggle
   const [isAutoFollowLatest, setIsAutoFollowLatest] = useState(true);
   const [selectedClientIp, setSelectedClientIp] = useState<string | null>(null);
   const [samplingIntervalMs, setSamplingIntervalMs] = useState<number>(0);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const { token } = theme.useToken();
 
   const clientIpOptions = useMemo(
@@ -289,6 +298,10 @@ function AppShell({ sessions, connectionState, networkInfo, isDarkMode, onToggle
     setSelectedFrame(latest);
   }, [frames]);
 
+  const toggleSidebar = useCallback(() => {
+    setIsSidebarCollapsed((prev) => !prev);
+  }, []);
+
   const headerSubtitle = selectedFrame
     ? `${formatFps(selectedFrame.fps)} • 纹理 ${formatBytes(selectedFrame.totalTextureBytes)} • RenderTexture ${formatBytes(
         selectedFrame.totalRenderTextureBytes ?? 0
@@ -309,22 +322,33 @@ function AppShell({ sessions, connectionState, networkInfo, isDarkMode, onToggle
         }}
       >
         <Flex align="center" justify="space-between" style={{ height: '100%' }}>
-          <Flex vertical gap={8} style={{ minWidth: 0 }}>
-            <Typography.Title level={3} style={{ color: token.colorTextBase, margin: 0 }}>
-              UnityProfileV2 仪表盘
-            </Typography.Title>
-            <Space size={12} wrap>
-              <Badge status={badgeMeta.status} text={badgeMeta.text} />
-              <Typography.Text type="secondary">{headerSubtitle}</Typography.Text>
-            </Space>
-            <Space size={8} align="center">
-              <Typography.Text type="secondary">当前客户端：</Typography.Text>
-              {selectedClientIp ? (
-                <Tag color="processing">{selectedClientIp}</Tag>
-              ) : (
-                <Typography.Text type="secondary">全部客户端</Typography.Text>
-              )}
-            </Space>
+          <Flex align="center" gap={16} style={{ minWidth: 0 }}>
+            <Tooltip title={isSidebarCollapsed ? '展开服务器与历史记录面板' : '收起服务器与历史记录面板'}>
+              <Button
+                type="text"
+                shape="circle"
+                icon={isSidebarCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+                onClick={toggleSidebar}
+                aria-label={isSidebarCollapsed ? '展开侧栏' : '收起侧栏'}
+              />
+            </Tooltip>
+            <Flex vertical gap={8} style={{ minWidth: 0 }}>
+              <Typography.Title level={3} style={{ color: token.colorTextBase, margin: 0 }}>
+                UnityProfileV2 仪表盘
+              </Typography.Title>
+              <Space size={12} wrap>
+                <Badge status={badgeMeta.status} text={badgeMeta.text} />
+                <Typography.Text type="secondary">{headerSubtitle}</Typography.Text>
+              </Space>
+              <Space size={8} align="center">
+                <Typography.Text type="secondary">当前客户端：</Typography.Text>
+                {selectedClientIp ? (
+                  <Tag color="processing">{selectedClientIp}</Tag>
+                ) : (
+                  <Typography.Text type="secondary">全部客户端</Typography.Text>
+                )}
+              </Space>
+            </Flex>
           </Flex>
           <Flex align="center" gap={16} wrap justify="flex-end">
             {!isAutoFollowLatest && frames.length > 0 ? (
@@ -348,10 +372,16 @@ function AppShell({ sessions, connectionState, networkInfo, isDarkMode, onToggle
       <Layout>
         <Sider
           width={320}
+          collapsedWidth={0}
+          collapsible
+          collapsed={isSidebarCollapsed}
+          trigger={null}
           style={{
             background: token.colorBgContainer,
-            borderRight: `1px solid ${token.colorBorderSecondary}`,
-            padding: '16px 0',
+            borderRight: isSidebarCollapsed ? 'none' : `1px solid ${token.colorBorderSecondary}`,
+            padding: isSidebarCollapsed ? 0 : '16px 0',
+            transition: 'all 0.2s ease',
+            overflow: 'hidden',
           }}
         >
           <div style={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 16 }}>

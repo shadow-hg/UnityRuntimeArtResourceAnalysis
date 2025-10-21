@@ -157,6 +157,49 @@ export default function PerformanceChart({
     typeof previewInfo?.height === 'number' && Number.isFinite(previewInfo.height)
       ? previewInfo.height
       : null;
+  const previewOrientation = previewInfo?.orientation ?? null;
+  const isPortraitPreview = useMemo(() => {
+    if (typeof previewOrientation === 'string') {
+      const normalized = previewOrientation.toLowerCase();
+      if (normalized === 'portrait') {
+        return true;
+      }
+      if (normalized === 'landscape') {
+        return false;
+      }
+    }
+
+    if (previewWidth != null && previewHeight != null) {
+      return previewHeight > previewWidth;
+    }
+
+    return false;
+  }, [previewOrientation, previewWidth, previewHeight]);
+  const previewContainerHeight = isPortraitPreview ? 320 : 200;
+  const previewContainerMaxHeight = isPortraitPreview ? 480 : 240;
+  const previewWrapperStyle = useMemo<CSSProperties>(
+    () => ({
+      height: '100%',
+      width: isPortraitPreview ? 'auto' : '100%',
+      maxHeight: '100%',
+      maxWidth: '100%',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+    }),
+    [isPortraitPreview]
+  );
+  const previewImageStyle = useMemo<CSSProperties>(
+    () => ({
+      objectFit: 'contain',
+      height: '100%',
+      width: isPortraitPreview ? 'auto' : '100%',
+      maxHeight: '100%',
+      maxWidth: '100%',
+      display: 'block',
+    }),
+    [isPortraitPreview]
+  );
   const previewResolution =
     previewWidth != null && previewHeight != null ? `${previewWidth}×${previewHeight}` : null;
   const previewTimestamp = previewInfo?.captureTimestampUtc ?? selectedFrame?.timestampUtc ?? null;
@@ -795,7 +838,8 @@ export default function PerformanceChart({
           <div
             style={{
               position: 'relative',
-              height: 200,
+              height: previewContainerHeight,
+              maxHeight: previewContainerMaxHeight,
               borderRadius: 12,
               border: `1px solid ${token.colorBorderSecondary}`,
               background: token.colorBgLayout,
@@ -806,12 +850,14 @@ export default function PerformanceChart({
             }}
           >
             {previewHasImage ? (
-              <Image
-                src={previewSrc ?? undefined}
-                alt={selectedFrame ? `Frame #${selectedFrame.frameNumber} Preview` : 'Frame preview'}
-                style={{ height: '100%', width: '100%', objectFit: 'contain' }}
-                preview={previewHasImage ? { mask: '查看原图' } : false}
-              />
+              <div style={previewWrapperStyle}>
+                <Image
+                  src={previewSrc ?? undefined}
+                  alt={selectedFrame ? `Frame #${selectedFrame.frameNumber} Preview` : 'Frame preview'}
+                  style={previewImageStyle}
+                  preview={previewHasImage ? { mask: '查看原图' } : false}
+                />
+              </div>
             ) : (
               <Empty
                 image={Empty.PRESENTED_IMAGE_SIMPLE}
@@ -836,6 +882,19 @@ export default function PerformanceChart({
               >
                 <span>帧 #{selectedFrame.frameNumber}</span>
                 {previewResolution ? <span>{previewResolution}</span> : null}
+                {previewOrientation
+                  ? (
+                      <span>
+                        {previewOrientation === 'portrait'
+                          ? '竖屏'
+                          : previewOrientation === 'landscape'
+                          ? '横屏'
+                          : previewOrientation === 'square'
+                          ? '方形'
+                          : previewOrientation}
+                      </span>
+                    )
+                  : null}
               </div>
             ) : null}
             {(previewTimestampLabel || previewFpsLabel) && (
