@@ -43,6 +43,15 @@ namespace UnityProfileV2.Telemetry
                 .Take(maxAssetsPerCategory)
                 .ToArray();
 
+            var materials = EnumerateRuntimeObjects<Material>()
+                .Select(MaterialInfo.FromMaterial)
+                .Where(info => info.IsValid)
+                .OrderByDescending(info => info.memoryBytes)
+                .GroupBy(info => info.name, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
+                .Take(maxAssetsPerCategory)
+                .ToArray();
+
             var shaders = EnumerateRuntimeObjects<Shader>()
                 .Select(ShaderInfo.FromShader)
                 .Where(info => info.IsValid)
@@ -54,10 +63,12 @@ namespace UnityProfileV2.Telemetry
                 textures = textures,
                 meshes = meshes,
                 renderTextures = renderTextures,
+                materials = materials,
                 shaders = shaders,
                 totalTextureBytes = textures.Sum(t => t.EstimatedBytes),
                 totalMeshBytes = meshes.Sum(m => m.EstimatedBytes),
-                totalRenderTextureBytes = renderTextures.Sum(r => r.EstimatedBytes)
+                totalRenderTextureBytes = renderTextures.Sum(r => r.EstimatedBytes),
+                totalMaterialBytes = materials.Sum(m => m.memoryBytes)
             };
         }
 
@@ -320,8 +331,6 @@ namespace UnityProfileV2.Telemetry
             }
 
             RenderTexture renderTexture = null;
-            Texture2D previewTexture = null;
-            var previousActive = RenderTexture.active;
 
             try
             {
@@ -332,7 +341,72 @@ namespace UnityProfileV2.Telemetry
                 renderTexture = RenderTexture.GetTemporary(width, height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB);
                 Graphics.Blit(tex2D, renderTexture);
 
-                RenderTexture.active = renderTexture;
+                return TryEncodeRenderTarget(renderTexture, out base64);
+            }
+            catch
+            {
+                return false;
+            }
+            finally
+            {
+                if (renderTexture != null)
+                {
+                    RenderTexture.ReleaseTemporary(renderTexture);
+                }
+            }
+        }
+
+        internal static bool TryCaptureRenderTexturePreview(RenderTexture renderTexture, out string base64)
+        {
+            base64 = null;
+            if (renderTexture == null)
+            {
+                return false;
+            }
+
+            RenderTexture previewTarget = null;
+
+            try
+            {
+                const int previewSize = 128;
+                var width = Mathf.Clamp(previewSize, 16, renderTexture.width);
+                var height = Mathf.Clamp(previewSize, 16, renderTexture.height);
+
+                previewTarget = RenderTexture.GetTemporary(width, height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB);
+                Graphics.Blit(renderTexture, previewTarget);
+
+                return TryEncodeRenderTarget(previewTarget, out base64);
+            }
+            catch
+            {
+                return false;
+            }
+            finally
+            {
+                if (previewTarget != null)
+                {
+                    RenderTexture.ReleaseTemporary(previewTarget);
+                }
+            }
+        }
+
+        private static bool TryEncodeRenderTarget(RenderTexture renderTarget, out string base64)
+        {
+            base64 = null;
+            if (renderTarget == null)
+            {
+                return false;
+            }
+
+            Texture2D previewTexture = null;
+            var previousActive = RenderTexture.active;
+
+            try
+            {
+                RenderTexture.active = renderTarget;
+
+                var width = Mathf.Max(1, renderTarget.width);
+                var height = Mathf.Max(1, renderTarget.height);
 
                 previewTexture = new Texture2D(width, height, TextureFormat.RGBA32, false, false);
                 previewTexture.ReadPixels(new Rect(0, 0, width, height), 0, 0);
@@ -354,16 +428,73 @@ namespace UnityProfileV2.Telemetry
             {
                 RenderTexture.active = previousActive;
 
-                if (renderTexture != null)
-                {
-                    RenderTexture.ReleaseTemporary(renderTexture);
-                }
-
                 if (previewTexture != null)
                 {
                     UnityEngine.Object.Destroy(previewTexture);
                 }
             }
+        }
+
+        internal static MaterialTextureReference[] GetMaterialTextureReferences(Material material)
+        {
+            if (material == null)
+            {
+                return Array.Empty<MaterialTextureReference>();
+            }
+
+            var shader = material.shader;
+            if (shader == null)
+            {
+                return Array.Empty<MaterialTextureReference>();
+            }
+
+            var propertyCount = shader.GetPropertyCount();
+            if (propertyCount <= 0)
+            {
+                return Array.Empty<MaterialTextureReference>();
+            }
+
+            List<MaterialTextureReference> references = null;
+
+            for (var index = 0; index < propertyCount; index += 1)
+            {
+                if (shader.GetPropertyType(index) != ShaderPropertyType.Texture)
+                {
+                    continue;
+                }
+
+                var propertyName = shader.GetPropertyName(index);
+                if (string.IsNullOrEmpty(propertyName))
+                {
+                    continue;
+                }
+
+                Texture texture = null;
+                try
+                {
+                    texture = material.GetTexture(propertyName);
+                }
+                catch
+                {
+                    texture = null;
+                }
+
+                if (texture == null)
+                {
+                    continue;
+                }
+
+                references ??= new List<MaterialTextureReference>();
+                references.Add(new MaterialTextureReference
+                {
+                    propertyName = propertyName,
+                    textureName = texture.name,
+                    texturePath = GetAssetPath(texture),
+                    textureClass = texture.GetType().Name,
+                });
+            }
+
+            return references != null ? references.ToArray() : Array.Empty<MaterialTextureReference>();
         }
 
 #if UNITY_EDITOR
@@ -602,9 +733,11 @@ namespace UnityProfileV2.Telemetry
         public long totalTextureBytes;
         public long totalMeshBytes;
         public long totalRenderTextureBytes;
+        public long totalMaterialBytes;
         public TextureInfo[] textures = Array.Empty<TextureInfo>();
         public MeshInfo[] meshes = Array.Empty<MeshInfo>();
         public RenderTextureInfo[] renderTextures = Array.Empty<RenderTextureInfo>();
+        public MaterialInfo[] materials = Array.Empty<MaterialInfo>();
         public ShaderInfo[] shaders = Array.Empty<ShaderInfo>();
     }
 
@@ -695,6 +828,72 @@ namespace UnityProfileV2.Telemetry
     }
 
     [Serializable]
+    public struct MaterialTextureReference
+    {
+        public string propertyName;
+        public string textureName;
+        public string texturePath;
+        public string textureClass;
+    }
+
+    [Serializable]
+    public struct MaterialInfo
+    {
+        public string name;
+        public string path;
+        public string shaderName;
+        public string shaderPath;
+        public int renderQueue;
+        public bool enableInstancing;
+        public bool doubleSidedGI;
+        public string[] keywords;
+        public long memoryBytes;
+        public MaterialTextureReference[] textures;
+        public bool IsValid => !string.IsNullOrEmpty(name) || !string.IsNullOrEmpty(shaderName);
+
+        public static MaterialInfo FromMaterial(Material material)
+        {
+            if (material == null)
+            {
+                return default;
+            }
+
+            var shader = material.shader;
+            var shaderKeywords = material.shaderKeywords ?? Array.Empty<string>();
+            var normalizedKeywords = shaderKeywords
+                .Where(keyword => !string.IsNullOrWhiteSpace(keyword))
+                .Select(keyword => keyword.Trim())
+                .Where(keyword => keyword.Length > 0)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+
+            var doubleSidedGi = false;
+            try
+            {
+                doubleSidedGi = material.doubleSidedGI;
+            }
+            catch
+            {
+                doubleSidedGi = false;
+            }
+
+            return new MaterialInfo
+            {
+                name = material.name,
+                path = AssetTelemetryUtility.GetAssetPath(material),
+                shaderName = shader != null ? shader.name : string.Empty,
+                shaderPath = shader != null ? AssetTelemetryUtility.GetAssetPath(shader) : string.Empty,
+                renderQueue = material.renderQueue,
+                enableInstancing = material.enableInstancing,
+                doubleSidedGI = doubleSidedGi,
+                keywords = normalizedKeywords,
+                memoryBytes = UnityEngine.Profiling.Profiler.GetRuntimeMemorySizeLong(material),
+                textures = AssetTelemetryUtility.GetMaterialTextureReferences(material),
+            };
+        }
+    }
+
+    [Serializable]
     public struct RenderTextureInfo
     {
         public string name;
@@ -708,10 +907,14 @@ namespace UnityProfileV2.Telemetry
         public string graphicsFormat;
         public int antiAliasing;
         public long EstimatedBytes;
+        public string previewBase64;
+        public string previewUrl;
         public bool IsValid => width > 0 && height > 0;
 
         public static RenderTextureInfo FromRenderTexture(RenderTexture renderTexture)
         {
+            TryCaptureRenderTexturePreview(renderTexture, out var previewBase64);
+
             return new RenderTextureInfo
             {
                 name = renderTexture.name,
@@ -725,6 +928,7 @@ namespace UnityProfileV2.Telemetry
                 graphicsFormat = renderTexture.graphicsFormat.ToString(),
                 antiAliasing = renderTexture.antiAliasing,
                 EstimatedBytes = UnityEngine.Profiling.Profiler.GetRuntimeMemorySizeLong(renderTexture),
+                previewBase64 = previewBase64,
             };
         }
     }

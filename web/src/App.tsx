@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Alert,
   Badge,
   Button,
   ConfigProvider,
@@ -13,18 +12,104 @@ import {
   Typography,
   theme,
 } from 'antd';
-import { BulbFilled, BulbOutlined, LinkOutlined, ReloadOutlined } from '@ant-design/icons';
+import { BulbFilled, BulbOutlined, InfoCircleOutlined, LinkOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useTelemetryStream } from './hooks/useTelemetryStream';
-import type { TelemetrySession, TelemetrySnapshot } from './types';
+import type { NetworkInfoResponse, TelemetrySession, TelemetrySnapshot } from './types';
 import SessionSidebar from './components/SessionSidebar';
 import ResourceExplorer from './components/ResourceExplorer';
 import PerformanceChart from './components/PerformanceChart';
 import { formatBytes, formatFps } from './utils/format';
-import { resolveSessionIp, UNKNOWN_IP_LABEL } from './utils/session';
 
 const { Header, Sider, Content } = Layout;
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL ?? 'http://localhost:48080';
+const DEFAULT_SERVER_PORT = 48080;
+
+function resolveDefaultServerUrl(): string {
+  const fallback = `http://localhost:${DEFAULT_SERVER_PORT}`;
+  if (typeof window === 'undefined') {
+    return fallback;
+  }
+
+  const { protocol, hostname } = window.location;
+  const normalizedProtocol = protocol === 'https:' ? 'https:' : 'http:';
+  const normalizedHost = hostname || '127.0.0.1';
+  return `${normalizedProtocol}//${normalizedHost}:${DEFAULT_SERVER_PORT}`;
+}
+
+const SERVER_URL = import.meta.env.VITE_SERVER_URL?.trim() || resolveDefaultServerUrl();
+const UNKNOWN_IP_LABEL = '未知 IP';
+
+function stripTrailingSlash(value: string): string {
+  if (value.endsWith('/')) {
+    return value.slice(0, -1);
+  }
+  return value;
+}
+
+function isLoopbackAddress(value?: string | null): boolean {
+  if (!value) return false;
+  const normalized = value.toLowerCase();
+  return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1';
+}
+
+function sanitizeLoopbackUrl(rawUrl: string): string {
+  try {
+    const parsed = new URL(rawUrl);
+    if (isLoopbackAddress(parsed.hostname)) {
+      parsed.hostname = '127.0.0.1';
+    }
+    return stripTrailingSlash(parsed.toString());
+  } catch {
+    return rawUrl;
+  }
+}
+
+function deriveDisplayServerUrl(networkInfo: NetworkInfoResponse | null, fallbackUrl: string): string {
+  if (networkInfo?.addresses?.length) {
+    const preferred =
+      networkInfo.addresses.find((address) => !isLoopbackAddress(address.address)) ||
+      networkInfo.addresses[0];
+    if (preferred?.url) {
+      return stripTrailingSlash(preferred.url);
+    }
+  }
+
+  if (networkInfo?.hostname) {
+    try {
+      const parsed = new URL(fallbackUrl);
+      parsed.hostname = networkInfo.hostname;
+      if (networkInfo.port) {
+        parsed.port = String(networkInfo.port);
+      }
+      if (isLoopbackAddress(parsed.hostname)) {
+        parsed.hostname = '127.0.0.1';
+      }
+      return stripTrailingSlash(parsed.toString());
+    } catch {
+      const protocol = fallbackUrl.startsWith('https://') ? 'https://' : 'http://';
+      const host = isLoopbackAddress(networkInfo.hostname) ? '127.0.0.1' : networkInfo.hostname;
+      const portSegment = networkInfo.port ? `:${networkInfo.port}` : '';
+      return `${protocol}${host}${portSegment}`;
+    }
+  }
+
+  return sanitizeLoopbackUrl(fallbackUrl);
+}
+
+function resolveSessionIp(session: TelemetrySession): string {
+  const raw = typeof session.clientIp === 'string' ? session.clientIp.trim() : '';
+  if (raw && raw.toLowerCase() !== 'unknown') {
+    return raw;
+  }
+
+  const fallbackSource = session.client?.['remoteAddress'];
+  const fallback = typeof fallbackSource === 'string' ? fallbackSource.trim() : '';
+  if (fallback) {
+    return fallback;
+  }
+
+  return UNKNOWN_IP_LABEL;
+}
 
 const connectionBadgeMeta: Record<
   ReturnType<typeof useTelemetryStream>['connectionState'],
@@ -59,6 +144,10 @@ function AppShell({ sessions, connectionState, networkInfo, isDarkMode, onToggle
   const sortedSessions = useMemo(
     () => [...sessions].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
     [sessions]
+  );
+  const serverDisplayUrl = useMemo(
+    () => deriveDisplayServerUrl(networkInfo, SERVER_URL),
+    [networkInfo]
   );
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [selectedFrame, setSelectedFrame] = useState<TelemetrySnapshot | null>(null);
@@ -272,9 +361,17 @@ function AppShell({ sessions, connectionState, networkInfo, isDarkMode, onToggle
               style={{ padding: '0 16px', color: token.colorTextBase }}
             >
               <Space direction="vertical" size={6}>
-                <Typography.Text type="secondary">服务器地址</Typography.Text>
-                <Typography.Text copyable={{ text: SERVER_URL }} style={{ color: token.colorTextBase }}>
-                  {SERVER_URL}
+                <Space size={4} align="center">
+                  <Typography.Text type="secondary">服务器地址</Typography.Text>
+                  <Tooltip title="跨设备采集请使用下方局域网地址">
+                    <InfoCircleOutlined style={{ color: token.colorTextTertiary || token.colorTextSecondary }} />
+                  </Tooltip>
+                </Space>
+                <Typography.Text
+                  copyable={{ text: serverDisplayUrl }}
+                  style={{ color: token.colorTextBase }}
+                >
+                  {serverDisplayUrl}
                 </Typography.Text>
               </Space>
               {networkInfo?.hostname ? (
@@ -301,12 +398,6 @@ function AppShell({ sessions, connectionState, networkInfo, isDarkMode, onToggle
                   </Space>
                 </Space>
               ) : null}
-              <Alert
-                type="info"
-                showIcon
-                message="跨设备采集"
-                description="确保其他电脑上的客户端脚本把数据上报到此服务器地址，它们的会话就会自动出现在左侧列表里，可在任意设备的浏览器中查看。"
-              />
             </Flex>
             <div style={{ flex: 1, minHeight: 0 }}>
               <SessionSidebar

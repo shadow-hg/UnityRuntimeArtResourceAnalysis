@@ -43,6 +43,28 @@ export interface RenderTextureInfo {
   graphicsFormat: string;
   antiAliasing: number;
   EstimatedBytes: number;
+  previewUrl?: string;
+  previewBase64?: string;
+}
+
+export interface MaterialTextureReference {
+  propertyName: string;
+  textureName?: string;
+  texturePath?: string;
+  textureClass?: string;
+}
+
+export interface MaterialInfo {
+  name: string;
+  path: string;
+  shaderName?: string;
+  shaderPath?: string;
+  renderQueue: number;
+  enableInstancing: boolean;
+  doubleSidedGI: boolean;
+  keywords: string[];
+  memoryBytes?: number;
+  textures?: MaterialTextureReference[];
 }
 
 export interface ShaderInfo {
@@ -61,11 +83,13 @@ export interface TelemetrySnapshot {
   totalTextureBytes: number;
   totalMeshBytes: number;
   totalRenderTextureBytes?: number;
+  totalMaterialBytes?: number;
   totalShaderBytes?: number;
   shaderMemoryBytes?: number;
   textures: TextureInfo[];
   meshes: MeshInfo[];
   renderTextures?: RenderTextureInfo[];
+  materials?: MaterialInfo[];
   shaders: ShaderInfo[];
 }
 
