@@ -2,6 +2,51 @@ import { promises as fs } from 'fs';
 import path from 'path';
 
 const DATA_FILE = path.join(process.cwd(), 'data', 'telemetry-history.json');
+const MAX_SESSION_FRAMES = 10000;
+
+function ensureNumeric(value, fallback = 0) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function trimFrames(session) {
+  if (!Array.isArray(session.frames)) {
+    session.frames = [];
+    return 0;
+  }
+
+  session.trimmedFrameCount = ensureNumeric(session.trimmedFrameCount, 0);
+  session.totalFrameCount = ensureNumeric(
+    session.totalFrameCount,
+    session.trimmedFrameCount + session.frames.length
+  );
+
+  const overflow = session.frames.length - MAX_SESSION_FRAMES;
+  if (overflow > 0) {
+    session.frames.splice(0, overflow);
+    session.trimmedFrameCount += overflow;
+  }
+
+  const visible = session.frames.length;
+  const expectedTotal = session.trimmedFrameCount + visible;
+  if (session.totalFrameCount < expectedTotal) {
+    session.totalFrameCount = expectedTotal;
+  }
+
+  return overflow > 0 ? overflow : 0;
+}
+
+function normalizeSession(session) {
+  if (!Array.isArray(session.frames)) {
+    session.frames = [];
+  }
+  session.trimmedFrameCount = ensureNumeric(session.trimmedFrameCount, 0);
+  session.totalFrameCount = ensureNumeric(
+    session.totalFrameCount,
+    session.trimmedFrameCount + session.frames.length
+  );
+  trimFrames(session);
+  return session;
+}
 
 async function readHistory() {
   try {
@@ -61,18 +106,24 @@ export class HistoryStore {
   async init() {
     if (this.initialized) return;
     this.history = await readHistory();
+    if (!Array.isArray(this.history.sessions)) {
+      this.history.sessions = [];
+    }
+    this.history.sessions = this.history.sessions.map((session) => normalizeSession(session));
     this.initialized = true;
   }
 
   async createSession(metadata) {
     await this.init();
-    const session = {
+    const session = normalizeSession({
       id: metadata.id,
       createdAt: metadata.createdAt,
       client: metadata.client,
       clientIp: metadata.clientIp ?? null,
       frames: [],
-    };
+      trimmedFrameCount: 0,
+      totalFrameCount: 0,
+    });
     this.history.sessions.push(session);
     await writeHistory(this.history);
     return session;
@@ -84,9 +135,23 @@ export class HistoryStore {
     if (!session) {
       throw new Error(`Session ${sessionId} not found`);
     }
+    if (!Array.isArray(session.frames)) {
+      session.frames = [];
+    }
+    const previousTotal = ensureNumeric(
+      session.totalFrameCount,
+      ensureNumeric(session.trimmedFrameCount, 0) + session.frames.length
+    );
+    session.totalFrameCount = previousTotal + 1;
     session.frames.push(frame);
+    const removedFrameCount = trimFrames(session);
     await writeHistory(this.history);
-    return frame;
+    return {
+      frame,
+      trimmedFrameCount: session.trimmedFrameCount,
+      totalFrameCount: session.totalFrameCount,
+      removedFrameCount,
+    };
   }
 
   async closeSession(sessionId) {

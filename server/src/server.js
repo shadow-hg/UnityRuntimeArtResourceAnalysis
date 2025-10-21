@@ -208,9 +208,16 @@ app.post('/sessions/:sessionId/frames', async (req, res) => {
   const sessionId = req.params.sessionId;
   try {
     const frame = await prepareFramePayload(sessionId, req.body);
-    await historyStore.appendFrame(sessionId, frame);
+    const { frame: storedFrame, trimmedFrameCount, totalFrameCount, removedFrameCount } =
+      await historyStore.appendFrame(sessionId, frame);
     res.status(204).end();
-    io.emit('session:frame', { sessionId, frame });
+    io.emit('session:frame', {
+      sessionId,
+      frame: storedFrame,
+      trimmedFrameCount,
+      totalFrameCount,
+      removedFrameCount,
+    });
   } catch (err) {
     console.error('Failed to append frame', err);
     res.status(400).json({ message: err.message });

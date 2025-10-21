@@ -4,6 +4,7 @@ using System.Linq;
 using System.Reflection;
 using UnityEngine;
 using UnityEngine.Rendering;
+using UnityEngine.SceneManagement;
 #if UNITY_EDITOR
 using UnityEditor;
 #endif
@@ -14,10 +15,11 @@ namespace UnityProfileV2.Telemetry
     {
         public static TelemetrySnapshot CreateSnapshot(int maxAssetsPerCategory)
         {
-            var textures = Resources.FindObjectsOfTypeAll<Texture>()
-                .Where(t => !(t is Texture2D tex && tex.hideFlags.HasFlag(HideFlags.DontSave)))
+            var textures = EnumerateRuntimeObjects<Texture>()
+                .Where(texture => texture is not RenderTexture)
+                .Where(texture => texture is not Texture2D tex || !tex.hideFlags.HasFlag(HideFlags.DontSave))
                 .Select(TextureInfo.FromTexture)
-                .Where(info => info.IsValid)
+                .Where(info => info.IsValid && !info.isRenderTexture)
                 .Where(info => !IsTinyTexture(info.width, info.height))
                 .OrderByDescending(info => info.EstimatedBytes)
                 .GroupBy(info => info.name, StringComparer.OrdinalIgnoreCase)
@@ -25,15 +27,14 @@ namespace UnityProfileV2.Telemetry
                 .Take(maxAssetsPerCategory)
                 .ToArray();
 
-            var meshes = Resources.FindObjectsOfTypeAll<Mesh>()
+            var meshes = EnumerateRuntimeObjects<Mesh>()
                 .Select(MeshInfo.FromMesh)
                 .Where(info => info.IsValid)
                 .OrderByDescending(info => info.EstimatedBytes)
                 .Take(maxAssetsPerCategory)
                 .ToArray();
 
-            var renderTextures = Resources.FindObjectsOfTypeAll<RenderTexture>()
-                .Where(rt => rt != null)
+            var renderTextures = EnumerateRuntimeObjects<RenderTexture>()
                 .Select(RenderTextureInfo.FromRenderTexture)
                 .Where(info => info.IsValid)
                 .OrderByDescending(info => info.EstimatedBytes)
@@ -42,7 +43,7 @@ namespace UnityProfileV2.Telemetry
                 .Take(maxAssetsPerCategory)
                 .ToArray();
 
-            var shaders = Resources.FindObjectsOfTypeAll<Shader>()
+            var shaders = EnumerateRuntimeObjects<Shader>()
                 .Select(ShaderInfo.FromShader)
                 .Where(info => info.IsValid)
                 .Take(maxAssetsPerCategory)
@@ -68,6 +69,160 @@ namespace UnityProfileV2.Telemetry
             return string.Empty;
 #endif
         }
+
+        private static IEnumerable<T> EnumerateRuntimeObjects<T>() where T : UnityEngine.Object
+        {
+            var objects = Resources.FindObjectsOfTypeAll<T>();
+#if UNITY_EDITOR
+            HashSet<int> runtimeInstanceIds = null;
+#endif
+
+            foreach (var obj in objects)
+            {
+                if (obj == null)
+                {
+                    continue;
+                }
+
+#if UNITY_EDITOR
+                runtimeInstanceIds ??= GetRuntimeDependencyInstanceIds();
+                if (!ShouldIncludeRuntimeObject(obj, runtimeInstanceIds))
+                {
+                    continue;
+                }
+#endif
+
+                yield return obj;
+            }
+        }
+
+#if UNITY_EDITOR
+        private static readonly List<GameObject> RootGameObjectBuffer = new();
+        private static readonly HashSet<int> RootInstanceIdSet = new();
+        private static readonly HashSet<int> RuntimeDependencyInstanceIds = new();
+        private static int RuntimeDependencyCacheFrame = -1;
+
+        private static HashSet<int> GetRuntimeDependencyInstanceIds()
+        {
+            if (!Application.isPlaying)
+            {
+                return RuntimeDependencyInstanceIds;
+            }
+
+            var currentFrame = Time.frameCount;
+            if (RuntimeDependencyCacheFrame == currentFrame)
+            {
+                return RuntimeDependencyInstanceIds;
+            }
+
+            RuntimeDependencyCacheFrame = currentFrame;
+            RuntimeDependencyInstanceIds.Clear();
+            RootGameObjectBuffer.Clear();
+            RootInstanceIdSet.Clear();
+
+            var sceneCount = SceneManager.sceneCount;
+            for (var index = 0; index < sceneCount; index += 1)
+            {
+                var scene = SceneManager.GetSceneAt(index);
+                if (!scene.IsValid() || !scene.isLoaded)
+                {
+                    continue;
+                }
+
+                foreach (var root in scene.GetRootGameObjects())
+                {
+                    if (root == null)
+                    {
+                        continue;
+                    }
+
+                    if (RootInstanceIdSet.Add(root.GetInstanceID()))
+                    {
+                        RootGameObjectBuffer.Add(root);
+                    }
+                }
+            }
+
+            CollectDontDestroyOnLoadRoots();
+
+            if (RootGameObjectBuffer.Count == 0)
+            {
+                return RuntimeDependencyInstanceIds;
+            }
+
+            var dependencies = EditorUtility.CollectDependencies(RootGameObjectBuffer.Cast<UnityEngine.Object>().ToArray());
+            foreach (var dependency in dependencies)
+            {
+                if (dependency == null)
+                {
+                    continue;
+                }
+
+                RuntimeDependencyInstanceIds.Add(dependency.GetInstanceID());
+            }
+
+            return RuntimeDependencyInstanceIds;
+        }
+
+        private static void CollectDontDestroyOnLoadRoots()
+        {
+            var sentinel = new GameObject("TelemetryRuntimeCollectorSentinel")
+            {
+                hideFlags = HideFlags.HideAndDontSave
+            };
+
+            try
+            {
+                UnityEngine.Object.DontDestroyOnLoad(sentinel);
+                var dontDestroyScene = sentinel.scene;
+                foreach (var root in dontDestroyScene.GetRootGameObjects())
+                {
+                    if (root == null || root == sentinel)
+                    {
+                        continue;
+                    }
+
+                    if (RootInstanceIdSet.Add(root.GetInstanceID()))
+                    {
+                        RootGameObjectBuffer.Add(root);
+                    }
+                }
+
+                SceneManager.MoveGameObjectToScene(sentinel, SceneManager.GetActiveScene());
+            }
+            finally
+            {
+                if (Application.isPlaying)
+                {
+                    UnityEngine.Object.Destroy(sentinel);
+                }
+                else
+                {
+                    UnityEngine.Object.DestroyImmediate(sentinel);
+                }
+            }
+        }
+
+        private static bool ShouldIncludeRuntimeObject(UnityEngine.Object obj, HashSet<int> runtimeInstanceIds)
+        {
+            if (obj == null)
+            {
+                return false;
+            }
+
+            if (!Application.isPlaying)
+            {
+                return false;
+            }
+
+            if (!EditorUtility.IsPersistent(obj))
+            {
+                return true;
+            }
+
+            return runtimeInstanceIds.Count == 0 || runtimeInstanceIds.Contains(obj.GetInstanceID());
+        }
+#endif
 
         private static long CalculateMipChainPixelCount(int width, int height, int mipCount)
         {
@@ -449,6 +604,7 @@ namespace UnityProfileV2.Telemetry
         public long originalBytes;
         public long EstimatedBytes;
         public string previewBase64;
+        public bool isRenderTexture;
         public bool IsValid => width > 0 && height > 0;
 
         public static TextureInfo FromTexture(Texture texture)
@@ -456,12 +612,12 @@ namespace UnityProfileV2.Telemetry
             var tex2D = texture as Texture2D;
             var format = tex2D != null ? tex2D.format : TextureFormat.RGBA32;
             var mipCount = tex2D != null ? tex2D.mipmapCount : 1;
-            AssetTelemetryUtility.TryCaptureTexturePreview(texture, out var previewBase64);
+            TryCaptureTexturePreview(texture, out var previewBase64);
 
             return new TextureInfo
             {
                 name = texture.name,
-                path = AssetTelemetryUtility.GetAssetPath(texture),
+                path = GetAssetPath(texture),
                 width = texture.width,
                 height = texture.height,
                 wrapMode = texture.wrapMode,
@@ -471,9 +627,10 @@ namespace UnityProfileV2.Telemetry
                 graphicsFormat = tex2D != null ? tex2D.graphicsFormat.ToString() : string.Empty,
                 compressionFormat = format.ToString(),
                 mipCount = mipCount,
-                originalBytes = AssetTelemetryUtility.GetTextureOriginalBytes(tex2D),
-                EstimatedBytes = AssetTelemetryUtility.GetTextureCompressedBytes(texture, format, texture.width, texture.height, mipCount),
+                originalBytes = GetTextureOriginalBytes(tex2D),
+                EstimatedBytes = GetTextureCompressedBytes(texture, format, texture.width, texture.height, mipCount),
                 previewBase64 = previewBase64,
+                isRenderTexture = texture is RenderTexture,
             };
         }
     }
