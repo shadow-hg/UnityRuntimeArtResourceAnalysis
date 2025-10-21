@@ -82,10 +82,15 @@ export default function SessionSidebar({
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ padding: '0 16px' }}>
-        <Typography.Text type="secondary">游戏客户端 IP</Typography.Text>
+        <Space direction="vertical" size={4} style={{ width: '100%' }}>
+          <Typography.Text type="secondary">游戏客户端 IP</Typography.Text>
+          <Typography.Text style={{ fontSize: 16, fontWeight: 600 }}>
+            {selectedClientIp ?? '全部客户端'}
+          </Typography.Text>
+        </Space>
         <div
           style={{
-            marginTop: 8,
+            marginTop: 12,
             display: 'flex',
             flexWrap: 'wrap',
             gap: 8,
@@ -131,15 +136,16 @@ export default function SessionSidebar({
                   gap: 6,
                   minWidth: 0,
                   maxWidth: '100%',
-                  whiteSpace: 'nowrap',
+                  whiteSpace: 'normal',
+                  lineHeight: 1.4,
                 }}
               >
                 <span
                   style={{
                     flex: '1 1 auto',
                     minWidth: 0,
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
+                    overflow: 'visible',
+                    wordBreak: 'break-all',
                   }}
                   title={item.ip}
                 >

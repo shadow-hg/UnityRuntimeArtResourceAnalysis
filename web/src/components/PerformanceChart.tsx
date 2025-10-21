@@ -286,6 +286,7 @@ export default function PerformanceChart({
         nameGap: 35,
         axisLabel: { formatter: (value: number | string) => `#${value}` },
         data: frameNumbers,
+        triggerEvent: true,
       },
       yAxis: [
         {
@@ -482,15 +483,32 @@ export default function PerformanceChart({
       value?: number | string | null;
       axisValue?: number | string | null;
       name?: number | string;
+      componentType?: string;
+      event?: {
+        target?: {
+          style?: {
+            text?: unknown;
+          };
+        };
+      };
     }) => {
       const normalizeFrameNumber = (value: unknown): number | null => {
         if (typeof value === 'number' && Number.isFinite(value)) {
           return value;
         }
         if (typeof value === 'string') {
-          const parsed = Number(value);
+          const trimmed = value.trim();
+          const withoutPrefix = trimmed.startsWith('#') ? trimmed.slice(1) : trimmed;
+          const parsed = Number(withoutPrefix);
           if (Number.isFinite(parsed)) {
             return parsed;
+          }
+          const match = withoutPrefix.match(/-?\d+(?:\.\d+)?/);
+          if (match) {
+            const numeric = Number(match[0]);
+            if (Number.isFinite(numeric)) {
+              return numeric;
+            }
           }
         }
         return null;
@@ -515,6 +533,11 @@ export default function PerformanceChart({
             break;
           }
         }
+      }
+
+      if (frameNumber == null) {
+        const candidate = params.event?.target?.style?.text;
+        frameNumber = normalizeFrameNumber(candidate);
       }
 
       if (frameNumber == null && hoveredFrameNumberRef.current != null) {
