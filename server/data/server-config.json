@@ -1,0 +1,11 @@
+{
+  "clientDefaults": {
+    "sampleIntervalSeconds": 0,
+    "framePreviewScale": 0.2,
+    "maxAssetsPerCategory": 200,
+    "autoManageSession": true
+  },
+  "history": {
+    "maxSessionFrames": 10000
+  }
+}
