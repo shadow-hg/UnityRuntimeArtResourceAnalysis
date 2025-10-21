@@ -7,7 +7,12 @@ interface SessionSidebarProps {
   sessions: TelemetrySession[];
   selectedSessionId: string | null;
   onSelectSession: (sessionId: string) => void;
+  clientIps: { ip: string; sessionCount: number; activeSessionCount: number }[];
+  selectedClientIp: string | null;
+  onSelectClientIp: (ip: string | null) => void;
 }
+
+const { CheckableTag } = Tag;
 
 function SessionItem({ session, isActive, onSelect }: { session: TelemetrySession; isActive: boolean; onSelect: () => void }) {
   const title = (session.client?.productName as string) ?? 'Unknown Product';
@@ -52,27 +57,81 @@ function SessionItem({ session, isActive, onSelect }: { session: TelemetrySessio
   );
 }
 
-export default function SessionSidebar({ sessions, selectedSessionId, onSelectSession }: SessionSidebarProps) {
+export default function SessionSidebar({
+  sessions,
+  selectedSessionId,
+  onSelectSession,
+  clientIps,
+  selectedClientIp,
+  onSelectClientIp,
+}: SessionSidebarProps) {
   const sortedSessions = useMemo(
     () => [...sessions].sort((a, b) => dayjs(b.createdAt).valueOf() - dayjs(a.createdAt).valueOf()),
     [sessions]
   );
-
-  if (sortedSessions.length === 0) {
-    return <Empty description="No telemetry sessions yet" style={{ marginTop: 80 }} />;
-  }
+  const emptyDescription = selectedClientIp
+    ? `IP ${selectedClientIp} 暂无历史记录`
+    : '暂无性能数据会话';
 
   return (
-    <List
-      dataSource={sortedSessions}
-      renderItem={(session) => (
-        <SessionItem
-          key={session.id}
-          session={session}
-          isActive={session.id === selectedSessionId}
-          onSelect={() => onSelectSession(session.id)}
-        />
-      )}
-    />
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ padding: '0 16px' }}>
+        <Typography.Text type="secondary">游戏客户端 IP</Typography.Text>
+        <Space wrap size={[8, 8]} style={{ marginTop: 8 }}>
+          <CheckableTag
+            key="__all__"
+            checked={selectedClientIp === null}
+            onChange={(checked) => {
+              if (checked) {
+                onSelectClientIp(null);
+              } else if (selectedClientIp === null) {
+                onSelectClientIp(null);
+              }
+            }}
+          >
+            全部客户端
+          </CheckableTag>
+          {clientIps.length === 0 ? (
+            <Typography.Text type="secondary">暂无客户端连接</Typography.Text>
+          ) : (
+            clientIps.map((item) => (
+              <CheckableTag
+                key={item.ip}
+                checked={selectedClientIp === item.ip}
+                onChange={(checked) => onSelectClientIp(checked ? item.ip : null)}
+                style={{ borderRadius: 999, padding: '2px 12px' }}
+              >
+                <Space size={6} align="center">
+                  <span>{item.ip}</span>
+                  <span style={{ color: 'rgba(0, 0, 0, 0.45)', fontSize: 12 }}>({item.sessionCount})</span>
+                  {item.activeSessionCount > 0 ? (
+                    <span style={{ color: '#52c41a', fontSize: 12 }}>
+                      实时 {item.activeSessionCount}
+                    </span>
+                  ) : null}
+                </Space>
+              </CheckableTag>
+            ))
+          )}
+        </Space>
+      </div>
+      <div style={{ flex: 1, overflowY: 'auto' }}>
+        {sortedSessions.length === 0 ? (
+          <Empty description={emptyDescription} style={{ marginTop: 80 }} />
+        ) : (
+          <List
+            dataSource={sortedSessions}
+            renderItem={(session) => (
+              <SessionItem
+                key={session.id}
+                session={session}
+                isActive={session.id === selectedSessionId}
+                onSelect={() => onSelectSession(session.id)}
+              />
+            )}
+          />
+        )}
+      </div>
+    </div>
   );
 }

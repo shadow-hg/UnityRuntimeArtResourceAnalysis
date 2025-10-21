@@ -7,6 +7,7 @@ import {
   Layout,
   Space,
   Switch,
+  Tag,
   Tooltip,
   Typography,
   theme,
@@ -22,6 +23,22 @@ import { formatBytes, formatFps } from './utils/format';
 const { Header, Sider, Content } = Layout;
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL ?? 'http://localhost:48080';
+const UNKNOWN_IP_LABEL = '未知 IP';
+
+function resolveSessionIp(session: TelemetrySession): string {
+  const raw = typeof session.clientIp === 'string' ? session.clientIp.trim() : '';
+  if (raw && raw.toLowerCase() !== 'unknown') {
+    return raw;
+  }
+
+  const fallbackSource = session.client?.['remoteAddress'];
+  const fallback = typeof fallbackSource === 'string' ? fallbackSource.trim() : '';
+  if (fallback) {
+    return fallback;
+  }
+
+  return UNKNOWN_IP_LABEL;
+}
 
 const connectionBadgeMeta: Record<
   ReturnType<typeof useTelemetryStream>['connectionState'],
@@ -60,27 +77,73 @@ function AppShell({ sessions, connectionState, networkInfo, isDarkMode, onToggle
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [selectedFrame, setSelectedFrame] = useState<TelemetrySnapshot | null>(null);
   const [isAutoFollowLatest, setIsAutoFollowLatest] = useState(true);
+  const [selectedClientIp, setSelectedClientIp] = useState<string | null>(null);
   const { token } = theme.useToken();
 
+  const clientIpOptions = useMemo(
+    () => {
+      const map = new Map<string, { ip: string; sessionCount: number; activeSessionCount: number }>();
+      sortedSessions.forEach((session) => {
+        const ip = resolveSessionIp(session);
+        const existing = map.get(ip) ?? { ip, sessionCount: 0, activeSessionCount: 0 };
+        existing.sessionCount += 1;
+        if (!session.closedAt) {
+          existing.activeSessionCount += 1;
+        }
+        map.set(ip, existing);
+      });
+      return Array.from(map.values()).sort((a, b) => {
+        if (b.activeSessionCount !== a.activeSessionCount) {
+          return b.activeSessionCount - a.activeSessionCount;
+        }
+        if (b.sessionCount !== a.sessionCount) {
+          return b.sessionCount - a.sessionCount;
+        }
+        return a.ip.localeCompare(b.ip);
+      });
+    },
+    [sortedSessions]
+  );
+
+  const visibleSessions = useMemo(() => {
+    if (!selectedClientIp) {
+      return sortedSessions;
+    }
+    return sortedSessions.filter((session) => resolveSessionIp(session) === selectedClientIp);
+  }, [sortedSessions, selectedClientIp]);
+
   useEffect(() => {
-    if (sortedSessions.length === 0) {
+    if (clientIpOptions.length === 0) {
+      if (selectedClientIp !== null) {
+        setSelectedClientIp(null);
+      }
+      return;
+    }
+
+    if (selectedClientIp && !clientIpOptions.some((option) => option.ip === selectedClientIp)) {
+      setSelectedClientIp(clientIpOptions[0]?.ip ?? null);
+    }
+  }, [clientIpOptions, selectedClientIp]);
+
+  useEffect(() => {
+    if (visibleSessions.length === 0) {
       setSelectedSessionId(null);
       setSelectedFrame(null);
       return;
     }
 
-    if (!selectedSessionId || !sortedSessions.some((session) => session.id === selectedSessionId)) {
-      const newest = sortedSessions[0];
+    if (!selectedSessionId || !visibleSessions.some((session) => session.id === selectedSessionId)) {
+      const newest = visibleSessions[0];
       setSelectedSessionId(newest.id);
       setSelectedFrame(newest.frames[newest.frames.length - 1] ?? null);
       setIsAutoFollowLatest(true);
     }
-  }, [sortedSessions, selectedSessionId]);
+  }, [visibleSessions, selectedSessionId]);
 
   const selectedSession = useMemo<TelemetrySession | null>(() => {
-    if (!selectedSessionId) return sortedSessions[0] ?? null;
-    return sortedSessions.find((session) => session.id === selectedSessionId) ?? sortedSessions[0] ?? null;
-  }, [sortedSessions, selectedSessionId]);
+    if (!selectedSessionId) return visibleSessions[0] ?? null;
+    return visibleSessions.find((session) => session.id === selectedSessionId) ?? visibleSessions[0] ?? null;
+  }, [visibleSessions, selectedSessionId]);
 
   const frames = useMemo(() => {
     if (!selectedSession) return [];
@@ -120,13 +183,16 @@ function AppShell({ sessions, connectionState, networkInfo, isDarkMode, onToggle
 
   const handleSessionChange = useCallback(
     (sessionId: string) => {
+      const session = visibleSessions.find((s) => s.id === sessionId);
+      if (!session) {
+        return;
+      }
       setSelectedSessionId(sessionId);
-      const session = sortedSessions.find((s) => s.id === sessionId);
-      const lastFrame = session?.frames?.[session.frames.length - 1] ?? null;
+      const lastFrame = session.frames?.[session.frames.length - 1] ?? null;
       setSelectedFrame(lastFrame ?? null);
       setIsAutoFollowLatest(true);
     },
-    [sortedSessions]
+    [visibleSessions]
   );
 
   const handleFrameSelect = useCallback(
@@ -204,6 +270,10 @@ function AppShell({ sessions, connectionState, networkInfo, isDarkMode, onToggle
                   </Space>
                 </>
               ) : null}
+              <Typography.Text type="secondary">当前客户端：</Typography.Text>
+              <Tag color={selectedClientIp ? 'processing' : 'default'}>
+                {selectedClientIp ?? '全部客户端'}
+              </Tag>
             </Space>
           </Flex>
           <Space align="center" size={16}>
@@ -235,9 +305,12 @@ function AppShell({ sessions, connectionState, networkInfo, isDarkMode, onToggle
           }}
         >
           <SessionSidebar
-            sessions={sortedSessions}
+            sessions={visibleSessions}
             selectedSessionId={selectedSession?.id ?? null}
             onSelectSession={handleSessionChange}
+            clientIps={clientIpOptions}
+            selectedClientIp={selectedClientIp}
+            onSelectClientIp={setSelectedClientIp}
           />
         </Sider>
         <Content style={{ padding: 24, background: token.colorBgBase }}>

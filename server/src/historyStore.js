@@ -70,7 +70,8 @@ export class HistoryStore {
       id: metadata.id,
       createdAt: metadata.createdAt,
       client: metadata.client,
-      frames: []
+      clientIp: metadata.clientIp ?? null,
+      frames: [],
     };
     this.history.sessions.push(session);
     await writeHistory(this.history);

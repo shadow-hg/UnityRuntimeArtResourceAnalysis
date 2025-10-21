@@ -123,11 +123,29 @@ export default function PerformanceChart({ frames, selectedFrame, onSelectFrame 
     [frames]
   );
 
+  const shaderValues = useMemo(
+    () =>
+      frames.map((frame) => {
+        const explicitBytes = ensureFiniteNumber(frame.totalShaderBytes ?? frame.shaderMemoryBytes, 0);
+        const aggregatedBytes = frame.shaders?.reduce(
+          (sum, shader) => sum + ensureFiniteNumber(shader?.memoryBytes),
+          0
+        ) ?? 0;
+        const shaderBytes = explicitBytes > 0 ? explicitBytes : aggregatedBytes;
+        if (shaderBytes <= 0) {
+          return null;
+        }
+        const value = bytesToMegabytes(shaderBytes);
+        return Number.isFinite(value) ? Number(value.toFixed(2)) : null;
+      }),
+    [frames]
+  );
+
   const option = useMemo<EChartsOption>(() => {
     const latestFrameNumber = frameNumbers[frameNumbers.length - 1];
 
     return {
-      color: ['#5B8FF9', '#F6BD16', '#5AD8A6', '#9254DE'],
+      color: ['#5B8FF9', '#F6BD16', '#5AD8A6', '#9254DE', '#FF7875'],
       grid: { left: 48, right: 32, top: 70, bottom: 80 },
       tooltip: {
         trigger: 'axis',
@@ -151,13 +169,12 @@ export default function PerformanceChart({ frames, selectedFrame, onSelectFrame 
                 }
                 return `${item.marker}${item.seriesName}: ${formatFps(Number(item.data))}`;
               }
-              if (item.seriesName === '纹理 (MB)' || item.seriesName === '网格 (MB)') {
-                if (item.data == null) {
-                  return `${item.marker}${item.seriesName}: --`;
-                }
-                return `${item.marker}${item.seriesName}: ${Number(item.data).toFixed(1)} MB`;
-              }
-              if (item.seriesName === 'RenderTexture (MB)') {
+              if (
+                item.seriesName === '纹理 (MB)' ||
+                item.seriesName === '网格 (MB)' ||
+                item.seriesName === 'RenderTexture (MB)' ||
+                item.seriesName === 'Shader (MB)'
+              ) {
                 if (item.data == null) {
                   return `${item.marker}${item.seriesName}: --`;
                 }
@@ -285,9 +302,22 @@ export default function PerformanceChart({ frames, selectedFrame, onSelectFrame 
           emphasis: { focus: 'series' },
           data: renderTextureValues,
         },
+        {
+          name: 'Shader (MB)',
+          type: 'line',
+          smooth: true,
+          symbol: 'circle',
+          symbolSize: 6,
+          yAxisIndex: 1,
+          connectNulls: false,
+          showSymbol: false,
+          areaStyle: { opacity: 0.08 },
+          emphasis: { focus: 'series' },
+          data: shaderValues,
+        },
       ],
     } satisfies EChartsOption;
-  }, [frameNumbers, timestamps, fpsValues, textureValues, meshValues, renderTextureValues]);
+  }, [frameNumbers, timestamps, fpsValues, textureValues, meshValues, renderTextureValues, shaderValues]);
 
   useEffect(() => {
     return () => {
@@ -321,7 +351,7 @@ export default function PerformanceChart({ frames, selectedFrame, onSelectFrame 
       return;
     }
 
-    const seriesCount = 4;
+    const seriesCount = 5;
     for (let index = 0; index < seriesCount; index += 1) {
       safelyDispatch(instance, { type: 'downplay', seriesIndex: index });
     }
@@ -367,7 +397,7 @@ export default function PerformanceChart({ frames, selectedFrame, onSelectFrame 
         option={option}
         style={{ height: 400 }}
         notMerge
-        lazyUpdate
+        lazyUpdate={false}
         onChartReady={(instance) => {
           chartRef.current = instance;
         }}

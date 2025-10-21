@@ -41,6 +41,44 @@ function listLanAddresses(port) {
   return addresses;
 }
 
+function normalizeIp(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  if (value.startsWith('::ffff:')) {
+    return value.slice(7);
+  }
+  if (value === '::1') {
+    return '127.0.0.1';
+  }
+  return value;
+}
+
+function extractClientIp(req) {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string' && forwarded.length > 0) {
+    const [first] = forwarded.split(',');
+    const normalized = normalizeIp(first?.trim() ?? '');
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  if (Array.isArray(forwarded) && forwarded.length > 0) {
+    const normalized = normalizeIp((forwarded[0] ?? '').trim());
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  const remoteAddress = normalizeIp(req.socket?.remoteAddress ?? req.ip ?? '');
+  if (remoteAddress) {
+    return remoteAddress;
+  }
+
+  return 'unknown';
+}
+
 function sanitizeFramePayload(payload) {
   const { textures = [], meshes = [], shaders = [], renderTextures = [], ...rest } = payload ?? {};
   return {
@@ -113,12 +151,14 @@ app.post('/sessions', async (req, res) => {
   try {
     const id = uuidv4();
     const createdAt = new Date().toISOString();
+    const clientIp = extractClientIp(req);
     const session = await historyStore.createSession({
       id,
       createdAt,
       client: req.body,
+      clientIp,
     });
-    res.json({ sessionId: id, createdAt });
+    res.json({ sessionId: id, createdAt, clientIp });
     io.emit('session:create', session);
   } catch (err) {
     console.error('Failed to create session', err);
