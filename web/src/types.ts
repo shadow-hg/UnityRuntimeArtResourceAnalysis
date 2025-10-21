@@ -54,6 +54,7 @@ export interface FramePreviewInfo {
   width?: number;
   height?: number;
   captureTimestampUtc?: string;
+  orientation?: 'portrait' | 'landscape' | 'square' | string;
 }
 
 export interface MaterialTextureReference {

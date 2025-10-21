@@ -15,6 +15,9 @@ namespace UnityProfileV2.Telemetry
         [Tooltip("Minimum interval in seconds between telemetry snapshots. Set to 0 to capture every frame.")]
         [SerializeField, Min(0f)] private float sampleIntervalSeconds = 0f;
 
+        [Tooltip("Scale applied to captured frame previews to reduce bandwidth. Set to 0 to disable previews.")]
+        [SerializeField, Range(0f, 1f)] private float framePreviewScale = 0.2f;
+
         [Tooltip("Maximum number of assets to send per payload per category to reduce payload size.")]
         [SerializeField] private int maxAssetsPerCategory = 200;
 
@@ -63,7 +66,8 @@ namespace UnityProfileV2.Telemetry
                 platform = Application.platform.ToString(),
                 productName = Application.productName,
                 deviceModel = SystemInfo.deviceModel,
-                deviceName = SystemInfo.deviceName
+                deviceName = SystemInfo.deviceName,
+                accountName = ResolveAccountName()
             };
 
             using var request = BuildJsonRequest("/sessions", UnityWebRequest.kHttpVerbPOST, payload);
@@ -108,7 +112,7 @@ namespace UnityProfileV2.Telemetry
         private IEnumerator SendSnapshot()
         {
             var snapshot = AssetTelemetryUtility.CreateSnapshot(maxAssetsPerCategory);
-            yield return AssetTelemetryUtility.PopulateFramePreview(snapshot);
+            yield return AssetTelemetryUtility.PopulateFramePreview(snapshot, framePreviewScale);
             var nowRealtime = Time.realtimeSinceStartup;
             var currentFrameCount = Time.frameCount;
             var frameDelta = Mathf.Max(currentFrameCount - _lastFrameCount, 0);
@@ -145,6 +149,25 @@ namespace UnityProfileV2.Telemetry
             return request;
         }
 
+        private static string ResolveAccountName()
+        {
+            try
+            {
+                var userName = Environment.UserName;
+                if (!string.IsNullOrWhiteSpace(userName))
+                {
+                    return userName.Trim();
+                }
+            }
+            catch
+            {
+                // Ignored: Environment information might not be accessible on all platforms.
+            }
+
+            var deviceName = SystemInfo.deviceName;
+            return string.IsNullOrWhiteSpace(deviceName) ? null : deviceName.Trim();
+        }
+
         [Serializable]
         private struct SessionRegistration
         {
@@ -154,6 +177,7 @@ namespace UnityProfileV2.Telemetry
             public string productName;
             public string deviceModel;
             public string deviceName;
+            public string accountName;
         }
 
         [Serializable]

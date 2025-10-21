@@ -25,6 +25,12 @@ function SessionItem({ session, isActive, onSelect }: { session: TelemetrySessio
       ? `${totalFrameCount} 帧 (显示最近 ${frameCount} 帧)`
       : `${totalFrameCount} 帧`;
   const deviceName = (session.client?.deviceName as string) ?? 'Unknown Device';
+  const accountName = useMemo(() => {
+    const fromAccount = typeof session.client?.accountName === 'string' ? session.client?.accountName : null;
+    const fallback = typeof session.client?.userName === 'string' ? session.client?.userName : null;
+    const candidate = (fromAccount ?? fallback)?.trim();
+    return candidate && candidate.length > 0 ? candidate : null;
+  }, [session.client?.accountName, session.client?.userName]);
   const platform = session.client?.platform as string | undefined;
   const clientIp = resolveSessionIp(session);
   const subtitle = `${dayjs(session.createdAt).format('MMM D HH:mm:ss')} • ${frameSummary}`;
@@ -55,8 +61,13 @@ function SessionItem({ session, isActive, onSelect }: { session: TelemetrySessio
             </Tag>
           </Space>
           <Typography.Text type="secondary">{subtitle}</Typography.Text>
+          {accountName ? (
+            <Typography.Text type="secondary" ellipsis style={{ maxWidth: 200 }}>
+              账户：{accountName}
+            </Typography.Text>
+          ) : null}
           <Typography.Text type="secondary" ellipsis style={{ maxWidth: 200 }}>
-            {deviceName}
+            设备：{deviceName}
           </Typography.Text>
           <Typography.Text type="secondary" style={{ maxWidth: 200 }}>
             IP：{clientIp}
