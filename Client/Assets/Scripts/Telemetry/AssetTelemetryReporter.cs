@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
@@ -13,6 +14,10 @@ namespace UnityProfileV2.Telemetry
     public class AssetTelemetryReporter : MonoBehaviour
     {
         private const int DefaultServerPort = 48080;
+
+        [SerializeField]
+        [Tooltip("Optional override for the telemetry server endpoint (e.g. http://localhost:48080). Leave empty to auto-detect.")]
+        private string _serverEndpointOverride = string.Empty;
 
         private string _serverEndpoint = string.Empty;
 
@@ -117,18 +122,60 @@ namespace UnityProfileV2.Telemetry
             return endpoint.EndsWith("/") ? endpoint.TrimEnd('/') : endpoint;
         }
 
-        private string ResolveServerEndpoint()
+        private static string BuildEndpointFromHost(string host)
         {
-            var ipAddress = ResolveLocalIpAddress();
+            if (string.IsNullOrWhiteSpace(host))
+            {
+                return string.Empty;
+            }
 
             try
             {
-                var builder = new UriBuilder(Uri.UriSchemeHttp, ipAddress, DefaultServerPort);
+                var builder = new UriBuilder(Uri.UriSchemeHttp, host, DefaultServerPort);
                 return SanitizeEndpoint(builder.Uri.ToString());
             }
             catch
             {
-                return SanitizeEndpoint($"http://{ipAddress}:{DefaultServerPort}");
+                return SanitizeEndpoint($"http://{host}:{DefaultServerPort}");
+            }
+        }
+
+        private string ResolveServerEndpoint()
+        {
+            if (!string.IsNullOrWhiteSpace(_serverEndpointOverride))
+            {
+                return SanitizeEndpoint(_serverEndpointOverride);
+            }
+
+            var ipAddress = ResolveLocalIpAddress();
+            return BuildEndpointFromHost(ipAddress);
+        }
+
+        private IEnumerable<string> EnumerateServerEndpointCandidates()
+        {
+            var candidates = new List<string>
+            {
+                _serverEndpointOverride,
+                _serverEndpoint,
+                BuildEndpointFromHost(ResolveLocalIpAddress()),
+                BuildEndpointFromHost("127.0.0.1"),
+                BuildEndpointFromHost("localhost")
+            };
+
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var candidate in candidates)
+            {
+                var sanitized = SanitizeEndpoint(candidate);
+                if (string.IsNullOrEmpty(sanitized))
+                {
+                    continue;
+                }
+
+                if (seen.Add(sanitized))
+                {
+                    yield return sanitized;
+                }
             }
         }
 
@@ -229,74 +276,88 @@ namespace UnityProfileV2.Telemetry
 
         private IEnumerator LoadServerConfigCoroutine()
         {
-            if (string.IsNullOrEmpty(_serverEndpoint))
+            var initialEndpoint = _serverEndpoint;
+
+            foreach (var endpoint in EnumerateServerEndpointCandidates())
             {
-                yield break;
-            }
+                var attempt = 0;
+                var retriesRemaining = ServerConfigRetryCount;
 
-            var attempt = 0;
-            var retriesRemaining = ServerConfigRetryCount;
-
-            while (true)
-            {
-                attempt++;
-
-                using (var request = UnityWebRequest.Get(_serverEndpoint + "/config"))
+                while (true)
                 {
-                    request.downloadHandler = new DownloadHandlerBuffer();
+                    attempt++;
 
-                    if (ServerConfigRequestTimeoutSeconds > 0)
+                    using (var request = UnityWebRequest.Get(endpoint + "/config"))
                     {
-                        request.timeout = Mathf.Max(ServerConfigRequestTimeoutSeconds, 0);
-                    }
+                        request.downloadHandler = new DownloadHandlerBuffer();
 
-                    yield return request.SendWebRequest();
-
-                    if (request.result == UnityWebRequest.Result.Success)
-                    {
-                        var json = request.downloadHandler.text;
-
-                        if (string.IsNullOrEmpty(json) || json.IndexOf("\"clientDefaults\"", StringComparison.Ordinal) < 0)
+                        if (ServerConfigRequestTimeoutSeconds > 0)
                         {
-                            Debug.LogWarning("[UnityProfileV2] Server configuration response did not contain client defaults.");
+                            request.timeout = Mathf.Max(ServerConfigRequestTimeoutSeconds, 0);
+                        }
+
+                        yield return request.SendWebRequest();
+
+                        if (request.result == UnityWebRequest.Result.Success)
+                        {
+                            var json = request.downloadHandler.text;
+
+                            if (string.IsNullOrEmpty(json) || json.IndexOf("\"clientDefaults\"", StringComparison.Ordinal) < 0)
+                            {
+                                Debug.LogWarning("[UnityProfileV2] Server configuration response did not contain client defaults.");
+                                yield break;
+                            }
+
+                            try
+                            {
+                                var payload = JsonUtility.FromJson<ServerConfigurationPayload>(json);
+                                ApplyServerConfiguration(payload);
+                            }
+                            catch (Exception ex)
+                            {
+                                Debug.LogWarning($"[UnityProfileV2] Failed to parse server configuration: {ex.Message}");
+                            }
+
+                            if (!string.Equals(_serverEndpoint, endpoint, StringComparison.Ordinal))
+                            {
+                                _serverEndpoint = endpoint;
+                            }
+
+                            if (!string.Equals(initialEndpoint, endpoint, StringComparison.Ordinal))
+                            {
+                                Debug.Log($"[UnityProfileV2] Connected to telemetry server at {endpoint}.");
+                            }
+
                             yield break;
                         }
 
-                        try
-                        {
-                            var payload = JsonUtility.FromJson<ServerConfigurationPayload>(json);
-                            ApplyServerConfiguration(payload);
-                        }
-                        catch (Exception ex)
-                        {
-                            Debug.LogWarning($"[UnityProfileV2] Failed to parse server configuration: {ex.Message}");
-                        }
-
-                        yield break;
+                        Debug.LogWarning(
+                            $"[UnityProfileV2] Failed to load server configuration from {endpoint} (attempt {attempt}): {request.error}"
+                        );
                     }
 
-                    Debug.LogWarning($"[UnityProfileV2] Failed to load server configuration (attempt {attempt}): {request.error}");
-                }
+                    if (retriesRemaining == 0)
+                    {
+                        break;
+                    }
 
-                if (retriesRemaining == 0)
-                {
-                    yield break;
-                }
+                    if (retriesRemaining > 0)
+                    {
+                        retriesRemaining--;
+                    }
 
-                if (retriesRemaining > 0)
-                {
-                    retriesRemaining--;
-                }
-
-                if (ServerConfigRetryDelaySeconds > 0f)
-                {
-                    yield return new WaitForSecondsRealtime(ServerConfigRetryDelaySeconds);
-                }
-                else
-                {
-                    yield return null;
+                    if (ServerConfigRetryDelaySeconds > 0f)
+                    {
+                        yield return new WaitForSecondsRealtime(ServerConfigRetryDelaySeconds);
+                    }
+                    else
+                    {
+                        yield return null;
+                    }
                 }
             }
+
+            Debug.LogWarning("[UnityProfileV2] Unable to reach telemetry server at any known endpoint.");
         }
 
         private void ApplyServerConfiguration(ServerConfigurationPayload payload)
