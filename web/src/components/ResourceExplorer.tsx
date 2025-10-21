@@ -443,7 +443,7 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
   if (!frame) {
     return (
       <Card title="资源总览" style={{ flex: 1 }}>
-        <Empty description="请在性能趋势图或帧时间轴中选择一帧以查看资源详情" />
+        <Empty description="请在性能趋势图中选择一帧以查看资源详情" />
       </Card>
     );
   }
