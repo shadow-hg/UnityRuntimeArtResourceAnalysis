@@ -2,13 +2,29 @@ import { promises as fs } from 'fs';
 import path from 'path';
 
 const DATA_FILE = path.join(process.cwd(), 'data', 'telemetry-history.json');
-const MAX_SESSION_FRAMES = 10000;
+const DEFAULT_MAX_SESSION_FRAMES = 10000;
 
 function ensureNumeric(value, fallback = 0) {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
-function trimFrames(session) {
+function ensurePositiveInteger(value, fallback) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+  const rounded = Math.round(value);
+  if (rounded <= 0) {
+    return fallback;
+  }
+  return rounded;
+}
+
+function getFrameLimit(options) {
+  const limit = ensurePositiveInteger(options?.maxSessionFrames, DEFAULT_MAX_SESSION_FRAMES);
+  return limit;
+}
+
+function trimFrames(session, options) {
   if (!Array.isArray(session.frames)) {
     session.frames = [];
     return { removedFrames: [], removedCount: 0 };
@@ -20,7 +36,8 @@ function trimFrames(session) {
     session.trimmedFrameCount + session.frames.length
   );
 
-  const overflow = session.frames.length - MAX_SESSION_FRAMES;
+  const maxSessionFrames = getFrameLimit(options);
+  const overflow = session.frames.length - maxSessionFrames;
   let removedFrames = [];
   if (overflow > 0) {
     removedFrames = session.frames.splice(0, overflow);
@@ -36,7 +53,7 @@ function trimFrames(session) {
   return { removedFrames, removedCount: removedFrames.length };
 }
 
-function normalizeSession(session) {
+function normalizeSession(session, options) {
   if (!Array.isArray(session.frames)) {
     session.frames = [];
   }
@@ -45,7 +62,7 @@ function normalizeSession(session) {
     session.totalFrameCount,
     session.trimmedFrameCount + session.frames.length
   );
-  trimFrames(session);
+  trimFrames(session, options);
   return session;
 }
 
@@ -140,9 +157,15 @@ async function writeHistory(history) {
 }
 
 export class HistoryStore {
-  constructor() {
+  constructor(options = {}) {
     this.history = { sessions: [] };
     this.initialized = false;
+    this.configStore = options.configStore ?? null;
+  }
+
+  getConfigOptions() {
+    const historyConfig = this.configStore?.getHistoryConfig?.();
+    return { maxSessionFrames: historyConfig?.maxSessionFrames ?? DEFAULT_MAX_SESSION_FRAMES };
   }
 
   async init() {
@@ -151,12 +174,14 @@ export class HistoryStore {
     if (!Array.isArray(this.history.sessions)) {
       this.history.sessions = [];
     }
-    this.history.sessions = this.history.sessions.map((session) => normalizeSession(session));
+    const options = this.getConfigOptions();
+    this.history.sessions = this.history.sessions.map((session) => normalizeSession(session, options));
     this.initialized = true;
   }
 
   async createSession(metadata) {
     await this.init();
+    const options = this.getConfigOptions();
     const session = normalizeSession({
       id: metadata.id,
       createdAt: metadata.createdAt,
@@ -165,7 +190,7 @@ export class HistoryStore {
       frames: [],
       trimmedFrameCount: 0,
       totalFrameCount: 0,
-    });
+    }, options);
     this.history.sessions.push(session);
     await writeHistory(this.history);
     return session;
@@ -173,6 +198,7 @@ export class HistoryStore {
 
   async appendFrame(sessionId, frame) {
     await this.init();
+    const options = this.getConfigOptions();
     const session = this.history.sessions.find((s) => s.id === sessionId);
     if (!session) {
       throw new Error(`Session ${sessionId} not found`);
@@ -186,7 +212,7 @@ export class HistoryStore {
     );
     session.totalFrameCount = previousTotal + 1;
     session.frames.push(frame);
-    const { removedFrames, removedCount } = trimFrames(session);
+    const { removedFrames, removedCount } = trimFrames(session, options);
     await writeHistory(this.history);
     return {
       frame,
@@ -215,5 +241,33 @@ export class HistoryStore {
   async getSession(sessionId) {
     await this.init();
     return this.history.sessions.find((s) => s.id === sessionId) || null;
+  }
+
+  async applyConfig(config) {
+    await this.init();
+    const options = {
+      maxSessionFrames: config?.history?.maxSessionFrames ?? this.getConfigOptions().maxSessionFrames,
+    };
+    let changed = false;
+    for (const session of this.history.sessions) {
+      const beforeLength = session.frames?.length ?? 0;
+      const beforeTrimmed = session.trimmedFrameCount ?? 0;
+      normalizeSession(session, options);
+      if (
+        (session.frames?.length ?? 0) !== beforeLength ||
+        (session.trimmedFrameCount ?? 0) !== beforeTrimmed
+      ) {
+        changed = true;
+      }
+    }
+    if (changed) {
+      await writeHistory(this.history);
+    }
+  }
+
+  async clearHistory() {
+    await this.init();
+    this.history.sessions = [];
+    await writeHistory(this.history);
   }
 }

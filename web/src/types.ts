@@ -133,3 +133,19 @@ export interface NetworkInfoResponse {
   port: number;
   addresses: NetworkInterfaceInfo[];
 }
+
+export interface ClientDefaultsConfig {
+  sampleIntervalSeconds: number;
+  framePreviewScale: number;
+  maxAssetsPerCategory: number;
+  autoManageSession: boolean;
+}
+
+export interface HistoryConfig {
+  maxSessionFrames: number;
+}
+
+export interface ServerConfig {
+  clientDefaults: ClientDefaultsConfig;
+  history: HistoryConfig;
+}

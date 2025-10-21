@@ -10,6 +10,7 @@ import {
   Tag,
   Tooltip,
   Typography,
+  message,
   theme,
 } from 'antd';
 import {
@@ -20,12 +21,14 @@ import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   ReloadOutlined,
+  SettingOutlined,
 } from '@ant-design/icons';
 import { useTelemetryStream } from './hooks/useTelemetryStream';
-import type { NetworkInfoResponse, TelemetrySession, TelemetrySnapshot } from './types';
+import type { NetworkInfoResponse, ServerConfig, TelemetrySession, TelemetrySnapshot } from './types';
 import SessionSidebar from './components/SessionSidebar';
 import ResourceExplorer from './components/ResourceExplorer';
 import PerformanceChart from './components/PerformanceChart';
+import ServerSettingsModal from './components/ServerSettingsModal';
 import { formatBytes, formatFps } from './utils/format';
 
 const { Header, Sider, Content } = Layout;
@@ -146,9 +149,21 @@ interface AppShellProps {
   networkInfo: ReturnType<typeof useTelemetryStream>['networkInfo'];
   isDarkMode: boolean;
   onToggleDarkMode: (value: boolean) => void;
+  serverConfig: ServerConfig | null;
+  onOpenSettings: () => void;
+  isSettingsLoading: boolean;
 }
 
-function AppShell({ sessions, connectionState, networkInfo, isDarkMode, onToggleDarkMode }: AppShellProps) {
+function AppShell({
+  sessions,
+  connectionState,
+  networkInfo,
+  isDarkMode,
+  onToggleDarkMode,
+  serverConfig,
+  onOpenSettings,
+  isSettingsLoading,
+}: AppShellProps) {
   const sortedSessions = useMemo(
     () => [...sessions].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
     [sessions]
@@ -161,9 +176,18 @@ function AppShell({ sessions, connectionState, networkInfo, isDarkMode, onToggle
   const [selectedFrame, setSelectedFrame] = useState<TelemetrySnapshot | null>(null);
   const [isAutoFollowLatest, setIsAutoFollowLatest] = useState(true);
   const [selectedClientIp, setSelectedClientIp] = useState<string | null>(null);
-  const [samplingIntervalMs, setSamplingIntervalMs] = useState<number>(0);
+  const [samplingIntervalMs, setSamplingIntervalMs] = useState<number>(
+    () => Math.max(0, (serverConfig?.clientDefaults?.sampleIntervalSeconds ?? 0) * 1000)
+  );
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const { token } = theme.useToken();
+
+  useEffect(() => {
+    setSamplingIntervalMs((prev) => {
+      const next = Math.max(0, (serverConfig?.clientDefaults?.sampleIntervalSeconds ?? 0) * 1000);
+      return Math.abs(prev - next) < 1e-3 ? prev : next;
+    });
+  }, [serverConfig]);
 
   const clientIpOptions = useMemo(
     () => {
@@ -366,6 +390,16 @@ function AppShell({ sessions, connectionState, networkInfo, isDarkMode, onToggle
                 unCheckedChildren={<BulbOutlined />}
               />
             </Tooltip>
+            <Tooltip title="服务器设置">
+              <Button
+                type="text"
+                shape="circle"
+                icon={<SettingOutlined />}
+                onClick={onOpenSettings}
+                loading={isSettingsLoading}
+                aria-label="服务器设置"
+              />
+            </Tooltip>
           </Flex>
         </Flex>
       </Header>
@@ -460,9 +494,61 @@ function AppShell({ sessions, connectionState, networkInfo, isDarkMode, onToggle
 }
 
 export default function App() {
-  const { sessions, connectionState, networkInfo } = useTelemetryStream({ serverBaseUrl: SERVER_URL });
+  const {
+    sessions,
+    connectionState,
+    networkInfo,
+    serverConfig,
+    isConfigLoading,
+    updateServerConfig,
+    clearServerHistory,
+  } = useTelemetryStream({ serverBaseUrl: SERVER_URL });
   const [isDarkMode, setIsDarkMode] = usePreferredDarkMode();
   const algorithm = isDarkMode ? theme.darkAlgorithm : theme.defaultAlgorithm;
+  const [messageApi, contextHolder] = message.useMessage();
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [isClearingHistory, setIsClearingHistory] = useState(false);
+
+  const handleOpenSettings = useCallback(() => {
+    setIsSettingsOpen(true);
+  }, []);
+
+  const handleCloseSettings = useCallback(() => {
+    setIsSettingsOpen(false);
+  }, []);
+
+  const handleSaveSettings = useCallback(
+    async (config: Partial<ServerConfig>) => {
+      try {
+        setIsSavingSettings(true);
+        await updateServerConfig(config);
+        messageApi.success('服务器配置已保存');
+        setIsSettingsOpen(false);
+      } catch (error) {
+        console.error(error);
+        const description = error instanceof Error ? error.message : '保存配置失败';
+        messageApi.error(`保存配置失败：${description}`);
+      } finally {
+        setIsSavingSettings(false);
+      }
+    },
+    [updateServerConfig, messageApi]
+  );
+
+  const handleClearHistory = useCallback(async () => {
+    try {
+      setIsClearingHistory(true);
+      await clearServerHistory();
+      messageApi.success('历史记录已清空');
+    } catch (error) {
+      console.error(error);
+      const description = error instanceof Error ? error.message : '清空历史记录失败';
+      messageApi.error(`清空历史记录失败：${description}`);
+    } finally {
+      setIsClearingHistory(false);
+    }
+  }, [clearServerHistory, messageApi]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -480,12 +566,26 @@ export default function App() {
         },
       }}
     >
+      {contextHolder}
       <AppShell
         sessions={sessions}
         connectionState={connectionState}
         networkInfo={networkInfo}
         isDarkMode={isDarkMode}
         onToggleDarkMode={setIsDarkMode}
+        serverConfig={serverConfig}
+        onOpenSettings={handleOpenSettings}
+        isSettingsLoading={isConfigLoading}
+      />
+      <ServerSettingsModal
+        open={isSettingsOpen}
+        config={serverConfig}
+        loading={isConfigLoading}
+        saving={isSavingSettings}
+        clearing={isClearingHistory}
+        onCancel={handleCloseSettings}
+        onSubmit={handleSaveSettings}
+        onClearHistory={handleClearHistory}
       />
     </ConfigProvider>
   );

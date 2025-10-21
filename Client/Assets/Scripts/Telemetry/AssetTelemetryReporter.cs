@@ -1,5 +1,8 @@
 using System;
 using System.Collections;
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
 using System.Text;
 using UnityEngine;
 using UnityEngine.Networking;
@@ -9,8 +12,10 @@ namespace UnityProfileV2.Telemetry
     [DisallowMultipleComponent]
     public class AssetTelemetryReporter : MonoBehaviour
     {
-        [Tooltip("HTTP endpoint of the telemetry server (e.g. http://localhost:48080)")]
-        [SerializeField] private string serverEndpoint = "http://localhost:48080";
+        private const int DefaultServerPort = 48080;
+
+        [Tooltip("HTTP endpoint of the telemetry server. Automatically resolved to the current device IP.")]
+        [SerializeField] private string serverEndpoint = string.Empty;
 
         [Tooltip("Minimum interval in seconds between telemetry snapshots. Set to 0 to capture every frame.")]
         [SerializeField, Min(0f)] private float sampleIntervalSeconds = 0f;
@@ -21,7 +26,7 @@ namespace UnityProfileV2.Telemetry
         [Tooltip("Maximum number of assets to send per payload per category to reduce payload size.")]
         [SerializeField] private int maxAssetsPerCategory = 200;
 
-        [Tooltip("Automatically register and deregister telemetry sessions when play mode changes.")]
+        [Tooltip("Automatically register and deregister telemetry sessions when play mode changes. Overridden by server configuration.")]
         [SerializeField] private bool autoManageSession = true;
 
         private string _sessionId;
@@ -30,31 +35,161 @@ namespace UnityProfileV2.Telemetry
         private int _lastFrameCount;
         private int _snapshotSequence;
         private Coroutine _sampleCoroutine;
+        private Coroutine _initializationCoroutine;
+        private bool _sessionManagedAutomatically;
 
         private static CoroutineRunner _coroutineRunner;
 
+        private static string ResolveLocalIpAddress()
+        {
+            try
+            {
+                foreach (var networkInterface in NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (networkInterface == null)
+                    {
+                        continue;
+                    }
+
+                    if (networkInterface.OperationalStatus != OperationalStatus.Up)
+                    {
+                        continue;
+                    }
+
+                    if (networkInterface.NetworkInterfaceType == NetworkInterfaceType.Loopback)
+                    {
+                        continue;
+                    }
+
+                    var ipProperties = networkInterface.GetIPProperties();
+                    foreach (var unicast in ipProperties.UnicastAddresses)
+                    {
+                        var address = unicast?.Address;
+                        if (address == null)
+                        {
+                            continue;
+                        }
+
+                        if (address.AddressFamily != AddressFamily.InterNetwork)
+                        {
+                            continue;
+                        }
+
+                        if (IPAddress.IsLoopback(address))
+                        {
+                            continue;
+                        }
+
+                        return address.ToString();
+                    }
+                }
+
+                var hostAddresses = Dns.GetHostAddresses(Dns.GetHostName());
+                foreach (var address in hostAddresses)
+                {
+                    if (address.AddressFamily != AddressFamily.InterNetwork)
+                    {
+                        continue;
+                    }
+
+                    if (IPAddress.IsLoopback(address))
+                    {
+                        continue;
+                    }
+
+                    return address.ToString();
+                }
+            }
+            catch
+            {
+                // Ignored: network information might not be available on all platforms.
+            }
+
+            return "127.0.0.1";
+        }
+
+        private static string SanitizeEndpoint(string endpoint)
+        {
+            if (string.IsNullOrWhiteSpace(endpoint))
+            {
+                return string.Empty;
+            }
+
+            return endpoint.EndsWith("/") ? endpoint.TrimEnd('/') : endpoint;
+        }
+
+        private string ResolveServerEndpoint()
+        {
+            var ipAddress = ResolveLocalIpAddress();
+
+            try
+            {
+                var builder = new UriBuilder(Uri.UriSchemeHttp, ipAddress, DefaultServerPort);
+                return SanitizeEndpoint(builder.Uri.ToString());
+            }
+            catch
+            {
+                return SanitizeEndpoint($"http://{ipAddress}:{DefaultServerPort}");
+            }
+        }
+
+        private void Awake()
+        {
+            serverEndpoint = ResolveServerEndpoint();
+        }
+
         private void OnEnable()
         {
-            if (autoManageSession)
+            serverEndpoint = ResolveServerEndpoint();
+            _sessionManagedAutomatically = false;
+
+            if (_initializationCoroutine != null)
             {
-                StartCoroutine(RegisterSessionCoroutine());
+                StopCoroutine(_initializationCoroutine);
             }
+
+            _initializationCoroutine = StartCoroutine(InitializeAndMaybeRegisterCoroutine());
         }
 
         private void OnDisable()
         {
+            if (_initializationCoroutine != null)
+            {
+                StopCoroutine(_initializationCoroutine);
+                _initializationCoroutine = null;
+            }
+
             if (_sampleCoroutine != null)
             {
                 StopCoroutine(_sampleCoroutine);
                 _sampleCoroutine = null;
             }
 
-            if (autoManageSession && !string.IsNullOrEmpty(_sessionId))
+            if (_sessionManagedAutomatically && !string.IsNullOrEmpty(_sessionId))
             {
                 var sessionId = _sessionId;
                 _sessionId = null;
                 EnsureCoroutineRunner().StartCoroutine(EndSessionCoroutine(sessionId));
             }
+
+            _sessionManagedAutomatically = false;
+        }
+
+        private IEnumerator InitializeAndMaybeRegisterCoroutine()
+        {
+            yield return LoadServerConfigCoroutine();
+
+            if (autoManageSession)
+            {
+                _sessionManagedAutomatically = true;
+                yield return RegisterSessionCoroutine();
+            }
+            else
+            {
+                _sessionManagedAutomatically = false;
+            }
+
+            _initializationCoroutine = null;
         }
 
         private IEnumerator RegisterSessionCoroutine()
@@ -79,13 +214,73 @@ namespace UnityProfileV2.Telemetry
                 yield break;
             }
 
-            var response = JsonUtility.FromJson<SessionRegistrationResponse>(request.downloadHandler.text);
+            var responseText = request.downloadHandler.text;
+            var response = JsonUtility.FromJson<SessionRegistrationResponse>(responseText);
+            if (!string.IsNullOrEmpty(responseText) && responseText.IndexOf("\"clientConfig\"", StringComparison.Ordinal) >= 0)
+            {
+                ApplyClientDefaults(response.clientConfig);
+            }
             _sessionId = response.sessionId;
             _lastSampleTime = Time.realtimeSinceStartup;
             _lastSampleRealtime = _lastSampleTime;
             _lastFrameCount = Time.frameCount;
             _snapshotSequence = 0;
             _sampleCoroutine = StartCoroutine(SampleCoroutine());
+        }
+
+        private IEnumerator LoadServerConfigCoroutine()
+        {
+            if (string.IsNullOrEmpty(serverEndpoint))
+            {
+                yield break;
+            }
+
+            using var request = UnityWebRequest.Get(serverEndpoint + "/config");
+            request.downloadHandler = new DownloadHandlerBuffer();
+            request.timeout = 5;
+            yield return request.SendWebRequest();
+
+            if (request.result != UnityWebRequest.Result.Success)
+            {
+                Debug.LogWarning($"[UnityProfileV2] Failed to load server configuration: {request.error}");
+                yield break;
+            }
+
+            var json = request.downloadHandler.text;
+
+            if (string.IsNullOrEmpty(json) || json.IndexOf("\"clientDefaults\"", StringComparison.Ordinal) < 0)
+            {
+                Debug.LogWarning("[UnityProfileV2] Server configuration response did not contain client defaults.");
+                yield break;
+            }
+
+            try
+            {
+                var payload = JsonUtility.FromJson<ServerConfigurationPayload>(json);
+                ApplyServerConfiguration(payload);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[UnityProfileV2] Failed to parse server configuration: {ex.Message}");
+            }
+        }
+
+        private void ApplyServerConfiguration(ServerConfigurationPayload payload)
+        {
+            ApplyClientDefaults(payload.clientDefaults);
+        }
+
+        private void ApplyClientDefaults(ClientDefaultsPayload payload)
+        {
+            if (payload.maxAssetsPerCategory <= 0)
+            {
+                payload.maxAssetsPerCategory = maxAssetsPerCategory;
+            }
+
+            sampleIntervalSeconds = Mathf.Max(payload.sampleIntervalSeconds, 0f);
+            framePreviewScale = Mathf.Clamp01(payload.framePreviewScale);
+            maxAssetsPerCategory = Mathf.Max(payload.maxAssetsPerCategory, 1);
+            autoManageSession = payload.autoManageSession;
         }
 
         private IEnumerator EndSessionCoroutine(string sessionId)
@@ -181,9 +376,25 @@ namespace UnityProfileV2.Telemetry
         }
 
         [Serializable]
+        private struct ServerConfigurationPayload
+        {
+            public ClientDefaultsPayload clientDefaults;
+        }
+
+        [Serializable]
+        private struct ClientDefaultsPayload
+        {
+            public float sampleIntervalSeconds;
+            public float framePreviewScale;
+            public int maxAssetsPerCategory;
+            public bool autoManageSession;
+        }
+
+        [Serializable]
         private struct SessionRegistrationResponse
         {
             public string sessionId;
+            public ClientDefaultsPayload clientConfig;
         }
 
         private static CoroutineRunner EnsureCoroutineRunner()
