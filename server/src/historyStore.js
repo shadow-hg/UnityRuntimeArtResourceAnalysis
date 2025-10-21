@@ -11,7 +11,7 @@ function ensureNumeric(value, fallback = 0) {
 function trimFrames(session) {
   if (!Array.isArray(session.frames)) {
     session.frames = [];
-    return 0;
+    return { removedFrames: [], removedCount: 0 };
   }
 
   session.trimmedFrameCount = ensureNumeric(session.trimmedFrameCount, 0);
@@ -21,8 +21,9 @@ function trimFrames(session) {
   );
 
   const overflow = session.frames.length - MAX_SESSION_FRAMES;
+  let removedFrames = [];
   if (overflow > 0) {
-    session.frames.splice(0, overflow);
+    removedFrames = session.frames.splice(0, overflow);
     session.trimmedFrameCount += overflow;
   }
 
@@ -32,7 +33,7 @@ function trimFrames(session) {
     session.totalFrameCount = expectedTotal;
   }
 
-  return overflow > 0 ? overflow : 0;
+  return { removedFrames, removedCount: removedFrames.length };
 }
 
 function normalizeSession(session) {
@@ -185,13 +186,14 @@ export class HistoryStore {
     );
     session.totalFrameCount = previousTotal + 1;
     session.frames.push(frame);
-    const removedFrameCount = trimFrames(session);
+    const { removedFrames, removedCount } = trimFrames(session);
     await writeHistory(this.history);
     return {
       frame,
       trimmedFrameCount: session.trimmedFrameCount,
       totalFrameCount: session.totalFrameCount,
-      removedFrameCount,
+      removedFrameCount: removedCount,
+      removedFrames,
     };
   }
 

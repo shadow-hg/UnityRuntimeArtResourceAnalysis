@@ -47,6 +47,15 @@ export interface RenderTextureInfo {
   previewBase64?: string;
 }
 
+export interface FramePreviewInfo {
+  previewUrl?: string;
+  previewBase64?: string;
+  imageBase64?: string;
+  width?: number;
+  height?: number;
+  captureTimestampUtc?: string;
+}
+
 export interface MaterialTextureReference {
   propertyName: string;
   textureName?: string;
@@ -91,6 +100,7 @@ export interface TelemetrySnapshot {
   renderTextures?: RenderTextureInfo[];
   materials?: MaterialInfo[];
   shaders: ShaderInfo[];
+  framePreview?: FramePreviewInfo | null;
 }
 
 export interface TelemetrySession {
