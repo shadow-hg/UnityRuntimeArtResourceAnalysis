@@ -14,20 +14,15 @@ namespace UnityProfileV2.Telemetry
     {
         private const int DefaultServerPort = 48080;
 
-        [Tooltip("HTTP endpoint of the telemetry server. Automatically resolved to the current device IP.")]
-        [SerializeField] private string serverEndpoint = string.Empty;
+        private string _serverEndpoint = string.Empty;
 
-        [Tooltip("Minimum interval in seconds between telemetry snapshots. Set to 0 to capture every frame.")]
-        [SerializeField, Min(0f)] private float sampleIntervalSeconds = 0f;
+        private float _sampleIntervalSeconds = 0f;
 
-        [Tooltip("Scale applied to captured frame previews to reduce bandwidth. Set to 0 to disable previews.")]
-        [SerializeField, Range(0f, 1f)] private float framePreviewScale = 0.2f;
+        private float _framePreviewScale = 0.2f;
 
-        [Tooltip("Maximum number of assets to send per payload per category to reduce payload size.")]
-        [SerializeField] private int maxAssetsPerCategory = 200;
+        private int _maxAssetsPerCategory = 200;
 
-        [Tooltip("Automatically register and deregister telemetry sessions when play mode changes. Overridden by server configuration.")]
-        [SerializeField] private bool autoManageSession = true;
+        private bool _autoManageSession = true;
 
         private const int ServerConfigRequestTimeoutSeconds = 5;
         private const int ServerConfigRetryCount = 3;
@@ -139,12 +134,12 @@ namespace UnityProfileV2.Telemetry
 
         private void Awake()
         {
-            serverEndpoint = ResolveServerEndpoint();
+            _serverEndpoint = ResolveServerEndpoint();
         }
 
         private void OnEnable()
         {
-            serverEndpoint = ResolveServerEndpoint();
+            _serverEndpoint = ResolveServerEndpoint();
             _sessionManagedAutomatically = false;
 
             if (_initializationCoroutine != null)
@@ -183,7 +178,7 @@ namespace UnityProfileV2.Telemetry
         {
             yield return LoadServerConfigCoroutine();
 
-            if (autoManageSession)
+            if (_autoManageSession)
             {
                 _sessionManagedAutomatically = true;
                 yield return RegisterSessionCoroutine();
@@ -234,7 +229,7 @@ namespace UnityProfileV2.Telemetry
 
         private IEnumerator LoadServerConfigCoroutine()
         {
-            if (string.IsNullOrEmpty(serverEndpoint))
+            if (string.IsNullOrEmpty(_serverEndpoint))
             {
                 yield break;
             }
@@ -246,7 +241,7 @@ namespace UnityProfileV2.Telemetry
             {
                 attempt++;
 
-                using (var request = UnityWebRequest.Get(serverEndpoint + "/config"))
+                using (var request = UnityWebRequest.Get(_serverEndpoint + "/config"))
                 {
                     request.downloadHandler = new DownloadHandlerBuffer();
 
@@ -313,13 +308,13 @@ namespace UnityProfileV2.Telemetry
         {
             if (payload.maxAssetsPerCategory <= 0)
             {
-                payload.maxAssetsPerCategory = maxAssetsPerCategory;
+                payload.maxAssetsPerCategory = _maxAssetsPerCategory;
             }
 
-            sampleIntervalSeconds = Mathf.Max(payload.sampleIntervalSeconds, 0f);
-            framePreviewScale = Mathf.Clamp01(payload.framePreviewScale);
-            maxAssetsPerCategory = Mathf.Max(payload.maxAssetsPerCategory, 1);
-            autoManageSession = payload.autoManageSession;
+            _sampleIntervalSeconds = Mathf.Max(payload.sampleIntervalSeconds, 0f);
+            _framePreviewScale = Mathf.Clamp01(payload.framePreviewScale);
+            _maxAssetsPerCategory = Mathf.Max(payload.maxAssetsPerCategory, 1);
+            _autoManageSession = payload.autoManageSession;
         }
 
         private IEnumerator EndSessionCoroutine(string sessionId)
@@ -332,7 +327,7 @@ namespace UnityProfileV2.Telemetry
         {
             while (!string.IsNullOrEmpty(_sessionId))
             {
-                var interval = Mathf.Max(sampleIntervalSeconds, 0f);
+                var interval = Mathf.Max(_sampleIntervalSeconds, 0f);
                 if (interval <= Mathf.Epsilon || Time.realtimeSinceStartup - _lastSampleTime >= interval)
                 {
                     yield return SendSnapshot();
@@ -345,8 +340,8 @@ namespace UnityProfileV2.Telemetry
 
         private IEnumerator SendSnapshot()
         {
-            var snapshot = AssetTelemetryUtility.CreateSnapshot(maxAssetsPerCategory);
-            yield return AssetTelemetryUtility.PopulateFramePreview(snapshot, framePreviewScale);
+            var snapshot = AssetTelemetryUtility.CreateSnapshot(_maxAssetsPerCategory);
+            yield return AssetTelemetryUtility.PopulateFramePreview(snapshot, _framePreviewScale);
             var nowRealtime = Time.realtimeSinceStartup;
             var currentFrameCount = Time.frameCount;
             var frameDelta = Mathf.Max(currentFrameCount - _lastFrameCount, 0);
@@ -372,7 +367,7 @@ namespace UnityProfileV2.Telemetry
 
         private UnityWebRequest BuildJsonRequest(string path, string method, object payload)
         {
-            var request = new UnityWebRequest(serverEndpoint + path, method)
+            var request = new UnityWebRequest(_serverEndpoint + path, method)
             {
                 downloadHandler = new DownloadHandlerBuffer()
             };
