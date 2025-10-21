@@ -166,6 +166,46 @@ export default function PerformanceChart({
     [displayFrames]
   );
 
+  const fpsAxisExtent = useMemo(() => {
+    const numericValues = fpsValues.filter(
+      (value): value is number => typeof value === 'number' && Number.isFinite(value)
+    );
+
+    if (numericValues.length === 0) {
+      return { min: 0, max: 60 } as const;
+    }
+
+    let minValue = Math.min(...numericValues);
+    let maxValue = Math.max(...numericValues);
+
+    if (!Number.isFinite(minValue) || !Number.isFinite(maxValue)) {
+      return { min: 0, max: 60 } as const;
+    }
+
+    if (minValue === maxValue) {
+      if (minValue <= 0) {
+        return { min: 0, max: 60 } as const;
+      }
+      const padding = Math.max(minValue * 0.1, 5);
+      minValue = Math.max(0, minValue - padding);
+      maxValue += padding;
+    } else {
+      const range = maxValue - minValue;
+      const padding = Math.max(range * 0.1, 5);
+      minValue = Math.max(0, minValue - padding);
+      maxValue += padding;
+    }
+
+    const roundedMin = Math.max(0, Math.floor(minValue / 5) * 5);
+    const roundedMax = Math.ceil(maxValue / 5) * 5;
+
+    if (roundedMax <= roundedMin) {
+      return { min: Math.max(0, roundedMin - 5), max: roundedMin + 5 } as const;
+    }
+
+    return { min: roundedMin, max: roundedMax } as const;
+  }, [fpsValues]);
+
   const textureValues = useMemo(
     () =>
       displayFrames.map((frame) => {
@@ -197,7 +237,10 @@ export default function PerformanceChart({
       displayFrames.map((frame) => {
         const rtBytes =
           frame.totalRenderTextureBytes ??
-          (frame.renderTextures ?? []).reduce((sum, renderTexture) => sum + ensureFiniteNumber(renderTexture?.EstimatedBytes), 0);
+          (frame.renderTextures ?? []).reduce(
+            (sum, renderTexture) => sum + ensureFiniteNumber(renderTexture?.EstimatedBytes),
+            0
+          );
         const value = bytesToMegabytes(rtBytes);
         return Number.isFinite(value) ? Number(value.toFixed(2)) : null;
       }),
@@ -222,11 +265,29 @@ export default function PerformanceChart({
     [displayFrames]
   );
 
+  const materialValues = useMemo(
+    () =>
+      displayFrames.map((frame) => {
+        const totalMaterialBytes =
+          frame.totalMaterialBytes ??
+          (frame.materials ?? []).reduce(
+            (sum, material) => sum + ensureFiniteNumber(material?.memoryBytes),
+            0
+          );
+        if (totalMaterialBytes <= 0) {
+          return null;
+        }
+        const value = bytesToMegabytes(totalMaterialBytes);
+        return Number.isFinite(value) ? Number(value.toFixed(2)) : null;
+      }),
+    [displayFrames]
+  );
+
   const option = useMemo<EChartsOption>(() => {
     const latestFrameNumber = frameNumbers[frameNumbers.length - 1];
 
     return {
-      color: ['#5B8FF9', '#F6BD16', '#5AD8A6', '#9254DE', '#FF7875'],
+      color: ['#5B8FF9', '#F6BD16', '#5AD8A6', '#9254DE', '#FF7875', '#FF9F7F'],
       grid: { left: 48, right: 32, top: 70, bottom: 80 },
       tooltip: {
         trigger: 'axis',
@@ -254,7 +315,8 @@ export default function PerformanceChart({
                 item.seriesName === '纹理 (MB)' ||
                 item.seriesName === '网格 (MB)' ||
                 item.seriesName === 'RenderTexture (MB)' ||
-                item.seriesName === 'Shader (MB)'
+                item.seriesName === 'Shader (MB)' ||
+                item.seriesName === '材质 (MB)'
               ) {
                 if (item.data == null) {
                   return `${item.marker}${item.seriesName}: --`;
@@ -292,7 +354,8 @@ export default function PerformanceChart({
         {
           type: 'value',
           name: 'FPS',
-          min: 0,
+          min: fpsAxisExtent.min,
+          max: fpsAxisExtent.max,
           axisLabel: {
             formatter: (value: number) => {
               const numeric = Number(value);
@@ -397,9 +460,32 @@ export default function PerformanceChart({
           emphasis: { focus: 'series' },
           data: shaderValues,
         },
+        {
+          name: '材质 (MB)',
+          type: 'line',
+          smooth: true,
+          symbol: 'circle',
+          symbolSize: 6,
+          yAxisIndex: 1,
+          connectNulls: false,
+          showSymbol: false,
+          areaStyle: { opacity: 0.08 },
+          emphasis: { focus: 'series' },
+          data: materialValues,
+        },
       ],
     } satisfies EChartsOption;
-  }, [frameNumbers, timestamps, fpsValues, textureValues, meshValues, renderTextureValues, shaderValues]);
+  }, [
+    frameNumbers,
+    timestamps,
+    fpsValues,
+    fpsAxisExtent,
+    textureValues,
+    meshValues,
+    renderTextureValues,
+    shaderValues,
+    materialValues,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -433,7 +519,7 @@ export default function PerformanceChart({
       return;
     }
 
-    const seriesCount = 5;
+    const seriesCount = 6;
     for (let index = 0; index < seriesCount; index += 1) {
       safelyDispatch(instance, { type: 'downplay', seriesIndex: index });
     }
