@@ -81,8 +81,49 @@ async function readHistory() {
 async function writeHistory(history) {
   await fs.mkdir(path.dirname(DATA_FILE), { recursive: true });
   const tempPath = `${DATA_FILE}.tmp-${process.pid}-${Date.now()}`;
-  const serialized = JSON.stringify(history, null, 2);
-  await fs.writeFile(tempPath, serialized, 'utf-8');
+
+  const handle = await fs.open(tempPath, 'w');
+
+  async function writeSession(session) {
+    const entries = Object.entries(session).filter(([, value]) =>
+      typeof value !== 'function' && typeof value !== 'undefined'
+    );
+    await handle.write('{');
+    let first = true;
+    for (const [key, value] of entries) {
+      if (!first) {
+        await handle.write(',');
+      }
+      if (key === 'frames') {
+        const frames = Array.isArray(value) ? value : [];
+        await handle.write(`${JSON.stringify(key)}:[`);
+        for (let i = 0; i < frames.length; i += 1) {
+          if (i > 0) {
+            await handle.write(',');
+          }
+          await handle.write(JSON.stringify(frames[i]));
+        }
+        await handle.write(']');
+      } else {
+        await handle.write(`${JSON.stringify(key)}:${JSON.stringify(value)}`);
+      }
+      first = false;
+    }
+    await handle.write('}');
+  }
+
+  try {
+    await handle.write('{"sessions":[');
+    for (let i = 0; i < history.sessions.length; i += 1) {
+      if (i > 0) {
+        await handle.write(',');
+      }
+      await writeSession(history.sessions[i]);
+    }
+    await handle.write(']}');
+  } finally {
+    await handle.close();
+  }
 
   try {
     await fs.rename(tempPath, DATA_FILE);
