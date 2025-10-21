@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  Alert,
   Badge,
   Button,
   ConfigProvider,
@@ -19,26 +20,11 @@ import SessionSidebar from './components/SessionSidebar';
 import ResourceExplorer from './components/ResourceExplorer';
 import PerformanceChart from './components/PerformanceChart';
 import { formatBytes, formatFps } from './utils/format';
+import { resolveSessionIp, UNKNOWN_IP_LABEL } from './utils/session';
 
 const { Header, Sider, Content } = Layout;
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL ?? 'http://localhost:48080';
-const UNKNOWN_IP_LABEL = '未知 IP';
-
-function resolveSessionIp(session: TelemetrySession): string {
-  const raw = typeof session.clientIp === 'string' ? session.clientIp.trim() : '';
-  if (raw && raw.toLowerCase() !== 'unknown') {
-    return raw;
-  }
-
-  const fallbackSource = session.client?.['remoteAddress'];
-  const fallback = typeof fallbackSource === 'string' ? fallbackSource.trim() : '';
-  if (fallback) {
-    return fallback;
-  }
-
-  return UNKNOWN_IP_LABEL;
-}
 
 const connectionBadgeMeta: Record<
   ReturnType<typeof useTelemetryStream>['connectionState'],
@@ -242,43 +228,13 @@ function AppShell({ sessions, connectionState, networkInfo, isDarkMode, onToggle
               <Badge status={badgeMeta.status} text={badgeMeta.text} />
               <Typography.Text type="secondary">{headerSubtitle}</Typography.Text>
             </Space>
-            <Space size={[8, 6]} wrap>
-              <Typography.Text type="secondary">服务器地址：</Typography.Text>
-              <Typography.Text copyable={{ text: SERVER_URL }} style={{ color: token.colorTextBase }}>
-                {SERVER_URL}
-              </Typography.Text>
-              {networkInfo?.hostname ? (
-                <Typography.Text type="secondary">主机 {networkInfo.hostname}</Typography.Text>
-              ) : null}
-              {networkInfo?.addresses?.length ? (
-                <>
-                  <Typography.Text type="secondary">局域网：</Typography.Text>
-                  <Space size={[8, 6]} wrap>
-                    {networkInfo.addresses.map((address) => (
-                      <Typography.Text
-                        key={address.url}
-                        copyable={{ text: address.url }}
-                        style={{
-                          color: token.colorPrimary,
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: 4,
-                        }}
-                      >
-                        <LinkOutlined />[{address.interface}] {address.address}
-                      </Typography.Text>
-                    ))}
-                  </Space>
-                </>
-              ) : null}
-              <Space size={8} align="center">
-                <Typography.Text type="secondary">当前客户端：</Typography.Text>
-                {selectedClientIp ? (
-                  <Tag color="processing">{selectedClientIp}</Tag>
-                ) : (
-                  <Typography.Text type="secondary">全部客户端</Typography.Text>
-                )}
-              </Space>
+            <Space size={8} align="center">
+              <Typography.Text type="secondary">当前客户端：</Typography.Text>
+              {selectedClientIp ? (
+                <Tag color="processing">{selectedClientIp}</Tag>
+              ) : (
+                <Typography.Text type="secondary">全部客户端</Typography.Text>
+              )}
             </Space>
           </Flex>
           <Flex align="center" gap={16} wrap justify="flex-end">
@@ -309,14 +265,60 @@ function AppShell({ sessions, connectionState, networkInfo, isDarkMode, onToggle
             padding: '16px 0',
           }}
         >
-          <SessionSidebar
-            sessions={visibleSessions}
-            selectedSessionId={selectedSession?.id ?? null}
-            onSelectSession={handleSessionChange}
-            clientIps={clientIpOptions}
-            selectedClientIp={selectedClientIp}
-            onSelectClientIp={setSelectedClientIp}
-          />
+          <div style={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <Flex
+              vertical
+              gap={12}
+              style={{ padding: '0 16px', color: token.colorTextBase }}
+            >
+              <Space direction="vertical" size={6}>
+                <Typography.Text type="secondary">服务器地址</Typography.Text>
+                <Typography.Text copyable={{ text: SERVER_URL }} style={{ color: token.colorTextBase }}>
+                  {SERVER_URL}
+                </Typography.Text>
+              </Space>
+              {networkInfo?.hostname ? (
+                <Typography.Text type="secondary">主机 {networkInfo.hostname}</Typography.Text>
+              ) : null}
+              {networkInfo?.addresses?.length ? (
+                <Space direction="vertical" size={4}>
+                  <Typography.Text type="secondary">局域网</Typography.Text>
+                  <Space direction="vertical" size={4}>
+                    {networkInfo.addresses.map((address) => (
+                      <Typography.Text
+                        key={address.url}
+                        copyable={{ text: address.url }}
+                        style={{
+                          color: token.colorPrimary,
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 4,
+                        }}
+                      >
+                        <LinkOutlined />[{address.interface}] {address.address}
+                      </Typography.Text>
+                    ))}
+                  </Space>
+                </Space>
+              ) : null}
+              <Alert
+                type="info"
+                showIcon
+                message="跨设备采集"
+                description="确保其他电脑上的客户端脚本把数据上报到此服务器地址，它们的会话就会自动出现在左侧列表里，可在任意设备的浏览器中查看。"
+              />
+            </Flex>
+            <div style={{ flex: 1, minHeight: 0 }}>
+              <SessionSidebar
+                sessions={visibleSessions}
+                selectedSessionId={selectedSession?.id ?? null}
+                onSelectSession={handleSessionChange}
+                clientIps={clientIpOptions}
+                selectedClientIp={selectedClientIp}
+                onSelectClientIp={setSelectedClientIp}
+              />
+            </div>
+          </div>
         </Sider>
         <Content style={{ padding: 24, background: token.colorBgBase }}>
           <Flex vertical gap={16} style={{ height: '100%' }}>

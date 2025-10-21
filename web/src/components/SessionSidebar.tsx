@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { Avatar, Badge, Empty, List, Space, Tag, Typography } from 'antd';
 import type { TelemetrySession } from '../types';
+import { resolveSessionIp } from '../utils/session';
 import dayjs from 'dayjs';
 
 interface SessionSidebarProps {
@@ -25,6 +26,7 @@ function SessionItem({ session, isActive, onSelect }: { session: TelemetrySessio
       : `${totalFrameCount} 帧`;
   const deviceName = (session.client?.deviceName as string) ?? 'Unknown Device';
   const platform = session.client?.platform as string | undefined;
+  const clientIp = resolveSessionIp(session);
   const subtitle = `${dayjs(session.createdAt).format('MMM D HH:mm:ss')} • ${frameSummary}`;
   return (
     <List.Item
@@ -55,6 +57,9 @@ function SessionItem({ session, isActive, onSelect }: { session: TelemetrySessio
           <Typography.Text type="secondary">{subtitle}</Typography.Text>
           <Typography.Text type="secondary" ellipsis style={{ maxWidth: 200 }}>
             {deviceName}
+          </Typography.Text>
+          <Typography.Text type="secondary" style={{ maxWidth: 200 }}>
+            IP：{clientIp}
           </Typography.Text>
           {platform ? <Tag color="blue">{platform}</Tag> : null}
         </Space>
