@@ -8,6 +8,7 @@ import crypto from 'crypto';
 import { Server as SocketIOServer } from 'socket.io';
 import { v4 as uuidv4 } from 'uuid';
 import { HistoryStore } from './historyStore.js';
+import { createConfigStore } from './configStore.js';
 
 const PORT = process.env.PORT || 48080;
 const PREVIEW_ROOT = path.join(process.cwd(), 'data', 'previews');
@@ -23,7 +24,14 @@ const io = new SocketIOServer(server, {
 app.use(cors());
 app.use(express.json({ limit: '30mb' }));
 
-const historyStore = new HistoryStore();
+const configStore = createConfigStore();
+const historyStore = new HistoryStore({ configStore });
+
+configStore.onChange((config) => {
+  historyStore.applyConfig(config).catch((err) => {
+    console.warn('Failed to apply config change', err);
+  });
+});
 
 function listLanAddresses(port) {
   const interfaces = os.networkInterfaces();
@@ -300,7 +308,13 @@ app.post('/sessions', async (req, res) => {
       client: req.body,
       clientIp,
     });
-    res.json({ sessionId: id, createdAt, clientIp });
+    await configStore.init();
+    res.json({
+      sessionId: id,
+      createdAt,
+      clientIp,
+      clientConfig: configStore.getClientDefaults(),
+    });
     io.emit('session:create', session);
   } catch (err) {
     console.error('Failed to create session', err);
@@ -321,12 +335,47 @@ app.get('/network-info', (_req, res) => {
   });
 });
 
+app.get('/config', async (_req, res) => {
+  try {
+    await configStore.init();
+    res.json(configStore.getConfig());
+  } catch (err) {
+    console.error('Failed to load server config', err);
+    res.status(500).json({ message: 'Unable to load config' });
+  }
+});
+
+app.put('/config', async (req, res) => {
+  try {
+    await configStore.init();
+    const updatedConfig = await configStore.update(req.body ?? {});
+    await historyStore.applyConfig(updatedConfig);
+    io.emit('config:update', updatedConfig);
+    res.json(updatedConfig);
+  } catch (err) {
+    console.error('Failed to update server config', err);
+    res.status(400).json({ message: 'Invalid config payload' });
+  }
+});
+
 app.get('/sessions/:sessionId', async (req, res) => {
   const session = await historyStore.getSession(req.params.sessionId);
   if (!session) {
     return res.status(404).json({ message: 'Session not found' });
   }
   res.json(session);
+});
+
+app.delete('/sessions', async (_req, res) => {
+  try {
+    await historyStore.clearHistory();
+    await fs.rm(PREVIEW_ROOT, { recursive: true, force: true });
+    io.emit('history:cleared');
+    res.status(204).end();
+  } catch (err) {
+    console.error('Failed to clear telemetry history', err);
+    res.status(500).json({ message: 'Unable to clear history' });
+  }
 });
 
 app.get('/sessions/:sessionId/textures/:previewId/preview', async (req, res) => {
@@ -404,7 +453,9 @@ io.on('connection', (socket) => {
 });
 
 async function startServer() {
+  await configStore.init();
   await historyStore.init();
+  await historyStore.applyConfig(configStore.getConfig());
   server.listen(PORT, () => {
     console.log(`UnityProfileV2 server listening on port ${PORT}`);
   });
