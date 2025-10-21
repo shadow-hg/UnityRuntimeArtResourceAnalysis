@@ -129,14 +129,25 @@ export default function SessionSidebar({
                   display: 'inline-flex',
                   alignItems: 'center',
                   gap: 6,
+                  minWidth: 0,
                   maxWidth: '100%',
                   whiteSpace: 'nowrap',
                 }}
               >
-                <span>{item.ip}</span>
-                <span style={{ color: 'rgba(0, 0, 0, 0.45)', fontSize: 12 }}>({item.sessionCount})</span>
+                <span
+                  style={{
+                    flex: '1 1 auto',
+                    minWidth: 0,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                  title={item.ip}
+                >
+                  {item.ip}
+                </span>
+                <span style={{ color: 'rgba(0, 0, 0, 0.45)', fontSize: 12, flexShrink: 0 }}>({item.sessionCount})</span>
                 {item.activeSessionCount > 0 ? (
-                  <span style={{ color: '#52c41a', fontSize: 12 }}>实时 {item.activeSessionCount}</span>
+                  <span style={{ color: '#52c41a', fontSize: 12, flexShrink: 0 }}>实时 {item.activeSessionCount}</span>
                 ) : null}
               </CheckableTag>
             ))
