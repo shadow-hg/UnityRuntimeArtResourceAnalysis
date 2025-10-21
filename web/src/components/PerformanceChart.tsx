@@ -379,14 +379,6 @@ export default function PerformanceChart({ frames, selectedFrame, onSelectFrame 
     });
   }, [frameNumbers, safelyDispatch, selectedFrame]);
 
-  if (frames.length === 0) {
-    return (
-      <Card title="性能趋势">
-        <Empty description="暂无数据" />
-      </Card>
-    );
-  }
-
   const handleAxisPointerUpdate = useCallback(
     (event: { axesInfo?: Array<{ value?: number | string | null | undefined }> } | undefined) => {
       const rawValue = event?.axesInfo?.[0]?.value;
@@ -436,29 +428,36 @@ export default function PerformanceChart({ frames, selectedFrame, onSelectFrame 
     hoveredFrameNumberRef.current = null;
   }, []);
 
+  const latestFrameNumberForTitle =
+    frames.length > 0 ? frames[frames.length - 1]?.frameNumber ?? '-' : '-';
+
   return (
     <Card
       title={
         <Typography.Text strong>
-          性能趋势 · {frames.length} 帧 · 最新帧 #{frames[frames.length - 1]?.frameNumber ?? '-'}
+          性能趋势 · {frames.length} 帧 · 最新帧 #{latestFrameNumberForTitle}
         </Typography.Text>
       }
     >
-      <ReactEChartsCore
-        echarts={echarts}
-        option={option}
-        style={{ height: 400 }}
-        notMerge
-        lazyUpdate={false}
-        onChartReady={(instance) => {
-          chartRef.current = instance;
-        }}
-        onEvents={{
-          click: handleChartClick,
-          updateAxisPointer: handleAxisPointerUpdate,
-          globalout: handleGlobalOut,
-        }}
-      />
+      {frames.length === 0 ? (
+        <Empty description="暂无数据" />
+      ) : (
+        <ReactEChartsCore
+          echarts={echarts}
+          option={option}
+          style={{ height: 400 }}
+          notMerge
+          lazyUpdate={false}
+          onChartReady={(instance) => {
+            chartRef.current = instance;
+          }}
+          onEvents={{
+            click: handleChartClick,
+            updateAxisPointer: handleAxisPointerUpdate,
+            globalout: handleGlobalOut,
+          }}
+        />
+      )}
     </Card>
   );
 }
