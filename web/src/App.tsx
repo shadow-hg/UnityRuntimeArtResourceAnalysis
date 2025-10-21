@@ -18,7 +18,6 @@ import type { TelemetrySession, TelemetrySnapshot } from './types';
 import SessionSidebar from './components/SessionSidebar';
 import ResourceExplorer from './components/ResourceExplorer';
 import PerformanceChart from './components/PerformanceChart';
-import FrameTimeline from './components/FrameTimeline';
 import { formatBytes, formatFps } from './utils/format';
 
 const { Header, Sider, Content } = Layout;
@@ -271,10 +270,14 @@ function AppShell({ sessions, connectionState, networkInfo, isDarkMode, onToggle
                   </Space>
                 </>
               ) : null}
-              <Typography.Text type="secondary">当前客户端：</Typography.Text>
-              <Tag color={selectedClientIp ? 'processing' : 'default'}>
-                {selectedClientIp ?? '全部客户端'}
-              </Tag>
+              <Space size={8} align="center">
+                <Typography.Text type="secondary">当前客户端：</Typography.Text>
+                {selectedClientIp ? (
+                  <Tag color="processing">{selectedClientIp}</Tag>
+                ) : (
+                  <Typography.Text type="secondary">全部客户端</Typography.Text>
+                )}
+              </Space>
             </Space>
           </Flex>
           <Flex align="center" gap={16} wrap justify="flex-end">
@@ -317,7 +320,6 @@ function AppShell({ sessions, connectionState, networkInfo, isDarkMode, onToggle
         <Content style={{ padding: 24, background: token.colorBgBase }}>
           <Flex vertical gap={16} style={{ height: '100%' }}>
             <PerformanceChart frames={frames} selectedFrame={selectedFrame} onSelectFrame={handleFrameSelect} />
-            <FrameTimeline frames={frames} selectedFrame={selectedFrame} onSelectFrame={handleFrameSelect} />
             <ResourceExplorer frame={selectedFrame} serverBaseUrl={SERVER_URL} />
           </Flex>
         </Content>
