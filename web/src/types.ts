@@ -14,6 +14,7 @@ export interface TextureInfo {
   EstimatedBytes: number;
   previewUrl?: string;
   previewBase64?: string;
+  isRenderTexture?: boolean;
 }
 
 export interface MeshInfo {
@@ -74,6 +75,8 @@ export interface TelemetrySession {
   client: Record<string, unknown>;
   clientIp?: string | null;
   frames: TelemetrySnapshot[];
+  trimmedFrameCount?: number;
+  totalFrameCount?: number;
 }
 
 export interface TimelinePoint {

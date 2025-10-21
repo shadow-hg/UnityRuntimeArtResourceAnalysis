@@ -17,9 +17,15 @@ const { CheckableTag } = Tag;
 function SessionItem({ session, isActive, onSelect }: { session: TelemetrySession; isActive: boolean; onSelect: () => void }) {
   const title = (session.client?.productName as string) ?? 'Unknown Product';
   const frameCount = session.frames?.length ?? 0;
+  const trimmedFrameCount = session.trimmedFrameCount ?? 0;
+  const totalFrameCount = session.totalFrameCount ?? trimmedFrameCount + frameCount;
+  const frameSummary =
+    trimmedFrameCount > 0
+      ? `${totalFrameCount} 帧 (显示最近 ${frameCount} 帧)`
+      : `${totalFrameCount} 帧`;
   const deviceName = (session.client?.deviceName as string) ?? 'Unknown Device';
   const platform = session.client?.platform as string | undefined;
-  const subtitle = `${dayjs(session.createdAt).format('MMM D HH:mm:ss')} • ${frameCount} 帧`;
+  const subtitle = `${dayjs(session.createdAt).format('MMM D HH:mm:ss')} • ${frameSummary}`;
   return (
     <List.Item
       onClick={() => {

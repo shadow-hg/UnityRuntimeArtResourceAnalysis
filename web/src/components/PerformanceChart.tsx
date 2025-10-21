@@ -92,7 +92,9 @@ export default function PerformanceChart({ frames, selectedFrame, onSelectFrame 
       frames.map((frame) => {
         const textureBytes =
           frame.totalTextureBytes ??
-          frame.textures.reduce((sum, texture) => sum + ensureFiniteNumber(texture.EstimatedBytes), 0);
+          frame.textures
+            .filter((texture) => !texture.isRenderTexture)
+            .reduce((sum, texture) => sum + ensureFiniteNumber(texture.EstimatedBytes), 0);
         const value = bytesToMegabytes(textureBytes);
         return Number.isFinite(value) ? Number(value.toFixed(2)) : null;
       }),

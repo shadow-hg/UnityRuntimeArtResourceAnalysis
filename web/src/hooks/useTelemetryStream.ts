@@ -6,6 +6,20 @@ interface UseTelemetryStreamOptions {
   serverBaseUrl: string;
 }
 
+const MAX_SESSION_FRAMES = 10000;
+
+function normalizeSession(session: TelemetrySession): TelemetrySession {
+  const frames = session.frames ?? [];
+  const trimmedFrameCount = session.trimmedFrameCount ?? 0;
+  const totalFrameCount = session.totalFrameCount ?? trimmedFrameCount + frames.length;
+  return {
+    ...session,
+    frames,
+    trimmedFrameCount,
+    totalFrameCount,
+  };
+}
+
 export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions) {
   const [sessions, setSessions] = useState<TelemetrySession[]>([]);
   const [connectionState, setConnectionState] = useState<'connecting' | 'connected' | 'disconnected' | 'error'>(
@@ -31,7 +45,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
           throw new Error(`Failed to fetch sessions: ${response.statusText}`);
         }
         const initialSessions: TelemetrySession[] = await response.json();
-        setSessions(initialSessions.map((session) => ({ ...session, frames: session.frames ?? [] })));
+        setSessions(initialSessions.map((session) => normalizeSession(session)));
         setConnectionState((state) => (state === 'connecting' ? 'connected' : state));
       } catch (error) {
         console.error(error);
@@ -77,7 +91,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
     const handleError = () => setConnectionState('error');
 
     function handleSessionCreate(session: TelemetrySession) {
-      setSessions((prev) => [...prev, { ...session, frames: session.frames ?? [] }]);
+      setSessions((prev) => [...prev, normalizeSession(session)]);
     }
 
     function handleSessionClose(payload: { sessionId: string }) {
@@ -90,12 +104,55 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
       );
     }
 
-    function handleSessionFrame(payload: { sessionId: string; frame: TelemetrySnapshot }) {
+    function handleSessionFrame(payload: {
+      sessionId: string;
+      frame: TelemetrySnapshot;
+      trimmedFrameCount?: number;
+      totalFrameCount?: number;
+      removedFrameCount?: number;
+    }) {
       setSessions((prev) =>
         prev.map((session) =>
-          session.id === payload.sessionId
-            ? { ...session, frames: [...(session.frames ?? []), payload.frame] }
-            : session
+          {
+            if (session.id !== payload.sessionId) {
+              return session;
+            }
+
+            const previousTrimmed = session.trimmedFrameCount ?? 0;
+            let frames = [...(session.frames ?? []), payload.frame];
+            let removed = payload.removedFrameCount;
+            let nextTrimmed = payload.trimmedFrameCount ?? previousTrimmed;
+
+            if (removed === undefined) {
+              removed = Math.max(0, nextTrimmed - previousTrimmed);
+            }
+
+            removed = Math.max(0, removed ?? 0);
+
+            if (removed > 0) {
+              frames = frames.slice(removed);
+              if (payload.trimmedFrameCount === undefined) {
+                nextTrimmed = previousTrimmed + removed;
+              }
+            }
+
+            if (frames.length > MAX_SESSION_FRAMES) {
+              const overflow = frames.length - MAX_SESSION_FRAMES;
+              frames = frames.slice(overflow);
+              nextTrimmed += overflow;
+            }
+
+            const totalFrameCount =
+              payload.totalFrameCount ??
+              Math.max(nextTrimmed + frames.length, (session.totalFrameCount ?? 0) + 1);
+
+            return {
+              ...session,
+              frames,
+              trimmedFrameCount: nextTrimmed,
+              totalFrameCount,
+            };
+          }
         )
       );
     }

@@ -283,9 +283,9 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
 
   const filteredTextures = useMemo(() => {
     if (!frame) return [];
-    const subset = (frame.textures ?? []).filter((texture) =>
-      `${texture.name} ${texture.path}`.toLowerCase().includes(normalizedSearch)
-    );
+    const subset = (frame.textures ?? [])
+      .filter((texture) => !texture.isRenderTexture)
+      .filter((texture) => `${texture.name} ${texture.path}`.toLowerCase().includes(normalizedSearch));
     const unique = dedupeTextures(subset);
     if (sortKey === 'size') {
       return sortBy(unique, (t) => t.EstimatedBytes, sortOrder);
@@ -435,7 +435,7 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
     );
   }
 
-  const textureTotal = formatBytes(frame.totalTextureBytes);
+  const textureTotal = formatBytes(frame.totalTextureBytes ?? filteredTextures.reduce((sum, texture) => sum + texture.EstimatedBytes, 0));
   const meshTotal = formatBytes(frame.totalMeshBytes);
   const renderTextureTotal = formatBytes(frame.totalRenderTextureBytes ?? (frame.renderTextures ?? []).reduce((sum, item) => sum + (item?.EstimatedBytes ?? 0), 0));
   const filteredTextureTotal = formatBytes(filteredTextures.reduce((sum, texture) => sum + texture.EstimatedBytes, 0));
@@ -449,8 +449,8 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
         <Space direction="vertical" size={0}>
           <Typography.Text strong>{`第 ${frame.frameNumber} 帧资源详情`}</Typography.Text>
           <Typography.Text type="secondary">
-            捕获时间 {new Date(frame.timestampUtc).toLocaleString()} · {frame.textures.length} 纹理 ·{' '}
-            {frame.renderTextures?.length ?? 0} RenderTexture · {frame.meshes.length} 网格 · {frame.shaders.length} Shader
+            捕获时间 {new Date(frame.timestampUtc).toLocaleString()} · {filteredTextures.length} 纹理 ·{' '}
+            {filteredRenderTextures.length} RenderTexture · {filteredMeshes.length} 网格 · {filteredShaders.length} Shader
           </Typography.Text>
         </Space>
       }

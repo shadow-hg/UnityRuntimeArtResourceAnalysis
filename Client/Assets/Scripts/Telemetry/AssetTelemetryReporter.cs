@@ -12,8 +12,8 @@ namespace UnityProfileV2.Telemetry
         [Tooltip("HTTP endpoint of the telemetry server (e.g. http://localhost:48080)")]
         [SerializeField] private string serverEndpoint = "http://localhost:48080";
 
-        [Tooltip("Interval in seconds between telemetry snapshots.")]
-        [SerializeField] private float sampleIntervalSeconds = 2f;
+        [Tooltip("Minimum interval in seconds between telemetry snapshots. Set to 0 to capture every frame.")]
+        [SerializeField, Min(0f)] private float sampleIntervalSeconds = 0f;
 
         [Tooltip("Maximum number of assets to send per payload per category to reduce payload size.")]
         [SerializeField] private int maxAssetsPerCategory = 200;
@@ -94,11 +94,13 @@ namespace UnityProfileV2.Telemetry
         {
             while (!string.IsNullOrEmpty(_sessionId))
             {
-                if (Time.realtimeSinceStartup - _lastSampleTime >= sampleIntervalSeconds)
+                var interval = Mathf.Max(sampleIntervalSeconds, 0f);
+                if (interval <= Mathf.Epsilon || Time.realtimeSinceStartup - _lastSampleTime >= interval)
                 {
                     yield return SendSnapshot();
                     _lastSampleTime = Time.realtimeSinceStartup;
                 }
+
                 yield return null;
             }
         }
