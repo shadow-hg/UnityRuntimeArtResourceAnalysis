@@ -18,6 +18,7 @@ import type { TelemetrySession, TelemetrySnapshot } from './types';
 import SessionSidebar from './components/SessionSidebar';
 import ResourceExplorer from './components/ResourceExplorer';
 import PerformanceChart from './components/PerformanceChart';
+import FrameTimeline from './components/FrameTimeline';
 import { formatBytes, formatFps } from './utils/format';
 
 const { Header, Sider, Content } = Layout;
@@ -276,7 +277,7 @@ function AppShell({ sessions, connectionState, networkInfo, isDarkMode, onToggle
               </Tag>
             </Space>
           </Flex>
-          <Space align="center" size={16}>
+          <Flex align="center" gap={16} wrap justify="flex-end">
             {!isAutoFollowLatest && frames.length > 0 ? (
               <Tooltip title="回到实时最新帧">
                 <Button icon={<ReloadOutlined />} onClick={resumeLive} type="primary" ghost>
@@ -292,7 +293,7 @@ function AppShell({ sessions, connectionState, networkInfo, isDarkMode, onToggle
                 unCheckedChildren={<BulbOutlined />}
               />
             </Tooltip>
-          </Space>
+          </Flex>
         </Flex>
       </Header>
       <Layout>
@@ -316,6 +317,7 @@ function AppShell({ sessions, connectionState, networkInfo, isDarkMode, onToggle
         <Content style={{ padding: 24, background: token.colorBgBase }}>
           <Flex vertical gap={16} style={{ height: '100%' }}>
             <PerformanceChart frames={frames} selectedFrame={selectedFrame} onSelectFrame={handleFrameSelect} />
+            <FrameTimeline frames={frames} selectedFrame={selectedFrame} onSelectFrame={handleFrameSelect} />
             <ResourceExplorer frame={selectedFrame} serverBaseUrl={SERVER_URL} />
           </Flex>
         </Content>

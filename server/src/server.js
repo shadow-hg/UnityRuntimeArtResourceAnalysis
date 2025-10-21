@@ -79,14 +79,26 @@ function extractClientIp(req) {
   return 'unknown';
 }
 
+function cloneArray(items) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+  return items.map((item) => {
+    if (!item || typeof item !== 'object') {
+      return item;
+    }
+    return { ...item };
+  });
+}
+
 function sanitizeFramePayload(payload) {
   const { textures = [], meshes = [], shaders = [], renderTextures = [], ...rest } = payload ?? {};
   return {
     ...rest,
-    textures,
-    meshes,
-    renderTextures,
-    shaders,
+    textures: cloneArray(textures),
+    meshes: cloneArray(meshes),
+    renderTextures: cloneArray(renderTextures),
+    shaders: cloneArray(shaders),
   };
 }
 
@@ -108,18 +120,22 @@ function extractBase64Payload(value) {
 
 async function persistTexturePreview(sessionId, texture) {
   if (!texture || typeof texture !== 'object') {
-    return texture;
+    return { stored: texture, broadcast: texture };
   }
 
-  const payload = extractBase64Payload(texture.previewBase64 ?? '');
+  const { previewBase64, ...rest } = texture;
+  const broadcastTexture = { ...texture };
+  const storedTexture = { ...rest };
+
+  const payload = extractBase64Payload(previewBase64 ?? '');
   if (!payload) {
-    return texture;
+    return { stored: storedTexture, broadcast: broadcastTexture };
   }
 
   try {
     const buffer = Buffer.from(payload, 'base64');
     if (!buffer || buffer.length === 0) {
-      return texture;
+      return { stored: storedTexture, broadcast: broadcastTexture };
     }
 
     const identifier = `${texture.name ?? 'unknown'}|${texture.width ?? 0}|${texture.height ?? 0}|${texture.formatName ?? texture.format ?? ''}`;
@@ -129,22 +145,32 @@ async function persistTexturePreview(sessionId, texture) {
     const filePath = path.join(sessionDir, `${previewId}.png`);
     await fs.writeFile(filePath, buffer);
 
-    return {
-      ...texture,
-      previewUrl: `/sessions/${sessionId}/textures/${previewId}/preview`,
-    };
+    const previewUrl = `/sessions/${sessionId}/textures/${previewId}/preview`;
+    storedTexture.previewUrl = previewUrl;
+    broadcastTexture.previewUrl = previewUrl;
   } catch (err) {
     console.warn('Failed to persist texture preview', err);
-    return texture;
   }
+
+  delete storedTexture.previewBase64;
+
+  return { stored: storedTexture, broadcast: broadcastTexture };
 }
 
 async function prepareFramePayload(sessionId, payload) {
-  const frame = sanitizeFramePayload(payload);
-  if (Array.isArray(frame.textures) && frame.textures.length > 0) {
-    frame.textures = await Promise.all(frame.textures.map((texture) => persistTexturePreview(sessionId, texture)));
+  const sanitizedFrame = sanitizeFramePayload(payload);
+  const storedFrame = { ...sanitizedFrame };
+  const broadcastFrame = { ...sanitizedFrame };
+
+  if (Array.isArray(sanitizedFrame.textures) && sanitizedFrame.textures.length > 0) {
+    const textures = await Promise.all(
+      sanitizedFrame.textures.map((texture) => persistTexturePreview(sessionId, texture))
+    );
+    storedFrame.textures = textures.map((result) => result.stored);
+    broadcastFrame.textures = textures.map((result) => result.broadcast);
   }
-  return frame;
+
+  return { storedFrame, broadcastFrame };
 }
 
 app.post('/sessions', async (req, res) => {
@@ -207,13 +233,15 @@ app.get('/sessions/:sessionId/textures/:previewId/preview', async (req, res) => 
 app.post('/sessions/:sessionId/frames', async (req, res) => {
   const sessionId = req.params.sessionId;
   try {
-    const frame = await prepareFramePayload(sessionId, req.body);
-    const { frame: storedFrame, trimmedFrameCount, totalFrameCount, removedFrameCount } =
-      await historyStore.appendFrame(sessionId, frame);
+    const { storedFrame, broadcastFrame } = await prepareFramePayload(sessionId, req.body);
+    const { trimmedFrameCount, totalFrameCount, removedFrameCount } = await historyStore.appendFrame(
+      sessionId,
+      storedFrame
+    );
     res.status(204).end();
     io.emit('session:frame', {
       sessionId,
-      frame: storedFrame,
+      frame: broadcastFrame,
       trimmedFrameCount,
       totalFrameCount,
       removedFrameCount,
