@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -70,6 +71,56 @@ namespace UnityProfileV2.Telemetry
                 totalRenderTextureBytes = renderTextures.Sum(r => r.EstimatedBytes),
                 totalMaterialBytes = materials.Sum(m => m.memoryBytes)
             };
+        }
+
+        public static IEnumerator PopulateFramePreview(TelemetrySnapshot snapshot)
+        {
+            if (snapshot == null)
+            {
+                yield break;
+            }
+
+            yield return new WaitForEndOfFrame();
+
+            Texture2D screenshot = null;
+
+            try
+            {
+                screenshot = ScreenCapture.CaptureScreenshotAsTexture();
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[UnityProfileV2] Failed to capture frame preview: {ex.Message}\n{ex.StackTrace}");
+            }
+
+            if (screenshot == null)
+            {
+                yield break;
+            }
+
+            try
+            {
+                var pngData = ImageConversion.EncodeToPNG(screenshot);
+                if (pngData != null && pngData.Length > 0)
+                {
+                    var base64 = Convert.ToBase64String(pngData);
+                    snapshot.framePreview = new FramePreviewInfo
+                    {
+                        width = screenshot.width,
+                        height = screenshot.height,
+                        captureTimestampUtc = DateTime.UtcNow.ToString("o"),
+                        previewBase64 = $"data:image/png;base64,{base64}"
+                    };
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[UnityProfileV2] Failed to encode frame preview: {ex.Message}\n{ex.StackTrace}");
+            }
+            finally
+            {
+                UnityEngine.Object.Destroy(screenshot);
+            }
         }
 
         internal static string GetAssetPath(UnityEngine.Object obj)
@@ -739,6 +790,17 @@ namespace UnityProfileV2.Telemetry
         public RenderTextureInfo[] renderTextures = Array.Empty<RenderTextureInfo>();
         public MaterialInfo[] materials = Array.Empty<MaterialInfo>();
         public ShaderInfo[] shaders = Array.Empty<ShaderInfo>();
+        public FramePreviewInfo framePreview;
+    }
+
+    [Serializable]
+    public class FramePreviewInfo
+    {
+        public string previewBase64;
+        public string imageBase64;
+        public int width;
+        public int height;
+        public string captureTimestampUtc;
     }
 
     [Serializable]

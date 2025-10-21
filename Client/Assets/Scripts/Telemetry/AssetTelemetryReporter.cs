@@ -108,6 +108,7 @@ namespace UnityProfileV2.Telemetry
         private IEnumerator SendSnapshot()
         {
             var snapshot = AssetTelemetryUtility.CreateSnapshot(maxAssetsPerCategory);
+            yield return AssetTelemetryUtility.PopulateFramePreview(snapshot);
             var nowRealtime = Time.realtimeSinceStartup;
             var currentFrameCount = Time.frameCount;
             var frameDelta = Mathf.Max(currentFrameCount - _lastFrameCount, 0);
