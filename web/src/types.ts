@@ -7,8 +7,8 @@ export interface TextureInfo {
   formatName?: string;
   graphicsFormat?: string;
   compressionFormat?: string;
-  wrapMode: string;
-  filterMode: string;
+  wrapMode: string | number;
+  filterMode: string | number;
   mipCount?: number;
   originalBytes: number;
   EstimatedBytes: number;
@@ -48,6 +48,7 @@ export interface ShaderInfo {
   path: string;
   passCount: number;
   keywords: string[];
+  memoryBytes?: number;
 }
 
 export interface TelemetrySnapshot {
@@ -58,6 +59,8 @@ export interface TelemetrySnapshot {
   totalTextureBytes: number;
   totalMeshBytes: number;
   totalRenderTextureBytes?: number;
+  totalShaderBytes?: number;
+  shaderMemoryBytes?: number;
   textures: TextureInfo[];
   meshes: MeshInfo[];
   renderTextures?: RenderTextureInfo[];
@@ -69,6 +72,7 @@ export interface TelemetrySession {
   createdAt: string;
   closedAt?: string;
   client: Record<string, unknown>;
+  clientIp?: string | null;
   frames: TelemetrySnapshot[];
 }
 

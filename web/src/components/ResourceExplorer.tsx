@@ -43,6 +43,69 @@ function sortBy<T>(items: T[], selector: (item: T) => number | string, order: So
   });
 }
 
+const unityWrapModeLabels: Record<number, string> = {
+  0: 'Repeat',
+  1: 'Clamp',
+  2: 'Mirror',
+  3: 'MirrorOnce',
+  4: 'PerAxis',
+};
+
+const unityFilterModeLabels: Record<number, string> = {
+  0: 'Point',
+  1: 'Bilinear',
+  2: 'Trilinear',
+};
+
+function parseNumeric(value: string | number | null | undefined): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string' && value.length > 0) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function formatWrapMode(value: string | number | null | undefined): string {
+  const numeric = parseNumeric(value);
+  if (numeric != null && numeric in unityWrapModeLabels) {
+    return unityWrapModeLabels[numeric];
+  }
+  if (typeof value === 'string' && value.trim().length > 0) {
+    return value;
+  }
+  return '未知';
+}
+
+function formatFilterMode(value: string | number | null | undefined): string {
+  const numeric = parseNumeric(value);
+  if (numeric != null && numeric in unityFilterModeLabels) {
+    return unityFilterModeLabels[numeric];
+  }
+  if (typeof value === 'string' && value.trim().length > 0) {
+    return value;
+  }
+  return '未知';
+}
+
+function dedupeTextures(textures: TextureInfo[]): TextureInfo[] {
+  const map = new Map<string, TextureInfo>();
+  textures.forEach((texture) => {
+    const name = typeof texture.name === 'string' ? texture.name.trim() : '';
+    const path = typeof texture.path === 'string' ? texture.path.trim() : '';
+    const key = name || path || `${texture.width}x${texture.height}`;
+    const existing = map.get(key);
+    if (!existing || existing.EstimatedBytes < texture.EstimatedBytes) {
+      map.set(key, texture);
+    }
+  });
+  return Array.from(map.values());
+}
+
 function resolvePreviewSource(texture: TextureInfo, serverBaseUrl: string): string | null {
   if (texture.previewBase64) {
     const trimmed = texture.previewBase64.trim();
@@ -111,6 +174,8 @@ function TextureDetails({ texture }: { texture: TextureInfo }) {
   const compressionRatio = texture.originalBytes > 0
     ? formatPercentage(texture.EstimatedBytes / texture.originalBytes)
     : '—';
+  const wrapLabel = formatWrapMode(texture.wrapMode);
+  const filterLabel = formatFilterMode(texture.filterMode);
 
   return (
     <Space direction="vertical" size={8} style={{ width: '100%' }}>
@@ -126,8 +191,8 @@ function TextureDetails({ texture }: { texture: TextureInfo }) {
       <Space wrap size={[8, 6]}>
         <Tag>压缩格式 {compressionFormat}</Tag>
         {texture.graphicsFormat ? <Tag>GraphicsFormat {texture.graphicsFormat}</Tag> : null}
-        <Tag>Wrap {texture.wrapMode}</Tag>
-        <Tag>Filter {texture.filterMode}</Tag>
+        <Tag>Wrap {wrapLabel}</Tag>
+        <Tag>Filter {filterLabel}</Tag>
       </Space>
     </Space>
   );
@@ -221,10 +286,11 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
     const subset = (frame.textures ?? []).filter((texture) =>
       `${texture.name} ${texture.path}`.toLowerCase().includes(normalizedSearch)
     );
+    const unique = dedupeTextures(subset);
     if (sortKey === 'size') {
-      return sortBy(subset, (t) => t.EstimatedBytes, sortOrder);
+      return sortBy(unique, (t) => t.EstimatedBytes, sortOrder);
     }
-    return sortBy(subset, (t) => t.name, sortOrder);
+    return sortBy(unique, (t) => t.name, sortOrder);
   }, [frame, normalizedSearch, sortKey, sortOrder]);
 
   const filteredRenderTextures = useMemo(() => {
