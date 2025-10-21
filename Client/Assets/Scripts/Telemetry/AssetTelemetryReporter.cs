@@ -44,48 +44,125 @@ namespace UnityProfileV2.Telemetry
 
         private static CoroutineRunner _coroutineRunner;
 
+        private static bool IsSupportedInterface(NetworkInterface networkInterface)
+        {
+            if (networkInterface == null)
+            {
+                return false;
+            }
+
+            if (networkInterface.OperationalStatus != OperationalStatus.Up)
+            {
+                return false;
+            }
+
+            switch (networkInterface.NetworkInterfaceType)
+            {
+                case NetworkInterfaceType.Loopback:
+                case NetworkInterfaceType.Tunnel:
+                case NetworkInterfaceType.Unknown:
+                case NetworkInterfaceType.Ppp:
+                    return false;
+            }
+
+            return true;
+        }
+
+        private static bool TryGetValidAddress(UnicastIPAddressInformation unicast, out IPAddress address)
+        {
+            address = unicast?.Address;
+            if (address == null)
+            {
+                return false;
+            }
+
+            if (address.AddressFamily != AddressFamily.InterNetwork)
+            {
+                return false;
+            }
+
+            if (IPAddress.IsLoopback(address))
+            {
+                return false;
+            }
+
+            if (Equals(address, IPAddress.Any) || Equals(address, IPAddress.None))
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        private static bool HasIpv4Gateway(IPInterfaceProperties properties)
+        {
+            if (properties == null)
+            {
+                return false;
+            }
+
+            foreach (var gateway in properties.GatewayAddresses)
+            {
+                var gatewayAddress = gateway?.Address;
+                if (gatewayAddress == null)
+                {
+                    continue;
+                }
+
+                if (gatewayAddress.AddressFamily != AddressFamily.InterNetwork)
+                {
+                    continue;
+                }
+
+                if (Equals(gatewayAddress, IPAddress.Any) || Equals(gatewayAddress, IPAddress.None))
+                {
+                    continue;
+                }
+
+                return true;
+            }
+
+            return false;
+        }
+
         private static string ResolveLocalIpAddress()
         {
             try
             {
+                string fallbackAddress = null;
+
                 foreach (var networkInterface in NetworkInterface.GetAllNetworkInterfaces())
                 {
-                    if (networkInterface == null)
-                    {
-                        continue;
-                    }
-
-                    if (networkInterface.OperationalStatus != OperationalStatus.Up)
-                    {
-                        continue;
-                    }
-
-                    if (networkInterface.NetworkInterfaceType == NetworkInterfaceType.Loopback)
+                    if (!IsSupportedInterface(networkInterface))
                     {
                         continue;
                     }
 
                     var ipProperties = networkInterface.GetIPProperties();
+                    var hasGateway = HasIpv4Gateway(ipProperties);
+
                     foreach (var unicast in ipProperties.UnicastAddresses)
                     {
-                        var address = unicast?.Address;
-                        if (address == null)
+                        if (!TryGetValidAddress(unicast, out var address))
                         {
                             continue;
                         }
 
-                        if (address.AddressFamily != AddressFamily.InterNetwork)
+                        if (hasGateway)
                         {
-                            continue;
+                            return address.ToString();
                         }
 
-                        if (IPAddress.IsLoopback(address))
+                        if (fallbackAddress == null)
                         {
-                            continue;
+                            fallbackAddress = address.ToString();
                         }
-
-                        return address.ToString();
                     }
+                }
+
+                if (!string.IsNullOrEmpty(fallbackAddress))
+                {
+                    return fallbackAddress;
                 }
 
                 var hostAddresses = Dns.GetHostAddresses(Dns.GetHostName());
@@ -97,6 +174,11 @@ namespace UnityProfileV2.Telemetry
                     }
 
                     if (IPAddress.IsLoopback(address))
+                    {
+                        continue;
+                    }
+
+                    if (Equals(address, IPAddress.Any) || Equals(address, IPAddress.None))
                     {
                         continue;
                     }
