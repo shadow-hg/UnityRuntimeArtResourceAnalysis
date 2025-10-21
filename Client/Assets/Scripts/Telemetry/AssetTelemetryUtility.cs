@@ -913,7 +913,7 @@ namespace UnityProfileV2.Telemetry
 
         public static RenderTextureInfo FromRenderTexture(RenderTexture renderTexture)
         {
-            TryCaptureRenderTexturePreview(renderTexture, out var previewBase64);
+            AssetTelemetryUtility.TryCaptureRenderTexturePreview(renderTexture, out var previewBase64);
 
             return new RenderTextureInfo
             {
