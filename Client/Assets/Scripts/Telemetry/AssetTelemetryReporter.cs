@@ -29,6 +29,10 @@ namespace UnityProfileV2.Telemetry
         [Tooltip("Automatically register and deregister telemetry sessions when play mode changes. Overridden by server configuration.")]
         [SerializeField] private bool autoManageSession = true;
 
+        private const int ServerConfigRequestTimeoutSeconds = 5;
+        private const int ServerConfigRetryCount = 3;
+        private const float ServerConfigRetryDelaySeconds = 1f;
+
         private string _sessionId;
         private float _lastSampleTime;
         private float _lastSampleRealtime;
@@ -235,33 +239,68 @@ namespace UnityProfileV2.Telemetry
                 yield break;
             }
 
-            using var request = UnityWebRequest.Get(serverEndpoint + "/config");
-            request.downloadHandler = new DownloadHandlerBuffer();
-            request.timeout = 5;
-            yield return request.SendWebRequest();
+            var attempt = 0;
+            var retriesRemaining = ServerConfigRetryCount;
 
-            if (request.result != UnityWebRequest.Result.Success)
+            while (true)
             {
-                Debug.LogWarning($"[UnityProfileV2] Failed to load server configuration: {request.error}");
-                yield break;
-            }
+                attempt++;
 
-            var json = request.downloadHandler.text;
+                using (var request = UnityWebRequest.Get(serverEndpoint + "/config"))
+                {
+                    request.downloadHandler = new DownloadHandlerBuffer();
 
-            if (string.IsNullOrEmpty(json) || json.IndexOf("\"clientDefaults\"", StringComparison.Ordinal) < 0)
-            {
-                Debug.LogWarning("[UnityProfileV2] Server configuration response did not contain client defaults.");
-                yield break;
-            }
+                    if (ServerConfigRequestTimeoutSeconds > 0)
+                    {
+                        request.timeout = Mathf.Max(ServerConfigRequestTimeoutSeconds, 0);
+                    }
 
-            try
-            {
-                var payload = JsonUtility.FromJson<ServerConfigurationPayload>(json);
-                ApplyServerConfiguration(payload);
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning($"[UnityProfileV2] Failed to parse server configuration: {ex.Message}");
+                    yield return request.SendWebRequest();
+
+                    if (request.result == UnityWebRequest.Result.Success)
+                    {
+                        var json = request.downloadHandler.text;
+
+                        if (string.IsNullOrEmpty(json) || json.IndexOf("\"clientDefaults\"", StringComparison.Ordinal) < 0)
+                        {
+                            Debug.LogWarning("[UnityProfileV2] Server configuration response did not contain client defaults.");
+                            yield break;
+                        }
+
+                        try
+                        {
+                            var payload = JsonUtility.FromJson<ServerConfigurationPayload>(json);
+                            ApplyServerConfiguration(payload);
+                        }
+                        catch (Exception ex)
+                        {
+                            Debug.LogWarning($"[UnityProfileV2] Failed to parse server configuration: {ex.Message}");
+                        }
+
+                        yield break;
+                    }
+
+                    Debug.LogWarning($"[UnityProfileV2] Failed to load server configuration (attempt {attempt}): {request.error}");
+                }
+
+                if (retriesRemaining == 0)
+                {
+                    yield break;
+                }
+
+                if (retriesRemaining > 0)
+                {
+                    retriesRemaining--;
+                }
+
+                if (ServerConfigRetryDelaySeconds > 0f)
+                {
+                    yield return new WaitForSecondsRealtime(ServerConfigRetryDelaySeconds);
+                }
+                else
+                {
+                    yield return null;
+                }
             }
         }
 
