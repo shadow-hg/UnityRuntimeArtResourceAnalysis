@@ -5,7 +5,6 @@ import {
   Empty,
   Image,
   Input,
-  Segmented,
   Space,
   Table,
   Tag,
@@ -13,6 +12,7 @@ import {
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type {
+  MaterialInfo,
   MeshInfo,
   RenderTextureInfo,
   ShaderInfo,
@@ -24,23 +24,6 @@ import { formatBytes, formatFps, formatPercentage } from '../utils/format';
 interface ResourceExplorerProps {
   frame: TelemetrySnapshot | null;
   serverBaseUrl: string;
-}
-
-type SortKey = 'size' | 'name';
-
-type SortOrder = 'asc' | 'desc';
-
-function sortBy<T>(items: T[], selector: (item: T) => number | string, order: SortOrder): T[] {
-  return [...items].sort((a, b) => {
-    const valueA = selector(a);
-    const valueB = selector(b);
-    if (typeof valueA === 'number' && typeof valueB === 'number') {
-      return order === 'asc' ? valueA - valueB : valueB - valueA;
-    }
-    return order === 'asc'
-      ? String(valueA).localeCompare(String(valueB))
-      : String(valueB).localeCompare(String(valueA));
-  });
 }
 
 const unityWrapModeLabels: Record<number, string> = {
@@ -119,21 +102,26 @@ function dedupeTextures(textures: TextureInfo[]): TextureInfo[] {
   return Array.from(map.values());
 }
 
-function resolvePreviewSource(texture: TextureInfo, serverBaseUrl: string): string | null {
-  if (texture.previewBase64) {
-    const trimmed = texture.previewBase64.trim();
+interface PreviewableResource {
+  previewBase64?: string;
+  previewUrl?: string;
+}
+
+function resolvePreviewSource(resource: PreviewableResource, serverBaseUrl: string): string | null {
+  if (resource.previewBase64) {
+    const trimmed = resource.previewBase64.trim();
     if (trimmed.length > 0) {
       return trimmed.startsWith('data:') ? trimmed : `data:image/png;base64,${trimmed}`;
     }
   }
 
-  if (texture.previewUrl) {
-    if (/^https?:/i.test(texture.previewUrl)) {
-      return texture.previewUrl;
+  if (resource.previewUrl) {
+    if (/^https?:/i.test(resource.previewUrl)) {
+      return resource.previewUrl;
     }
 
     const base = serverBaseUrl.endsWith('/') ? serverBaseUrl.slice(0, -1) : serverBaseUrl;
-    const relative = texture.previewUrl.startsWith('/') ? texture.previewUrl : `/${texture.previewUrl}`;
+    const relative = resource.previewUrl.startsWith('/') ? resource.previewUrl : `/${resource.previewUrl}`;
     return `${base}${relative}`;
   }
 
@@ -146,7 +134,7 @@ function TextureNameCell({ texture, serverBaseUrl }: { texture: TextureInfo; ser
     [texture, serverBaseUrl]
   );
   const hasPreview = Boolean(previewSrc);
-  const placeholderLabel = texture.name.slice(0, 2).toUpperCase();
+  const placeholderLabel = (texture.name || 'TX').slice(0, 2).toUpperCase();
 
   return (
     <Space align="start">
@@ -182,6 +170,59 @@ function TextureNameCell({ texture, serverBaseUrl }: { texture: TextureInfo; ser
   );
 }
 
+function RenderTextureNameCell({
+  renderTexture,
+  serverBaseUrl,
+}: {
+  renderTexture: RenderTextureInfo;
+  serverBaseUrl: string;
+}) {
+  const previewSrc = useMemo(
+    () => resolvePreviewSource(renderTexture, serverBaseUrl),
+    [renderTexture, serverBaseUrl]
+  );
+  const hasPreview = Boolean(previewSrc);
+  const placeholderLabel = (renderTexture.name || 'RT').slice(0, 2).toUpperCase();
+
+  return (
+    <Space align="start">
+      {hasPreview ? (
+        <Image
+          src={previewSrc ?? undefined}
+          width={56}
+          height={56}
+          style={{ borderRadius: 8, objectFit: 'cover' }}
+          alt={renderTexture.name}
+          preview={{ mask: '预览' }}
+        />
+      ) : (
+        <div
+          style={{
+            width: 56,
+            height: 56,
+            borderRadius: 8,
+            background: 'linear-gradient(135deg, #f59e0b, #b45309)',
+            color: '#fff',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontWeight: 600,
+            fontSize: 14,
+          }}
+        >
+          {placeholderLabel}
+        </div>
+      )}
+      <Space direction="vertical" size={0}>
+        <Typography.Text strong>{renderTexture.name || '未命名 RenderTexture'}</Typography.Text>
+        <Typography.Text type="secondary">
+          {renderTexture.width} × {renderTexture.height}
+        </Typography.Text>
+      </Space>
+    </Space>
+  );
+}
+
 function TextureDetails({ texture }: { texture: TextureInfo }) {
   const compressionFormat = texture.compressionFormat ?? texture.formatName ?? texture.format ?? '未知';
   const compressionRatio = texture.originalBytes > 0
@@ -196,7 +237,9 @@ function TextureDetails({ texture }: { texture: TextureInfo }) {
         资源路径：{texture.path || '未提供资源路径'}
       </Typography.Text>
       <Space wrap size={[8, 6]}>
-        <Tag color="blue">原始大小 {texture.originalBytes ? formatBytes(texture.originalBytes) : '未知'}</Tag>
+        <Tag color="blue">
+          原始大小 {texture.originalBytes != null ? formatBytes(texture.originalBytes) : '未知'}
+        </Tag>
         <Tag color="green">压缩后 {formatBytes(texture.EstimatedBytes)}</Tag>
         <Tag color="purple">压缩率 {compressionRatio}</Tag>
         <Tag color="magenta">Mip 数 {texture.mipCount ?? 0}</Tag>
@@ -226,8 +269,7 @@ function MeshDetails({ mesh }: { mesh: MeshInfo }) {
         资源路径：{mesh.path || '未提供资源路径'}
       </Typography.Text>
       <Space wrap size={[8, 6]}>
-        <Tag color="geekblue">资产大小 {mesh.assetBytes ? formatBytes(mesh.assetBytes) : '未知'}</Tag>
-        <Tag color="purple">运行时 {formatBytes(mesh.EstimatedBytes)}</Tag>
+        <Tag color="geekblue">资产大小 {mesh.assetBytes != null ? formatBytes(mesh.assetBytes) : '未知'}</Tag>
         <Tag color="cyan">子网格 {mesh.subMeshCount}</Tag>
         <Tag color="gold">包围盒 {boundsLabel}</Tag>
       </Space>
@@ -264,6 +306,59 @@ function RenderTextureDetails({ renderTexture }: { renderTexture: RenderTextureI
   );
 }
 
+function MaterialSummary({ material }: { material: MaterialInfo }) {
+  return (
+    <Space direction="vertical" size={0}>
+      <Typography.Text strong>{material.name || '未命名材质'}</Typography.Text>
+      <Typography.Text type="secondary">{material.shaderName || '未指定 Shader'}</Typography.Text>
+    </Space>
+  );
+}
+
+function MaterialDetails({ material }: { material: MaterialInfo }) {
+  const keywords = material.keywords ?? [];
+  const textures = material.textures ?? [];
+
+  return (
+    <Space direction="vertical" size={8} style={{ width: '100%' }}>
+      <Typography.Text type="secondary">
+        资源路径：{material.path || '未提供资源路径'}
+      </Typography.Text>
+      <Space wrap size={[8, 6]}>
+        <Tag color="blue">Shader {material.shaderName || '未知'}</Tag>
+        <Tag color="geekblue">渲染队列 {material.renderQueue}</Tag>
+        <Tag color="purple">Instancing {material.enableInstancing ? '开启' : '关闭'}</Tag>
+        <Tag color="magenta">双面 GI {material.doubleSidedGI ? '是' : '否'}</Tag>
+        <Tag color="gold">内存 {formatBytes(material.memoryBytes ?? 0)}</Tag>
+      </Space>
+      {keywords.length ? (
+        <Space wrap size={[8, 6]}>
+          {keywords.map((keyword) => (
+            <Tag key={keyword}>{keyword}</Tag>
+          ))}
+        </Space>
+      ) : (
+        <Typography.Text type="secondary">该材质未启用关键字</Typography.Text>
+      )}
+      {textures.length ? (
+        <Space direction="vertical" size={4} style={{ width: '100%' }}>
+          <Typography.Text type="secondary">贴图槽：</Typography.Text>
+          <Space wrap size={[8, 6]}>
+            {textures.map((slot) => (
+              <Tag key={`${slot.propertyName}-${slot.textureName ?? 'none'}`}>
+                {slot.propertyName}
+                {slot.textureName ? ` → ${slot.textureName}` : ''}
+              </Tag>
+            ))}
+          </Space>
+        </Space>
+      ) : (
+        <Typography.Text type="secondary">该材质未引用贴图</Typography.Text>
+      )}
+    </Space>
+  );
+}
+
 function ShaderSummary({ shader }: { shader: ShaderInfo }) {
   return <Typography.Text strong>{shader.name}</Typography.Text>;
 }
@@ -288,8 +383,6 @@ function ShaderDetails({ shader }: { shader: ShaderInfo }) {
 }
 
 export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplorerProps) {
-  const [sortKey, setSortKey] = useState<SortKey>('size');
-  const [sortOrder, setSortOrder] = useState<SortOrder>('desc');
   const [searchTerm, setSearchTerm] = useState('');
 
   const normalizedSearch = searchTerm.trim().toLowerCase();
@@ -300,50 +393,47 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
       .filter((texture) => !isRenderTextureLike(texture))
       .filter((texture) => `${texture.name} ${texture.path}`.toLowerCase().includes(normalizedSearch));
     const unique = dedupeTextures(subset);
-    if (sortKey === 'size') {
-      return sortBy(unique, (t) => t.EstimatedBytes, sortOrder);
-    }
-    return sortBy(unique, (t) => t.name, sortOrder);
-  }, [frame, normalizedSearch, sortKey, sortOrder]);
+    return unique;
+  }, [frame, normalizedSearch]);
 
   const filteredRenderTextures = useMemo(() => {
     if (!frame) return [];
     const subset = (frame.renderTextures ?? []).filter((rt) =>
       `${rt.name}`.toLowerCase().includes(normalizedSearch)
     );
-    if (sortKey === 'size') {
-      return sortBy(subset, (rt) => rt.EstimatedBytes, sortOrder);
-    }
-    return sortBy(subset, (rt) => rt.name, sortOrder);
-  }, [frame, normalizedSearch, sortKey, sortOrder]);
+    return subset;
+  }, [frame, normalizedSearch]);
+
+  const filteredMaterials = useMemo(() => {
+    if (!frame) return [];
+    const subset = (frame.materials ?? []).filter((material) =>
+      `${material.name} ${material.path} ${material.shaderName ?? ''}`.toLowerCase().includes(normalizedSearch)
+    );
+    return subset;
+  }, [frame, normalizedSearch]);
 
   const filteredMeshes = useMemo(() => {
     if (!frame) return [];
     const subset = (frame.meshes ?? []).filter((mesh) =>
       `${mesh.name} ${mesh.path}`.toLowerCase().includes(normalizedSearch)
     );
-    if (sortKey === 'size') {
-      return sortBy(subset, (m) => m.EstimatedBytes, sortOrder);
-    }
-    return sortBy(subset, (m) => m.name, sortOrder);
-  }, [frame, normalizedSearch, sortKey, sortOrder]);
+    return subset;
+  }, [frame, normalizedSearch]);
 
   const filteredShaders = useMemo(() => {
     if (!frame) return [];
     const subset = (frame.shaders ?? []).filter((shader) =>
       `${shader.name} ${shader.path}`.toLowerCase().includes(normalizedSearch)
     );
-    if (sortKey === 'size') {
-      return sortBy(subset, (s) => s.passCount, sortOrder);
-    }
-    return sortBy(subset, (s) => s.name, sortOrder);
-  }, [frame, normalizedSearch, sortKey, sortOrder]);
+    return subset;
+  }, [frame, normalizedSearch]);
 
   const textureColumns: ColumnsType<TextureInfo> = [
     {
       title: '纹理',
       key: 'texture',
       render: (_, record) => <TextureNameCell texture={record} serverBaseUrl={serverBaseUrl} />,
+      sorter: (a, b) => a.name.localeCompare(b.name),
       width: 360,
     },
     {
@@ -351,16 +441,31 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
       dataIndex: 'EstimatedBytes',
       key: 'estimatedBytes',
       render: (value: number) => formatBytes(value),
+      sorter: (a, b) => a.EstimatedBytes - b.EstimatedBytes,
+      defaultSortOrder: 'descend',
+    },
+    {
+      title: '原始大小',
+      dataIndex: 'originalBytes',
+      key: 'originalBytes',
+      render: (value: number | undefined) => (value != null ? formatBytes(value) : '未知'),
+      sorter: (a, b) => (a.originalBytes ?? 0) - (b.originalBytes ?? 0),
     },
     {
       title: '分辨率',
       key: 'resolution',
       render: (_, record) => `${record.width} × ${record.height}`,
+      sorter: (a, b) => a.width * a.height - b.width * b.height,
     },
     {
       title: '压缩格式',
       key: 'compression',
       render: (_, record) => record.compressionFormat ?? record.formatName ?? record.format ?? '未知',
+      sorter: (a, b) => {
+        const valueA = a.compressionFormat ?? a.formatName ?? a.format ?? '';
+        const valueB = b.compressionFormat ?? b.formatName ?? b.format ?? '';
+        return String(valueA).localeCompare(String(valueB));
+      },
     },
   ];
 
@@ -369,24 +474,28 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
       title: '网格',
       key: 'mesh',
       render: (_, record) => <MeshSummary mesh={record} />,
+      sorter: (a, b) => a.name.localeCompare(b.name),
       width: 320,
     },
     {
       title: '资产大小',
       dataIndex: 'assetBytes',
       key: 'assetBytes',
-      render: (value: number | undefined) => (value ? formatBytes(value) : '未知'),
-    },
-    {
-      title: '运行时大小',
-      dataIndex: 'EstimatedBytes',
-      key: 'runtimeSize',
-      render: (value: number) => formatBytes(value),
+      render: (value: number | undefined) => (value != null ? formatBytes(value) : '未知'),
+      sorter: (a, b) => (a.assetBytes ?? 0) - (b.assetBytes ?? 0),
+      defaultSortOrder: 'descend',
     },
     {
       title: '顶点数',
       dataIndex: 'vertexCount',
       key: 'vertexCount',
+      sorter: (a, b) => a.vertexCount - b.vertexCount,
+    },
+    {
+      title: '子网格',
+      dataIndex: 'subMeshCount',
+      key: 'subMeshCount',
+      sorter: (a, b) => a.subMeshCount - b.subMeshCount,
     },
   ];
 
@@ -395,29 +504,74 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
       title: 'RenderTexture',
       key: 'renderTexture',
       render: (_, record) => (
-        <Space direction="vertical" size={0}>
-          <Typography.Text strong>{record.name || '未命名 RenderTexture'}</Typography.Text>
-          <Typography.Text type="secondary">{record.width} × {record.height}</Typography.Text>
-        </Space>
+        <RenderTextureNameCell renderTexture={record} serverBaseUrl={serverBaseUrl} />
       ),
-      width: 280,
+      sorter: (a, b) => a.name.localeCompare(b.name),
+      width: 320,
     },
     {
       title: '内存占用',
       dataIndex: 'EstimatedBytes',
       key: 'memory',
       render: (value: number) => formatBytes(value),
+      sorter: (a, b) => a.EstimatedBytes - b.EstimatedBytes,
+      defaultSortOrder: 'descend',
     },
     {
       title: '格式',
       key: 'format',
       render: (_, record) => record.graphicsFormat || record.format,
+      sorter: (a, b) => (a.graphicsFormat || a.format || '').localeCompare(b.graphicsFormat || b.format || ''),
     },
     {
       title: '抗锯齿',
       dataIndex: 'antiAliasing',
       key: 'antiAliasing',
       render: (value: number) => `×${value}`,
+      sorter: (a, b) => a.antiAliasing - b.antiAliasing,
+    },
+    {
+      title: '分辨率',
+      key: 'rtResolution',
+      render: (_, record) => `${record.width} × ${record.height}`,
+      sorter: (a, b) => a.width * a.height - b.width * b.height,
+    },
+  ];
+
+  const materialColumns: ColumnsType<MaterialInfo> = [
+    {
+      title: '材质',
+      key: 'material',
+      render: (_, record) => <MaterialSummary material={record} />,
+      sorter: (a, b) => (a.name || '').localeCompare(b.name || ''),
+      width: 320,
+    },
+    {
+      title: 'Shader',
+      dataIndex: 'shaderName',
+      key: 'shaderName',
+      render: (value: string | undefined) => value || '未知',
+      sorter: (a, b) => (a.shaderName || '').localeCompare(b.shaderName || ''),
+    },
+    {
+      title: '渲染队列',
+      dataIndex: 'renderQueue',
+      key: 'renderQueue',
+      sorter: (a, b) => (a.renderQueue ?? 0) - (b.renderQueue ?? 0),
+    },
+    {
+      title: '关键字数',
+      key: 'keywordCount',
+      render: (_, record) => record.keywords?.length ?? 0,
+      sorter: (a, b) => (a.keywords?.length ?? 0) - (b.keywords?.length ?? 0),
+    },
+    {
+      title: '内存占用',
+      dataIndex: 'memoryBytes',
+      key: 'materialMemory',
+      render: (value: number | undefined) => (value != null ? formatBytes(value) : '未知'),
+      sorter: (a, b) => (a.memoryBytes ?? 0) - (b.memoryBytes ?? 0),
+      defaultSortOrder: 'descend',
     },
   ];
 
@@ -426,17 +580,28 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
       title: 'Shader',
       key: 'shader',
       render: (_, record) => <ShaderSummary shader={record} />,
+      sorter: (a, b) => a.name.localeCompare(b.name),
       width: 360,
     },
     {
       title: 'Pass 数量',
       dataIndex: 'passCount',
       key: 'passes',
+      sorter: (a, b) => a.passCount - b.passCount,
+      defaultSortOrder: 'descend',
     },
     {
       title: '关键字数',
       key: 'keywordCount',
       render: (_, record) => record.keywords.length,
+      sorter: (a, b) => a.keywords.length - b.keywords.length,
+    },
+    {
+      title: '内存占用',
+      dataIndex: 'memoryBytes',
+      key: 'shaderMemory',
+      render: (value: number | undefined) => (value != null ? formatBytes(value) : '未知'),
+      sorter: (a, b) => (a.memoryBytes ?? 0) - (b.memoryBytes ?? 0),
     },
   ];
 
@@ -451,9 +616,17 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
   const textureTotal = formatBytes(frame.totalTextureBytes ?? filteredTextures.reduce((sum, texture) => sum + texture.EstimatedBytes, 0));
   const meshTotal = formatBytes(frame.totalMeshBytes);
   const renderTextureTotal = formatBytes(frame.totalRenderTextureBytes ?? (frame.renderTextures ?? []).reduce((sum, item) => sum + (item?.EstimatedBytes ?? 0), 0));
+  const materialTotal = formatBytes(
+    frame.totalMaterialBytes ?? (frame.materials ?? []).reduce((sum, material) => sum + (material.memoryBytes ?? 0), 0)
+  );
   const filteredTextureTotal = formatBytes(filteredTextures.reduce((sum, texture) => sum + texture.EstimatedBytes, 0));
   const filteredRenderTextureTotal = formatBytes(filteredRenderTextures.reduce((sum, rt) => sum + rt.EstimatedBytes, 0));
-  const filteredMeshTotal = formatBytes(filteredMeshes.reduce((sum, mesh) => sum + mesh.EstimatedBytes, 0));
+  const filteredMaterialTotal = formatBytes(
+    filteredMaterials.reduce((sum, material) => sum + (material.memoryBytes ?? 0), 0)
+  );
+  const filteredMeshTotal = formatBytes(
+    filteredMeshes.reduce((sum, mesh) => sum + (mesh.assetBytes ?? mesh.EstimatedBytes ?? 0), 0)
+  );
   const shaderKeywordTotal = filteredShaders.reduce((acc, shader) => acc + shader.keywords.length, 0);
 
   return (
@@ -463,7 +636,8 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
           <Typography.Text strong>{`第 ${frame.frameNumber} 帧资源详情`}</Typography.Text>
           <Typography.Text type="secondary">
             捕获时间 {new Date(frame.timestampUtc).toLocaleString()} · {filteredTextures.length} 纹理 ·{' '}
-            {filteredRenderTextures.length} RenderTexture · {filteredMeshes.length} 网格 · {filteredShaders.length} Shader
+            {filteredRenderTextures.length} RenderTexture · {filteredMaterials.length} 材质 · {filteredMeshes.length} 网格 ·{' '}
+            {filteredShaders.length} Shader
           </Typography.Text>
         </Space>
       }
@@ -473,6 +647,7 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
         <Space wrap size={[16, 12]}>
           <Tag color="geekblue">纹理总大小 {textureTotal}</Tag>
           <Tag color="orange">RenderTexture {renderTextureTotal}</Tag>
+          <Tag color="cyan">材质 {materialTotal}</Tag>
           <Tag color="purple">网格总大小 {meshTotal}</Tag>
           <Tag color="gold">帧率 {formatFps(frame.fps)}</Tag>
         </Space>
@@ -484,26 +659,10 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
             onChange={(event) => setSearchTerm(event.target.value)}
             style={{ maxWidth: 320 }}
           />
-          <Segmented
-            options={[
-              { label: '按大小', value: 'size' },
-              { label: '按名称', value: 'name' },
-            ]}
-            value={sortKey}
-            onChange={(value) => setSortKey(value as SortKey)}
-          />
-          <Segmented
-            options={[
-              { label: '降序', value: 'desc' },
-              { label: '升序', value: 'asc' },
-            ]}
-            value={sortOrder}
-            onChange={(value) => setSortOrder(value as SortOrder)}
-          />
         </Space>
         <Collapse
           bordered={false}
-          defaultActiveKey={['textures', 'renderTextures']}
+          defaultActiveKey={['textures', 'renderTextures', 'materials']}
           items={[
             {
               key: 'textures',
@@ -538,6 +697,24 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
                   size="small"
                   expandable={{
                     expandedRowRender: (record) => <RenderTextureDetails renderTexture={record} />,
+                    columnWidth: 48,
+                  }}
+                />
+              ),
+            },
+            {
+              key: 'materials',
+              label: `材质 (${filteredMaterials.length})`,
+              extra: <Typography.Text type="secondary">当前列表大小 {filteredMaterialTotal}</Typography.Text>,
+              children: (
+                <Table
+                  rowKey={(record) => `${record.name}-${record.shaderName ?? 'unknown'}-${record.renderQueue}`}
+                  dataSource={filteredMaterials}
+                  columns={materialColumns}
+                  pagination={{ pageSize: 8, hideOnSinglePage: true }}
+                  size="small"
+                  expandable={{
+                    expandedRowRender: (record) => <MaterialDetails material={record} />,
                     columnWidth: 48,
                   }}
                 />

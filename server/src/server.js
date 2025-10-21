@@ -92,12 +92,20 @@ function cloneArray(items) {
 }
 
 function sanitizeFramePayload(payload) {
-  const { textures = [], meshes = [], shaders = [], renderTextures = [], ...rest } = payload ?? {};
+  const {
+    textures = [],
+    meshes = [],
+    shaders = [],
+    renderTextures = [],
+    materials = [],
+    ...rest
+  } = payload ?? {};
   return {
     ...rest,
     textures: cloneArray(textures),
     meshes: cloneArray(meshes),
     renderTextures: cloneArray(renderTextures),
+    materials: cloneArray(materials),
     shaders: cloneArray(shaders),
   };
 }
@@ -168,6 +176,14 @@ async function prepareFramePayload(sessionId, payload) {
     );
     storedFrame.textures = textures.map((result) => result.stored);
     broadcastFrame.textures = textures.map((result) => result.broadcast);
+  }
+
+  if (Array.isArray(sanitizedFrame.renderTextures) && sanitizedFrame.renderTextures.length > 0) {
+    const renderTextures = await Promise.all(
+      sanitizedFrame.renderTextures.map((renderTexture) => persistTexturePreview(sessionId, renderTexture))
+    );
+    storedFrame.renderTextures = renderTextures.map((result) => result.stored);
+    broadcastFrame.renderTextures = renderTextures.map((result) => result.broadcast);
   }
 
   return { storedFrame, broadcastFrame };
