@@ -83,7 +83,16 @@ export default function SessionSidebar({
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ padding: '0 16px' }}>
         <Typography.Text type="secondary">游戏客户端 IP</Typography.Text>
-        <Space wrap size={[8, 8]} style={{ marginTop: 8 }}>
+        <div
+          style={{
+            marginTop: 8,
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: 8,
+            alignItems: 'center',
+            overflow: 'visible',
+          }}
+        >
           <CheckableTag
             key="__all__"
             checked={selectedClientIp === null}
@@ -93,6 +102,15 @@ export default function SessionSidebar({
               } else if (selectedClientIp === null) {
                 onSelectClientIp(null);
               }
+            }}
+            style={{
+              borderRadius: 999,
+              padding: '2px 12px',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              maxWidth: '100%',
+              whiteSpace: 'nowrap',
             }}
           >
             全部客户端
@@ -105,21 +123,25 @@ export default function SessionSidebar({
                 key={item.ip}
                 checked={selectedClientIp === item.ip}
                 onChange={(checked) => onSelectClientIp(checked ? item.ip : null)}
-                style={{ borderRadius: 999, padding: '2px 12px' }}
+                style={{
+                  borderRadius: 999,
+                  padding: '2px 12px',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  maxWidth: '100%',
+                  whiteSpace: 'nowrap',
+                }}
               >
-                <Space size={6} align="center">
-                  <span>{item.ip}</span>
-                  <span style={{ color: 'rgba(0, 0, 0, 0.45)', fontSize: 12 }}>({item.sessionCount})</span>
-                  {item.activeSessionCount > 0 ? (
-                    <span style={{ color: '#52c41a', fontSize: 12 }}>
-                      实时 {item.activeSessionCount}
-                    </span>
-                  ) : null}
-                </Space>
+                <span>{item.ip}</span>
+                <span style={{ color: 'rgba(0, 0, 0, 0.45)', fontSize: 12 }}>({item.sessionCount})</span>
+                {item.activeSessionCount > 0 ? (
+                  <span style={{ color: '#52c41a', fontSize: 12 }}>实时 {item.activeSessionCount}</span>
+                ) : null}
               </CheckableTag>
             ))
           )}
-        </Space>
+        </div>
       </div>
       <div style={{ flex: 1, overflowY: 'auto' }}>
         {sortedSessions.length === 0 ? (

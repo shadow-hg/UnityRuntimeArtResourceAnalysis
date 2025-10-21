@@ -78,6 +78,7 @@ function AppShell({ sessions, connectionState, networkInfo, isDarkMode, onToggle
   const [selectedFrame, setSelectedFrame] = useState<TelemetrySnapshot | null>(null);
   const [isAutoFollowLatest, setIsAutoFollowLatest] = useState(true);
   const [selectedClientIp, setSelectedClientIp] = useState<string | null>(null);
+  const [samplingIntervalMs, setSamplingIntervalMs] = useState<number>(0);
   const { token } = theme.useToken();
 
   const clientIpOptions = useMemo(
@@ -319,7 +320,13 @@ function AppShell({ sessions, connectionState, networkInfo, isDarkMode, onToggle
         </Sider>
         <Content style={{ padding: 24, background: token.colorBgBase }}>
           <Flex vertical gap={16} style={{ height: '100%' }}>
-            <PerformanceChart frames={frames} selectedFrame={selectedFrame} onSelectFrame={handleFrameSelect} />
+            <PerformanceChart
+              frames={frames}
+              selectedFrame={selectedFrame}
+              samplingIntervalMs={samplingIntervalMs}
+              onChangeSamplingInterval={setSamplingIntervalMs}
+              onSelectFrame={handleFrameSelect}
+            />
             <ResourceExplorer frame={selectedFrame} serverBaseUrl={SERVER_URL} />
           </Flex>
         </Content>
