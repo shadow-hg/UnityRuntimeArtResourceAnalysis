@@ -612,12 +612,12 @@ namespace UnityProfileV2.Telemetry
             var tex2D = texture as Texture2D;
             var format = tex2D != null ? tex2D.format : TextureFormat.RGBA32;
             var mipCount = tex2D != null ? tex2D.mipmapCount : 1;
-            TryCaptureTexturePreview(texture, out var previewBase64);
+            AssetTelemetryUtility.TryCaptureTexturePreview(texture, out var previewBase64);
 
             return new TextureInfo
             {
                 name = texture.name,
-                path = GetAssetPath(texture),
+                path = AssetTelemetryUtility.GetAssetPath(texture),
                 width = texture.width,
                 height = texture.height,
                 wrapMode = texture.wrapMode,
@@ -627,8 +627,8 @@ namespace UnityProfileV2.Telemetry
                 graphicsFormat = tex2D != null ? tex2D.graphicsFormat.ToString() : string.Empty,
                 compressionFormat = format.ToString(),
                 mipCount = mipCount,
-                originalBytes = GetTextureOriginalBytes(tex2D),
-                EstimatedBytes = GetTextureCompressedBytes(texture, format, texture.width, texture.height, mipCount),
+                originalBytes = AssetTelemetryUtility.GetTextureOriginalBytes(tex2D),
+                EstimatedBytes = AssetTelemetryUtility.GetTextureCompressedBytes(texture, format, texture.width, texture.height, mipCount),
                 previewBase64 = previewBase64,
                 isRenderTexture = texture is RenderTexture,
             };
