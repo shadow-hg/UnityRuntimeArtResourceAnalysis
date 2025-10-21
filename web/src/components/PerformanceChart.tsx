@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { Card, Empty, Typography } from 'antd';
+import { Card, Empty, InputNumber, Space, Tooltip, Typography } from 'antd';
 import ReactEChartsCore from 'echarts-for-react/lib/core';
 import type { EChartsOption } from 'echarts';
 import * as echarts from 'echarts/core';
@@ -31,6 +31,8 @@ echarts.use([
 interface PerformanceChartProps {
   frames: TelemetrySnapshot[];
   selectedFrame: TelemetrySnapshot | null;
+  samplingIntervalMs: number;
+  onChangeSamplingInterval: (value: number) => void;
   onSelectFrame: (frame: TelemetrySnapshot | null, meta?: { userInitiated?: boolean }) => void;
 }
 
@@ -52,13 +54,89 @@ function bytesToMegabytes(value: unknown) {
   return finite / (1024 * 1024);
 }
 
-export default function PerformanceChart({ frames, selectedFrame, onSelectFrame }: PerformanceChartProps) {
+function findNearestFrameNumber(target: number, candidates: number[]): number | null {
+  if (!Number.isFinite(target) || candidates.length === 0) {
+    return null;
+  }
+
+  let best: number | null = null;
+  let smallestDistance = Number.POSITIVE_INFINITY;
+
+  for (const candidate of candidates) {
+    if (!Number.isFinite(candidate)) continue;
+    const distance = Math.abs(candidate - target);
+    if (distance < smallestDistance) {
+      smallestDistance = distance;
+      best = candidate;
+    }
+  }
+
+  return best;
+}
+
+export default function PerformanceChart({
+  frames,
+  selectedFrame,
+  samplingIntervalMs,
+  onChangeSamplingInterval,
+  onSelectFrame,
+}: PerformanceChartProps) {
   const chartRef = useRef<EChartsType | null>(null);
   const hoveredFrameNumberRef = useRef<number | null>(null);
 
-  const frameNumbers = useMemo(() => frames.map((frame) => frame.frameNumber), [frames]);
+  const sampledFrames = useMemo(() => {
+    if (!Array.isArray(frames) || frames.length === 0) {
+      return [] as TelemetrySnapshot[];
+    }
 
-  const timestamps = useMemo(() => frames.map((frame) => frame.timestampUtc), [frames]);
+    if (samplingIntervalMs <= 0) {
+      return frames;
+    }
+
+    const result: TelemetrySnapshot[] = [];
+    let lastAcceptedTimestamp = Number.NEGATIVE_INFINITY;
+    let lastAcceptedFrameNumber = Number.NEGATIVE_INFINITY;
+
+    frames.forEach((frame) => {
+      const timestamp = Date.parse(frame.timestampUtc ?? '');
+      if (Number.isFinite(timestamp)) {
+        if (timestamp - lastAcceptedTimestamp >= samplingIntervalMs) {
+          result.push(frame);
+          lastAcceptedTimestamp = timestamp;
+          lastAcceptedFrameNumber = frame.frameNumber;
+        }
+        return;
+      }
+
+      if (!Number.isFinite(lastAcceptedFrameNumber) || frame.frameNumber - lastAcceptedFrameNumber >= 1) {
+        result.push(frame);
+        lastAcceptedFrameNumber = frame.frameNumber;
+      }
+    });
+
+    const latest = frames[frames.length - 1];
+    if (latest && !result.some((frame) => frame.frameNumber === latest.frameNumber)) {
+      result.push(latest);
+    }
+
+    return result.sort((a, b) => a.frameNumber - b.frameNumber);
+  }, [frames, samplingIntervalMs]);
+
+  const displayFrames = useMemo(() => {
+    if (!selectedFrame) {
+      return sampledFrames;
+    }
+
+    if (sampledFrames.some((frame) => frame.frameNumber === selectedFrame.frameNumber)) {
+      return sampledFrames;
+    }
+
+    return [...sampledFrames, selectedFrame].sort((a, b) => a.frameNumber - b.frameNumber);
+  }, [sampledFrames, selectedFrame]);
+
+  const frameNumbers = useMemo(() => displayFrames.map((frame) => frame.frameNumber), [displayFrames]);
+
+  const timestamps = useMemo(() => displayFrames.map((frame) => frame.timestampUtc), [displayFrames]);
 
   const safelyDispatch = useCallback((instance: EChartsType, action: Parameters<EChartsType['dispatchAction']>[0]) => {
     if (typeof instance.isDisposed === 'function' && instance.isDisposed()) {
@@ -81,16 +159,16 @@ export default function PerformanceChart({ frames, selectedFrame, onSelectFrame 
 
   const fpsValues = useMemo(
     () =>
-      frames.map((frame) => {
+      displayFrames.map((frame) => {
         const value = ensureFiniteNumber(frame.fps, Number.NaN);
         return Number.isFinite(value) ? Number(value.toFixed(2)) : null;
       }),
-    [frames]
+    [displayFrames]
   );
 
   const textureValues = useMemo(
     () =>
-      frames.map((frame) => {
+      displayFrames.map((frame) => {
         const textureBytes =
           frame.totalTextureBytes ??
           frame.textures
@@ -99,36 +177,36 @@ export default function PerformanceChart({ frames, selectedFrame, onSelectFrame 
         const value = bytesToMegabytes(textureBytes);
         return Number.isFinite(value) ? Number(value.toFixed(2)) : null;
       }),
-    [frames]
+    [displayFrames]
   );
 
   const meshValues = useMemo(
     () =>
-      frames.map((frame) => {
+      displayFrames.map((frame) => {
         const meshBytes =
           frame.totalMeshBytes ??
           frame.meshes.reduce((sum, mesh) => sum + ensureFiniteNumber(mesh.EstimatedBytes), 0);
         const value = bytesToMegabytes(meshBytes);
         return Number.isFinite(value) ? Number(value.toFixed(2)) : null;
       }),
-    [frames]
+    [displayFrames]
   );
 
   const renderTextureValues = useMemo(
     () =>
-      frames.map((frame) => {
+      displayFrames.map((frame) => {
         const rtBytes =
           frame.totalRenderTextureBytes ??
           (frame.renderTextures ?? []).reduce((sum, renderTexture) => sum + ensureFiniteNumber(renderTexture?.EstimatedBytes), 0);
         const value = bytesToMegabytes(rtBytes);
         return Number.isFinite(value) ? Number(value.toFixed(2)) : null;
       }),
-    [frames]
+    [displayFrames]
   );
 
   const shaderValues = useMemo(
     () =>
-      frames.map((frame) => {
+      displayFrames.map((frame) => {
         const explicitBytes = ensureFiniteNumber(frame.totalShaderBytes ?? frame.shaderMemoryBytes, 0);
         const aggregatedBytes = frame.shaders?.reduce(
           (sum, shader) => sum + ensureFiniteNumber(shader?.memoryBytes),
@@ -141,7 +219,7 @@ export default function PerformanceChart({ frames, selectedFrame, onSelectFrame 
         const value = bytesToMegabytes(shaderBytes);
         return Number.isFinite(value) ? Number(value.toFixed(2)) : null;
       }),
-    [frames]
+    [displayFrames]
   );
 
   const option = useMemo<EChartsOption>(() => {
@@ -461,6 +539,59 @@ export default function PerformanceChart({ frames, selectedFrame, onSelectFrame 
     hoveredFrameNumberRef.current = null;
   }, []);
 
+  useEffect(() => {
+    const instance = chartRef.current;
+    if (!instance) {
+      return;
+    }
+
+    const zr = instance.getZr?.();
+    if (!zr || typeof zr.on !== 'function' || typeof zr.off !== 'function') {
+      return;
+    }
+
+    const handleZrClick = (event: { offsetX: number; offsetY: number }) => {
+      const pointInPixel: [number, number] = [event.offsetX, event.offsetY];
+      if (typeof instance.containPixel === 'function' && !instance.containPixel('grid', pointInPixel)) {
+        return;
+      }
+
+      const rawValue = instance.convertFromPixel?.({ xAxisIndex: 0 }, pointInPixel);
+      const candidate = Array.isArray(rawValue) ? rawValue[0] : rawValue;
+
+      let numericValue: number | null = null;
+      if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+        numericValue = candidate;
+      } else if (typeof candidate === 'string') {
+        const parsed = Number(candidate);
+        if (Number.isFinite(parsed)) {
+          numericValue = parsed;
+        }
+      }
+
+      if (numericValue == null) {
+        return;
+      }
+
+      const nearestFrameNumber = findNearestFrameNumber(numericValue, frameNumbers);
+      if (nearestFrameNumber == null) {
+        return;
+      }
+
+      const frame = frames.find((item) => item.frameNumber === nearestFrameNumber) ?? null;
+      if (!frame) {
+        return;
+      }
+
+      onSelectFrame(frame, { userInitiated: true });
+    };
+
+    zr.on('click', handleZrClick);
+    return () => {
+      zr.off('click', handleZrClick);
+    };
+  }, [frameNumbers, frames, onSelectFrame]);
+
   const latestFrameNumberForTitle =
     frames.length > 0 ? frames[frames.length - 1]?.frameNumber ?? '-' : '-';
 
@@ -470,6 +601,44 @@ export default function PerformanceChart({ frames, selectedFrame, onSelectFrame 
         <Typography.Text strong>
           性能趋势 · {frames.length} 帧 · 最新帧 #{latestFrameNumberForTitle}
         </Typography.Text>
+      }
+      extra={
+        <Space size={8} align="center">
+          <Tooltip title="仅展示满足最小时间间隔的帧，0 表示实时显示所有帧。">
+            <Typography.Text type="secondary">采样间隔</Typography.Text>
+          </Tooltip>
+          <InputNumber
+            size="small"
+            min={0}
+            step={50}
+            value={samplingIntervalMs}
+            style={{ width: 130 }}
+            formatter={(value) => `${value ?? 0} ms`}
+            parser={(value) => {
+              if (typeof value !== 'string') {
+                return 0;
+              }
+              const numeric = Number(value.replace(/\s*ms$/i, ''));
+              return Number.isFinite(numeric) ? numeric : 0;
+            }}
+            onChange={(value) => {
+              if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+                onChangeSamplingInterval(value);
+                return;
+              }
+              if (typeof value === 'string') {
+                const numeric = Number(value);
+                if (Number.isFinite(numeric) && numeric >= 0) {
+                  onChangeSamplingInterval(numeric);
+                  return;
+                }
+              }
+              if (value === null) {
+                onChangeSamplingInterval(0);
+              }
+            }}
+          />
+        </Space>
       }
     >
       {frames.length === 0 ? (
