@@ -16,7 +16,7 @@ namespace UnityProfileV2.Telemetry
         public static TelemetrySnapshot CreateSnapshot(int maxAssetsPerCategory)
         {
             var textures = EnumerateRuntimeObjects<Texture>()
-                .Where(texture => texture is not RenderTexture)
+                .Where(texture => !IsRenderTextureLike(texture))
                 .Where(texture => texture is not Texture2D tex || !tex.hideFlags.HasFlag(HideFlags.DontSave))
                 .Select(TextureInfo.FromTexture)
                 .Where(info => info.IsValid && !info.isRenderTexture)
@@ -68,6 +68,27 @@ namespace UnityProfileV2.Telemetry
 #else
             return string.Empty;
 #endif
+        }
+
+        internal static bool IsRenderTextureLike(Texture texture)
+        {
+            if (texture == null)
+            {
+                return false;
+            }
+
+            if (texture is RenderTexture)
+            {
+                return true;
+            }
+
+            var typeName = texture.GetType().Name;
+            if (string.IsNullOrEmpty(typeName))
+            {
+                return false;
+            }
+
+            return typeName.IndexOf("RenderTexture", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static IEnumerable<T> EnumerateRuntimeObjects<T>() where T : UnityEngine.Object
@@ -605,6 +626,7 @@ namespace UnityProfileV2.Telemetry
         public long EstimatedBytes;
         public string previewBase64;
         public bool isRenderTexture;
+        public string textureClass;
         public bool IsValid => width > 0 && height > 0;
 
         public static TextureInfo FromTexture(Texture texture)
@@ -612,6 +634,8 @@ namespace UnityProfileV2.Telemetry
             var tex2D = texture as Texture2D;
             var format = tex2D != null ? tex2D.format : TextureFormat.RGBA32;
             var mipCount = tex2D != null ? tex2D.mipmapCount : 1;
+            var typeName = texture != null ? texture.GetType().Name : string.Empty;
+            var isRenderTexture = AssetTelemetryUtility.IsRenderTextureLike(texture);
             AssetTelemetryUtility.TryCaptureTexturePreview(texture, out var previewBase64);
 
             return new TextureInfo
@@ -630,7 +654,8 @@ namespace UnityProfileV2.Telemetry
                 originalBytes = AssetTelemetryUtility.GetTextureOriginalBytes(tex2D),
                 EstimatedBytes = AssetTelemetryUtility.GetTextureCompressedBytes(texture, format, texture.width, texture.height, mipCount),
                 previewBase64 = previewBase64,
-                isRenderTexture = texture is RenderTexture,
+                isRenderTexture = isRenderTexture,
+                textureClass = typeName,
             };
         }
     }

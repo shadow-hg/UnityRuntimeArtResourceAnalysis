@@ -57,6 +57,19 @@ const unityFilterModeLabels: Record<number, string> = {
   2: 'Trilinear',
 };
 
+function isRenderTextureLike(texture: TextureInfo): boolean {
+  if (texture.isRenderTexture) {
+    return true;
+  }
+
+  const className = texture.textureClass?.toLowerCase().trim();
+  if (className && className.includes('rendertexture')) {
+    return true;
+  }
+
+  return false;
+}
+
 function parseNumeric(value: string | number | null | undefined): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return value;
@@ -284,7 +297,7 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
   const filteredTextures = useMemo(() => {
     if (!frame) return [];
     const subset = (frame.textures ?? [])
-      .filter((texture) => !texture.isRenderTexture)
+      .filter((texture) => !isRenderTextureLike(texture))
       .filter((texture) => `${texture.name} ${texture.path}`.toLowerCase().includes(normalizedSearch));
     const unique = dedupeTextures(subset);
     if (sortKey === 'size') {
@@ -430,7 +443,7 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
   if (!frame) {
     return (
       <Card title="资源总览" style={{ flex: 1 }}>
-        <Empty description="请选择性能趋势图中的某一帧以查看资源详情" />
+        <Empty description="请在性能趋势图或帧时间轴中选择一帧以查看资源详情" />
       </Card>
     );
   }

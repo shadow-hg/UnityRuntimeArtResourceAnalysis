@@ -15,6 +15,7 @@ export interface TextureInfo {
   previewUrl?: string;
   previewBase64?: string;
   isRenderTexture?: boolean;
+  textureClass?: string;
 }
 
 export interface MeshInfo {
