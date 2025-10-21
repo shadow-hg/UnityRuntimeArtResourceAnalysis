@@ -242,43 +242,13 @@ function AppShell({ sessions, connectionState, networkInfo, isDarkMode, onToggle
               <Badge status={badgeMeta.status} text={badgeMeta.text} />
               <Typography.Text type="secondary">{headerSubtitle}</Typography.Text>
             </Space>
-            <Space size={[8, 6]} wrap>
-              <Typography.Text type="secondary">服务器地址：</Typography.Text>
-              <Typography.Text copyable={{ text: SERVER_URL }} style={{ color: token.colorTextBase }}>
-                {SERVER_URL}
-              </Typography.Text>
-              {networkInfo?.hostname ? (
-                <Typography.Text type="secondary">主机 {networkInfo.hostname}</Typography.Text>
-              ) : null}
-              {networkInfo?.addresses?.length ? (
-                <>
-                  <Typography.Text type="secondary">局域网：</Typography.Text>
-                  <Space size={[8, 6]} wrap>
-                    {networkInfo.addresses.map((address) => (
-                      <Typography.Text
-                        key={address.url}
-                        copyable={{ text: address.url }}
-                        style={{
-                          color: token.colorPrimary,
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: 4,
-                        }}
-                      >
-                        <LinkOutlined />[{address.interface}] {address.address}
-                      </Typography.Text>
-                    ))}
-                  </Space>
-                </>
-              ) : null}
-              <Space size={8} align="center">
-                <Typography.Text type="secondary">当前客户端：</Typography.Text>
-                {selectedClientIp ? (
-                  <Tag color="processing">{selectedClientIp}</Tag>
-                ) : (
-                  <Typography.Text type="secondary">全部客户端</Typography.Text>
-                )}
-              </Space>
+            <Space size={8} align="center">
+              <Typography.Text type="secondary">当前客户端：</Typography.Text>
+              {selectedClientIp ? (
+                <Tag color="processing">{selectedClientIp}</Tag>
+              ) : (
+                <Typography.Text type="secondary">全部客户端</Typography.Text>
+              )}
             </Space>
           </Flex>
           <Flex align="center" gap={16} wrap justify="flex-end">
@@ -309,14 +279,54 @@ function AppShell({ sessions, connectionState, networkInfo, isDarkMode, onToggle
             padding: '16px 0',
           }}
         >
-          <SessionSidebar
-            sessions={visibleSessions}
-            selectedSessionId={selectedSession?.id ?? null}
-            onSelectSession={handleSessionChange}
-            clientIps={clientIpOptions}
-            selectedClientIp={selectedClientIp}
-            onSelectClientIp={setSelectedClientIp}
-          />
+          <div style={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <Flex
+              vertical
+              gap={12}
+              style={{ padding: '0 16px', color: token.colorTextBase }}
+            >
+              <Space direction="vertical" size={6}>
+                <Typography.Text type="secondary">服务器地址</Typography.Text>
+                <Typography.Text copyable={{ text: SERVER_URL }} style={{ color: token.colorTextBase }}>
+                  {SERVER_URL}
+                </Typography.Text>
+              </Space>
+              {networkInfo?.hostname ? (
+                <Typography.Text type="secondary">主机 {networkInfo.hostname}</Typography.Text>
+              ) : null}
+              {networkInfo?.addresses?.length ? (
+                <Space direction="vertical" size={4}>
+                  <Typography.Text type="secondary">局域网</Typography.Text>
+                  <Space direction="vertical" size={4}>
+                    {networkInfo.addresses.map((address) => (
+                      <Typography.Text
+                        key={address.url}
+                        copyable={{ text: address.url }}
+                        style={{
+                          color: token.colorPrimary,
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 4,
+                        }}
+                      >
+                        <LinkOutlined />[{address.interface}] {address.address}
+                      </Typography.Text>
+                    ))}
+                  </Space>
+                </Space>
+              ) : null}
+            </Flex>
+            <div style={{ flex: 1, minHeight: 0 }}>
+              <SessionSidebar
+                sessions={visibleSessions}
+                selectedSessionId={selectedSession?.id ?? null}
+                onSelectSession={handleSessionChange}
+                clientIps={clientIpOptions}
+                selectedClientIp={selectedClientIp}
+                onSelectClientIp={setSelectedClientIp}
+              />
+            </div>
+          </div>
         </Sider>
         <Content style={{ padding: 24, background: token.colorBgBase }}>
           <Flex vertical gap={16} style={{ height: '100%' }}>
