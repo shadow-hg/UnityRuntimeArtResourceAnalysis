@@ -270,4 +270,16 @@ export class HistoryStore {
     this.history.sessions = [];
     await writeHistory(this.history);
   }
+
+  async deleteSession(sessionId) {
+    await this.init();
+    const index = this.history.sessions.findIndex((session) => session.id === sessionId);
+    if (index === -1) {
+      return null;
+    }
+
+    const [removed] = this.history.sessions.splice(index, 1);
+    await writeHistory(this.history);
+    return removed || null;
+  }
 }

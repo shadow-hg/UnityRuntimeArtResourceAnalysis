@@ -366,6 +366,27 @@ app.get('/sessions/:sessionId', async (req, res) => {
   res.json(session);
 });
 
+app.delete('/sessions/:sessionId', async (req, res) => {
+  const { sessionId } = req.params;
+  if (!sessionId) {
+    return res.status(400).json({ message: 'Session id is required' });
+  }
+
+  try {
+    const removedSession = await historyStore.deleteSession(sessionId);
+    if (!removedSession) {
+      return res.status(404).json({ message: 'Session not found' });
+    }
+
+    await fs.rm(path.join(PREVIEW_ROOT, sessionId), { recursive: true, force: true });
+    io.emit('session:deleted', { sessionId });
+    return res.status(204).end();
+  } catch (err) {
+    console.error('Failed to delete telemetry session', err);
+    return res.status(500).json({ message: 'Unable to delete session' });
+  }
+});
+
 app.delete('/sessions', async (_req, res) => {
   try {
     await historyStore.clearHistory();

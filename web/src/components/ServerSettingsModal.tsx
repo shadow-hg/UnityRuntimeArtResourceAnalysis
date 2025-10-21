@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Button,
@@ -8,12 +8,13 @@ import {
   InputNumber,
   Modal,
   Popconfirm,
+  Select,
   Space,
   Spin,
   Switch,
   Typography,
 } from 'antd';
-import type { ServerConfig } from '../types';
+import type { ServerConfig, TelemetrySession } from '../types';
 
 interface ServerSettingsModalProps {
   open: boolean;
@@ -21,9 +22,12 @@ interface ServerSettingsModalProps {
   loading: boolean;
   saving: boolean;
   clearing: boolean;
+  sessions: TelemetrySession[];
+  deletingSessionId: string | null;
   onCancel: () => void;
   onSubmit: (config: Partial<ServerConfig>) => Promise<void>;
   onClearHistory: () => Promise<void>;
+  onDeleteSession: (sessionId: string) => Promise<void>;
 }
 
 interface ServerSettingsFormValues {
@@ -81,11 +85,15 @@ export default function ServerSettingsModal({
   loading,
   saving,
   clearing,
+  sessions,
+  deletingSessionId,
   onCancel,
   onSubmit,
   onClearHistory,
+  onDeleteSession,
 }: ServerSettingsModalProps) {
   const [form] = Form.useForm<ServerSettingsFormValues>();
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
 
   const initialValues = useMemo(() => buildInitialValues(config), [config]);
 
@@ -94,6 +102,37 @@ export default function ServerSettingsModal({
       form.setFieldsValue(initialValues);
     }
   }, [open, initialValues, form]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    setSelectedSessionId((current) => {
+      if (current && sessions.some((session) => session.id === current)) {
+        return current;
+      }
+      return sessions.length > 0 ? sessions[0].id : null;
+    });
+  }, [sessions, open]);
+
+  const sessionOptions = useMemo(
+    () =>
+      sessions.map((session) => {
+        let createdAtLabel = '未知时间';
+        if (session.createdAt) {
+          const createdAtDate = new Date(session.createdAt);
+          if (!Number.isNaN(createdAtDate.getTime())) {
+            createdAtLabel = createdAtDate.toLocaleString();
+          }
+        }
+        const ipLabel = session.clientIp ? ` · ${session.clientIp}` : '';
+        return {
+          value: session.id,
+          label: `${createdAtLabel}${ipLabel} · ${session.id}`,
+        };
+      }),
+    [sessions]
+  );
 
   const handleOk = async () => {
     try {
@@ -106,6 +145,20 @@ export default function ServerSettingsModal({
   const handleClearHistory = async () => {
     await onClearHistory();
   };
+
+  const handleDeleteSelectedSession = async () => {
+    if (!selectedSessionId) {
+      return;
+    }
+    try {
+      await onDeleteSession(selectedSessionId);
+    } catch (error) {
+      // 父级组件负责错误提示
+    }
+  };
+
+  const isDeletingSession = Boolean(deletingSessionId);
+  const isDeletingSelectedSession = deletingSessionId === selectedSessionId;
 
   return (
     <Modal
@@ -175,6 +228,38 @@ export default function ServerSettingsModal({
           >
             <InputNumber min={100} step={100} precision={0} style={{ width: '100%' }} />
           </Form.Item>
+
+          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+            <Typography.Text type="secondary">删除单个会话记录</Typography.Text>
+            {sessions.length > 0 ? (
+              <Space wrap>
+                <Select<string>
+                  style={{ minWidth: 240 }}
+                  value={selectedSessionId ?? undefined}
+                  onChange={(value) => setSelectedSessionId(value)}
+                  options={sessionOptions}
+                  placeholder="选择一个会话"
+                  disabled={isDeletingSession}
+                />
+                <Popconfirm
+                  title="确定要删除该会话及其数据吗？"
+                  onConfirm={handleDeleteSelectedSession}
+                  okButtonProps={{ danger: true, loading: isDeletingSelectedSession }}
+                  disabled={!selectedSessionId || isDeletingSession}
+                >
+                  <Button
+                    danger
+                    loading={isDeletingSelectedSession}
+                    disabled={!selectedSessionId || isDeletingSession}
+                  >
+                    删除选中会话
+                  </Button>
+                </Popconfirm>
+              </Space>
+            ) : (
+              <Typography.Text type="secondary">暂无会话记录可删除</Typography.Text>
+            )}
+          </Space>
 
           <Alert
             type="warning"

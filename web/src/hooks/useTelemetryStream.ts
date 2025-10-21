@@ -332,6 +332,14 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
       setSessions([]);
     }
 
+    function handleSessionDeleted(payload: { sessionId?: string } | undefined) {
+      const sessionId = payload?.sessionId;
+      if (!sessionId) {
+        return;
+      }
+      setSessions((prev) => prev.filter((session) => session.id !== sessionId));
+    }
+
     socket.on('connect', handleConnect);
     socket.on('disconnect', handleDisconnect);
     socket.on('connect_error', handleError);
@@ -340,6 +348,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
     socket.on('session:frame', handleSessionFrame);
     socket.on('config:update', handleConfigUpdate);
     socket.on('history:cleared', handleHistoryCleared);
+    socket.on('session:deleted', handleSessionDeleted);
 
     return () => {
       socket.off('connect', handleConnect);
@@ -350,6 +359,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
       socket.off('session:frame', handleSessionFrame);
       socket.off('config:update', handleConfigUpdate);
       socket.off('history:cleared', handleHistoryCleared);
+      socket.off('session:deleted', handleSessionDeleted);
       socket.disconnect();
     };
   }, [socket, maxSessionFrames, applyServerConfig]);
@@ -393,6 +403,29 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
     setSessions([]);
   }, [serverBaseUrl]);
 
+  const deleteServerSession = useCallback(
+    async (sessionId: string) => {
+      if (!serverBaseUrl) {
+        throw new Error('Server base URL is not configured');
+      }
+
+      const response = await fetch(`${serverBaseUrl}/sessions/${encodeURIComponent(sessionId)}`, {
+        method: 'DELETE',
+      });
+
+      if (response.status === 404) {
+        throw new Error('指定的会话不存在');
+      }
+
+      if (!response.ok) {
+        throw new Error(`Failed to delete telemetry session: ${response.statusText}`);
+      }
+
+      setSessions((prev) => prev.filter((session) => session.id !== sessionId));
+    },
+    [serverBaseUrl]
+  );
+
   return {
     sessions,
     connectionState,
@@ -401,6 +434,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
     isConfigLoading,
     updateServerConfig,
     clearServerHistory,
+    deleteServerSession,
     refreshServerConfig,
   };
 }

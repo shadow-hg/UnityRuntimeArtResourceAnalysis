@@ -502,6 +502,7 @@ export default function App() {
     isConfigLoading,
     updateServerConfig,
     clearServerHistory,
+    deleteServerSession,
   } = useTelemetryStream({ serverBaseUrl: SERVER_URL });
   const [isDarkMode, setIsDarkMode] = usePreferredDarkMode();
   const algorithm = isDarkMode ? theme.darkAlgorithm : theme.defaultAlgorithm;
@@ -509,6 +510,7 @@ export default function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [isClearingHistory, setIsClearingHistory] = useState(false);
+  const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
 
   const handleOpenSettings = useCallback(() => {
     setIsSettingsOpen(true);
@@ -550,6 +552,23 @@ export default function App() {
     }
   }, [clearServerHistory, messageApi]);
 
+  const handleDeleteSession = useCallback(
+    async (sessionId: string) => {
+      try {
+        setDeletingSessionId(sessionId);
+        await deleteServerSession(sessionId);
+        messageApi.success('已删除选定会话');
+      } catch (error) {
+        console.error(error);
+        const description = error instanceof Error ? error.message : '删除会话失败';
+        messageApi.error(`删除会话失败：${description}`);
+      } finally {
+        setDeletingSessionId(null);
+      }
+    },
+    [deleteServerSession, messageApi]
+  );
+
   useEffect(() => {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem('unityProfile:theme', isDarkMode ? 'dark' : 'light');
@@ -583,9 +602,12 @@ export default function App() {
         loading={isConfigLoading}
         saving={isSavingSettings}
         clearing={isClearingHistory}
+        sessions={sessions}
+        deletingSessionId={deletingSessionId}
         onCancel={handleCloseSettings}
         onSubmit={handleSaveSettings}
         onClearHistory={handleClearHistory}
+        onDeleteSession={handleDeleteSession}
       />
     </ConfigProvider>
   );
