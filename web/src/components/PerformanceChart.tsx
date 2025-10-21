@@ -399,11 +399,44 @@ export default function PerformanceChart({ frames, selectedFrame, onSelectFrame 
   );
 
   const handleChartClick = useCallback(
-    (params: { dataIndex?: number }) => {
+    (params: {
+      dataIndex?: number;
+      value?: number | string | null;
+      axisValue?: number | string | null;
+      name?: number | string;
+    }) => {
+      const normalizeFrameNumber = (value: unknown): number | null => {
+        if (typeof value === 'number' && Number.isFinite(value)) {
+          return value;
+        }
+        if (typeof value === 'string') {
+          const parsed = Number(value);
+          if (Number.isFinite(parsed)) {
+            return parsed;
+          }
+        }
+        return null;
+      };
+
       let frameNumber: number | null = null;
 
       if (typeof params.dataIndex === 'number') {
         frameNumber = frameNumbers[params.dataIndex] ?? null;
+      }
+
+      if (frameNumber == null) {
+        const candidateValues: Array<number | string | null | undefined> = [
+          params.value,
+          params.axisValue,
+          params.name,
+        ];
+
+        for (const candidate of candidateValues) {
+          frameNumber = normalizeFrameNumber(candidate);
+          if (frameNumber != null) {
+            break;
+          }
+        }
       }
 
       if (frameNumber == null && hoveredFrameNumberRef.current != null) {
