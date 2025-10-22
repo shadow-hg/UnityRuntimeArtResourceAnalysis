@@ -90,7 +90,7 @@ namespace UnityProfileV2.Telemetry
                         snapshotData.textures
                             .OrderByDescending(info => info.EstimatedBytes),
                         info => info.name,
-                        StringComparer.OrdinalIgnoreCase)
+                        StringComparison.OrdinalIgnoreCase)
                     .Take(maxPerCategory)
                     .ToArray()
                 : Array.Empty<TextureInfo>();
@@ -107,7 +107,7 @@ namespace UnityProfileV2.Telemetry
                         snapshotData.renderTextures
                             .OrderByDescending(info => info.EstimatedBytes),
                         info => info.name,
-                        StringComparer.OrdinalIgnoreCase)
+                        StringComparison.OrdinalIgnoreCase)
                     .Take(maxPerCategory)
                     .ToArray()
                 : Array.Empty<RenderTextureInfo>();
@@ -117,7 +117,7 @@ namespace UnityProfileV2.Telemetry
                         snapshotData.materials
                             .OrderByDescending(info => info.memoryBytes),
                         info => info.name,
-                        StringComparer.OrdinalIgnoreCase)
+                        StringComparison.OrdinalIgnoreCase)
                     .Take(maxPerCategory)
                     .ToArray()
                 : Array.Empty<MaterialInfo>();
@@ -142,14 +142,14 @@ namespace UnityProfileV2.Telemetry
             };
         }
 
-        private static IEnumerable<T> DistinctBy<T>(IEnumerable<T> source, Func<T, string> keySelector, IEqualityComparer<string> comparer)
+        private static IEnumerable<T> DistinctBy<T>(IEnumerable<T> source, Func<T, string> keySelector, StringComparison comparison = StringComparison.Ordinal)
         {
             if (source == null)
             {
                 yield break;
             }
 
-            var seenKeys = new HashSet<string>(comparer ?? StringComparer.Ordinal);
+            var seenKeys = new HashSet<string>(StringComparerFromComparison(comparison));
             foreach (var element in source)
             {
                 var key = keySelector != null ? keySelector(element) : null;
@@ -159,6 +159,26 @@ namespace UnityProfileV2.Telemetry
                 {
                     yield return element;
                 }
+            }
+        }
+
+        private static StringComparer StringComparerFromComparison(StringComparison comparison)
+        {
+            switch (comparison)
+            {
+                case StringComparison.CurrentCulture:
+                    return StringComparer.CurrentCulture;
+                case StringComparison.CurrentCultureIgnoreCase:
+                    return StringComparer.CurrentCultureIgnoreCase;
+                case StringComparison.InvariantCulture:
+                    return StringComparer.InvariantCulture;
+                case StringComparison.InvariantCultureIgnoreCase:
+                    return StringComparer.InvariantCultureIgnoreCase;
+                case StringComparison.OrdinalIgnoreCase:
+                    return StringComparer.OrdinalIgnoreCase;
+                case StringComparison.Ordinal:
+                default:
+                    return StringComparer.Ordinal;
             }
         }
 
