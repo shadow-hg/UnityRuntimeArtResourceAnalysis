@@ -17,26 +17,23 @@ namespace UnityProfileV2.Telemetry
     {
         public static TelemetrySnapshot CreateSnapshot(int maxAssetsPerCategory)
         {
-            return CreateSnapshotAsync(maxAssetsPerCategory).GetAwaiter().GetResult();
+            return CreateSnapshotInternal(maxAssetsPerCategory);
         }
 
-        public static async Task<TelemetrySnapshot> CreateSnapshotAsync(int maxAssetsPerCategory)
+        public static Task<TelemetrySnapshot> CreateSnapshotAsync(int maxAssetsPerCategory)
+        {
+            return Task.FromResult(CreateSnapshotInternal(maxAssetsPerCategory));
+        }
+
+        private static TelemetrySnapshot CreateSnapshotInternal(int maxAssetsPerCategory)
         {
             var maxPerCategory = Mathf.Max(1, maxAssetsPerCategory);
 
-            var texturesTask = Task.Run(() => CollectTextureInfos(maxPerCategory));
-            var meshesTask = Task.Run(() => CollectMeshInfos(maxPerCategory));
-            var renderTexturesTask = Task.Run(() => CollectRenderTextureInfos(maxPerCategory));
-            var materialsTask = Task.Run(() => CollectMaterialInfos(maxPerCategory));
-            var shadersTask = Task.Run(() => CollectShaderInfos(maxPerCategory));
-
-            await Task.WhenAll(texturesTask, meshesTask, renderTexturesTask, materialsTask, shadersTask).ConfigureAwait(false);
-
-            var textures = texturesTask.Result;
-            var meshes = meshesTask.Result;
-            var renderTextures = renderTexturesTask.Result;
-            var materials = materialsTask.Result;
-            var shaders = shadersTask.Result;
+            var textures = CollectTextureInfos(maxPerCategory);
+            var meshes = CollectMeshInfos(maxPerCategory);
+            var renderTextures = CollectRenderTextureInfos(maxPerCategory);
+            var materials = CollectMaterialInfos(maxPerCategory);
+            var shaders = CollectShaderInfos(maxPerCategory);
 
             return new TelemetrySnapshot
             {
