@@ -81,16 +81,22 @@ function normalizeCount(value: string | number | null | undefined): number {
 }
 
 function getShaderVariantBreakdown(shader: ShaderInfo): {
-  compiled: number;
-  total: number;
-  pending: number;
+  compiled: number | null;
+  total: number | null;
+  pending: number | null;
+  hasAccurateCounts: boolean;
 } {
+  const hasAccurateCounts = Boolean(shader.hasAccurateCompiledVariantCount);
+  if (!hasAccurateCounts) {
+    return { compiled: null, total: null, pending: null, hasAccurateCounts };
+  }
+
   const compiled = normalizeCount(shader.compiledVariantCount ?? null);
   const explicitTotal = normalizeCount(shader.totalVariantCount ?? null);
   const total = Math.max(explicitTotal > 0 ? explicitTotal : compiled, compiled);
   const explicitPending = normalizeCount(shader.pendingVariantCount ?? null);
   const pending = Math.max(explicitPending, total - compiled);
-  return { compiled, total, pending };
+  return { compiled, total, pending, hasAccurateCounts };
 }
 
 function resolveShaderVariantStats(frame: TelemetrySnapshot | null): ShaderVariantStats {
@@ -112,15 +118,21 @@ function resolveShaderVariantStats(frame: TelemetrySnapshot | null): ShaderVaria
     const totals = frame.shaders.reduce(
       (acc, shader) => {
         const breakdown = getShaderVariantBreakdown(shader);
+        if (!breakdown.hasAccurateCounts || breakdown.total == null || breakdown.compiled == null) {
+          return acc;
+        }
         acc.total += breakdown.total;
         acc.compiled += breakdown.compiled;
+        acc.count += 1;
         return acc;
       },
-      { total: 0, compiled: 0 }
+      { total: 0, compiled: 0, count: 0 }
     );
-    normalized.shaderCount = frame.shaders.length;
-    normalized.totalVariants = totals.total;
-    normalized.compiledVariants = totals.compiled;
+    if (totals.count > 0) {
+      normalized.shaderCount = totals.count;
+      normalized.totalVariants = totals.total;
+      normalized.compiledVariants = totals.compiled;
+    }
   }
 
   normalized.pendingVariants = Math.max(
@@ -399,28 +411,50 @@ function MaterialDetails({ material }: { material: MaterialInfo }) {
 }
 
 function ShaderSummary({ shader }: { shader: ShaderInfo }) {
-  const { compiled, total, pending } = getShaderVariantBreakdown(shader);
+  const breakdown = getShaderVariantBreakdown(shader);
+  const compiledLabel = breakdown.hasAccurateCounts
+    ? formatInteger(breakdown.compiled ?? 0)
+    : '未知';
+  const totalLabel = breakdown.hasAccurateCounts
+    ? formatInteger(breakdown.total ?? 0)
+    : '未知';
+  const pendingLabel =
+    breakdown.hasAccurateCounts && (breakdown.pending ?? 0) > 0
+      ? ` · 待编译 ${formatInteger(breakdown.pending ?? 0)}`
+      : '';
+  const availabilityLabel = breakdown.hasAccurateCounts ? '' : ' · 统计不可用';
   return (
     <Space direction="vertical" size={0}>
       <Typography.Text strong>{shader.name}</Typography.Text>
       <Typography.Text type="secondary">
-        变体 {formatInteger(compiled)} / {formatInteger(total)}
-        {pending > 0 ? ` · 待编译 ${formatInteger(pending)}` : ''}
+        变体 {compiledLabel} / {totalLabel}
+        {pendingLabel}
+        {availabilityLabel}
       </Typography.Text>
     </Space>
   );
 }
 
 function ShaderDetails({ shader }: { shader: ShaderInfo }) {
-  const { compiled, total, pending } = getShaderVariantBreakdown(shader);
+  const breakdown = getShaderVariantBreakdown(shader);
+  const compiledLabel = breakdown.hasAccurateCounts
+    ? formatInteger(breakdown.compiled ?? 0)
+    : '未知';
+  const totalLabel = breakdown.hasAccurateCounts
+    ? formatInteger(breakdown.total ?? 0)
+    : '未知';
+  const pendingLabel =
+    breakdown.hasAccurateCounts && (breakdown.pending ?? 0) > 0
+      ? ` · 待编译：${formatInteger(breakdown.pending ?? 0)}`
+      : '';
   return (
     <Space direction="vertical" size={8} style={{ width: '100%' }}>
       <Typography.Text type="secondary">
         资源路径：{shader.path || '未提供资源路径'}
       </Typography.Text>
       <Typography.Text type="secondary">
-        变体总数：{formatInteger(total)} · 已编译：{formatInteger(compiled)}
-        {pending > 0 ? ` · 待编译：${formatInteger(pending)}` : ''}
+        变体总数：{totalLabel} · 已编译：{compiledLabel}
+        {pendingLabel || (breakdown.hasAccurateCounts ? '' : ' · 统计不可用')}
       </Typography.Text>
       {shader.keywords.length ? (
         <Space wrap size={[8, 6]}>
@@ -482,6 +516,7 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
   }, [frame, normalizedSearch]);
 
   const shaderVariantStats = useMemo(() => resolveShaderVariantStats(frame), [frame]);
+  const supportsShaderVariantQueries = Boolean(frame?.supportsShaderVariantQueries);
 
   const textureColumns: ColumnsType<TextureInfo> = [
     {
@@ -642,23 +677,56 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
       title: '已编译变体',
       dataIndex: 'compiledVariantCount',
       key: 'compiledVariants',
-      render: (_: number | undefined, record) => formatInteger(getShaderVariantBreakdown(record).compiled),
-      sorter: (a, b) => getShaderVariantBreakdown(a).compiled - getShaderVariantBreakdown(b).compiled,
+      render: (_: number | undefined, record) => {
+        const breakdown = getShaderVariantBreakdown(record);
+        return breakdown.hasAccurateCounts
+          ? formatInteger(breakdown.compiled ?? 0)
+          : '未知';
+      },
+      sorter: (a, b) => {
+        const left = getShaderVariantBreakdown(a);
+        const right = getShaderVariantBreakdown(b);
+        const leftValue = left.compiled ?? -1;
+        const rightValue = right.compiled ?? -1;
+        return leftValue - rightValue;
+      },
       defaultSortOrder: 'descend',
     },
     {
       title: '变体总数',
       dataIndex: 'totalVariantCount',
       key: 'totalVariants',
-      render: (_: number | undefined, record) => formatInteger(getShaderVariantBreakdown(record).total),
-      sorter: (a, b) => getShaderVariantBreakdown(a).total - getShaderVariantBreakdown(b).total,
+      render: (_: number | undefined, record) => {
+        const breakdown = getShaderVariantBreakdown(record);
+        return breakdown.hasAccurateCounts
+          ? formatInteger(breakdown.total ?? 0)
+          : '未知';
+      },
+      sorter: (a, b) => {
+        const left = getShaderVariantBreakdown(a);
+        const right = getShaderVariantBreakdown(b);
+        const leftValue = left.total ?? -1;
+        const rightValue = right.total ?? -1;
+        return leftValue - rightValue;
+      },
     },
     {
       title: '待编译',
       dataIndex: 'pendingVariantCount',
       key: 'pendingVariants',
-      render: (_: number | undefined, record) => formatInteger(getShaderVariantBreakdown(record).pending),
-      sorter: (a, b) => getShaderVariantBreakdown(a).pending - getShaderVariantBreakdown(b).pending,
+      render: (_: number | undefined, record) => {
+        const breakdown = getShaderVariantBreakdown(record);
+        return breakdown.hasAccurateCounts
+          ? formatInteger(breakdown.pending ?? 0)
+          : '未知';
+      },
+      sorter: (a, b) => {
+        const left = getShaderVariantBreakdown(a);
+        const right = getShaderVariantBreakdown(b);
+        const leftValue = left.pending ?? -1;
+        const rightValue = right.pending ?? -1;
+        return leftValue - rightValue;
+      },
     },
     {
       title: 'Pass 数量',
@@ -713,11 +781,16 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
           <Typography.Text type="secondary">
             捕获时间 {new Date(frame.timestampUtc).toLocaleString()} · {filteredTextures.length} 纹理 ·{' '}
             {filteredRenderTextures.length} RenderTexture · {filteredMaterials.length} 材质 · {filteredMeshes.length} 网格 ·{' '}
-            {filteredShaders.length} Shader · 已编译变体 {formatInteger(shaderVariantStats.compiledVariants)} /{' '}
-            {formatInteger(shaderVariantStats.totalVariants)}
-            {shaderVariantStats.pendingVariants > 0
-              ? ` · 待编译 ${formatInteger(shaderVariantStats.pendingVariants)}`
-              : ''}
+            {filteredShaders.length} Shader ·{' '}
+            {supportsShaderVariantQueries
+              ? `已编译变体 ${formatInteger(shaderVariantStats.compiledVariants)} / ${formatInteger(
+                  shaderVariantStats.totalVariants
+                )}${
+                  shaderVariantStats.pendingVariants > 0
+                    ? ` · 待编译 ${formatInteger(shaderVariantStats.pendingVariants)}`
+                    : ''
+                }`
+              : 'Shader 变体统计不可用'}
           </Typography.Text>
         </Space>
       }
@@ -730,13 +803,23 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
           <Tag color="cyan">材质 {materialTotal}</Tag>
           <Tag color="purple">网格总大小 {meshTotal}</Tag>
           <Tag color="magenta">
-            Shader 变体 {formatInteger(shaderVariantStats.compiledVariants)} / {formatInteger(shaderVariantStats.totalVariants)}
-            {shaderVariantStats.pendingVariants > 0
-              ? ` · 待编译 ${formatInteger(shaderVariantStats.pendingVariants)}`
-              : ''}
+            {supportsShaderVariantQueries
+              ? `Shader 变体 ${formatInteger(shaderVariantStats.compiledVariants)} / ${formatInteger(
+                  shaderVariantStats.totalVariants
+                )}${
+                  shaderVariantStats.pendingVariants > 0
+                    ? ` · 待编译 ${formatInteger(shaderVariantStats.pendingVariants)}`
+                    : ''
+                }`
+              : 'Shader 变体统计不可用'}
           </Tag>
           <Tag color="gold">帧率 {formatFps(frame.fps)}</Tag>
         </Space>
+        {!supportsShaderVariantQueries && (
+          <Typography.Text type="warning">
+            当前运行平台不支持查询已编译 Shader 变体，统计将显示为未知。
+          </Typography.Text>
+        )}
         <Space style={{ width: '100%', flexWrap: 'wrap' }} size={12}>
           <Input.Search
             allowClear
@@ -829,11 +912,15 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
               label: `Shader (${filteredShaders.length})`,
               extra: (
                 <Typography.Text type="secondary">
-                  关键词 {shaderKeywordTotal} · 已编译 {formatInteger(shaderVariantStats.compiledVariants)} /{' '}
-                  {formatInteger(shaderVariantStats.totalVariants)}
-                  {shaderVariantStats.pendingVariants > 0
-                    ? ` · 待编译 ${formatInteger(shaderVariantStats.pendingVariants)}`
-                    : ''}
+                  {supportsShaderVariantQueries
+                    ? `关键词 ${shaderKeywordTotal} · 已编译 ${formatInteger(
+                        shaderVariantStats.compiledVariants
+                      )} / ${formatInteger(shaderVariantStats.totalVariants)}${
+                        shaderVariantStats.pendingVariants > 0
+                          ? ` · 待编译 ${formatInteger(shaderVariantStats.pendingVariants)}`
+                          : ''
+                      }`
+                    : `关键词 ${shaderKeywordTotal} · Shader 变体统计不可用`}
                 </Typography.Text>
               ),
               children: (

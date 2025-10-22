@@ -157,6 +157,7 @@ function sanitizeFramePayload(payload) {
     totalShaderBytes = 0,
     shaderMemoryBytes = 0,
     isIncremental = false,
+    supportsShaderVariantQueries = false,
     ...rest
   } = payload ?? {};
   const preview =
@@ -180,6 +181,7 @@ function sanitizeFramePayload(payload) {
     totalShaderBytes: ensureFiniteNumber(totalShaderBytes, 0),
     shaderMemoryBytes: ensureFiniteNumber(shaderMemoryBytes, 0),
     shaderVariantStats: normalizeShaderVariantStats(shaderVariantStats),
+    supportsShaderVariantQueries: Boolean(supportsShaderVariantQueries),
   };
 }
 

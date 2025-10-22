@@ -62,6 +62,7 @@ namespace UnityProfileV2.Telemetry
             public int TotalVariantCount;
             public int CompiledVariantCount;
             public int PendingVariantCount;
+            public bool HasAccurateCompiledVariantCount;
         }
 
         public static TelemetrySnapshot CreateSnapshot(int maxAssetsPerCategory)
@@ -171,28 +172,34 @@ namespace UnityProfileV2.Telemetry
         private static ShaderVariantInfo GetShaderVariantInfo(Shader shader)
         {
 #if UNITY_EDITOR
-            var (totalVariantCount, compiledVariantCount) = GetShaderVariantCountsFromEditor(shader);
+            var (totalVariantCount, compiledVariantCount, hasAccurateCompiledCount) =
+                GetShaderVariantCountsFromEditor(shader);
+
             if (totalVariantCount < 0)
             {
                 totalVariantCount = 0;
             }
 
-            if (compiledVariantCount < 0)
+            if (!hasAccurateCompiledCount || compiledVariantCount < 0)
             {
                 compiledVariantCount = 0;
             }
 
-            if (compiledVariantCount > totalVariantCount && totalVariantCount > 0)
+            if (hasAccurateCompiledCount && compiledVariantCount > totalVariantCount && totalVariantCount > 0)
             {
                 compiledVariantCount = totalVariantCount;
             }
 
-            var pending = Math.Max(0, totalVariantCount - compiledVariantCount);
+            var pending = hasAccurateCompiledCount
+                ? Math.Max(0, totalVariantCount - compiledVariantCount)
+                : 0;
+
             return new ShaderVariantInfo
             {
                 TotalVariantCount = totalVariantCount,
                 CompiledVariantCount = compiledVariantCount,
-                PendingVariantCount = pending
+                PendingVariantCount = pending,
+                HasAccurateCompiledVariantCount = hasAccurateCompiledCount
             };
 #else
             return default;
@@ -234,20 +241,29 @@ namespace UnityProfileV2.Telemetry
             ?? typeof(ShaderUtil).GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
                 .FirstOrDefault(method => string.Equals(method.Name, "GetShaderVariantEntries", StringComparison.Ordinal));
 
-        private static (int total, int compiled) GetShaderVariantCountsFromEditor(Shader shader)
+        private static readonly bool ShaderVariantQueriesSupported =
+            ShaderVariantCountWithBoolMethod != null || ShaderVariantEntriesFilteredMethod != null;
+
+        private static (int total, int compiled, bool hasAccurateCompiledCount) GetShaderVariantCountsFromEditor(Shader shader)
         {
             if (shader == null)
             {
-                return (0, 0);
+                return (0, 0, false);
             }
 
             var total = 0;
             var compiled = 0;
+            var hasAccurateCompiledCount = false;
 
             if (ShaderVariantCountWithBoolMethod != null)
             {
                 total = Math.Max(total, InvokeShaderVariantCount(ShaderVariantCountWithBoolMethod, shader, true));
-                compiled = Math.Max(compiled, InvokeShaderVariantCount(ShaderVariantCountWithBoolMethod, shader, false));
+                var compiledEstimate = InvokeShaderVariantCount(ShaderVariantCountWithBoolMethod, shader, false);
+                if (compiledEstimate >= 0)
+                {
+                    compiled = Math.Max(compiled, compiledEstimate);
+                    hasAccurateCompiledCount = true;
+                }
             }
 
             if (total <= 0 && ShaderVariantCountSingleMethod != null)
@@ -255,9 +271,10 @@ namespace UnityProfileV2.Telemetry
                 total = Math.Max(total, InvokeShaderVariantCount(ShaderVariantCountSingleMethod, shader, true));
             }
 
-            compiled = Math.Max(compiled, GetCompiledShaderVariantCount(shader, total));
+            compiled = Math.Max(compiled, GetCompiledShaderVariantCount(shader, total, out var compiledFromEntries));
+            hasAccurateCompiledCount = hasAccurateCompiledCount || compiledFromEntries;
 
-            return (total, compiled);
+            return (total, compiled, hasAccurateCompiledCount);
         }
 
         private static int InvokeShaderVariantCount(MethodInfo method, Shader shader, bool includeAllVariants)
@@ -293,8 +310,9 @@ namespace UnityProfileV2.Telemetry
             }
         }
 
-        private static int GetCompiledShaderVariantCount(Shader shader, int totalEstimate)
+        private static int GetCompiledShaderVariantCount(Shader shader, int totalEstimate, out bool hasAccurateCount)
         {
+            hasAccurateCount = false;
             if (shader == null)
             {
                 return 0;
@@ -302,7 +320,7 @@ namespace UnityProfileV2.Telemetry
 
             if (ShaderVariantEntriesFilteredMethod == null)
             {
-                return -1;
+                return 0;
             }
 
             try
@@ -383,6 +401,7 @@ namespace UnityProfileV2.Telemetry
                 var count = ExtractVariantCount(result);
                 if (count >= 0)
                 {
+                    hasAccurateCount = true;
                     return count;
                 }
 
@@ -395,17 +414,26 @@ namespace UnityProfileV2.Telemetry
 
                     if (args[index] is int refCount)
                     {
+                        hasAccurateCount = true;
                         return Math.Max(0, refCount);
                     }
                 }
 
-                return -1;
+                return 0;
             }
             catch
             {
-                return -1;
+                return 0;
             }
         }
+#else
+        private const bool ShaderVariantQueriesSupported = false;
+
+        private static (int total, int compiled, bool hasAccurateCompiledCount) GetShaderVariantCountsFromEditor(Shader shader)
+        {
+            return (0, 0, false);
+        }
+#endif
 
         private static int ExtractVariantCount(object result)
         {
@@ -454,26 +482,38 @@ namespace UnityProfileV2.Telemetry
 
         private static ShaderVariantStats CalculateShaderVariantStats(IReadOnlyList<ShaderInfo> shaders)
         {
-            if (shaders == null || shaders.Count == 0)
+            if (!ShaderVariantQueriesSupported || shaders == null || shaders.Count == 0)
             {
                 return default;
             }
 
             long totalVariants = 0;
             long compiledVariants = 0;
+            var trackedShaders = 0;
 
             for (var index = 0; index < shaders.Count; index += 1)
             {
                 var shader = shaders[index];
+                if (!shader.hasAccurateCompiledVariantCount)
+                {
+                    continue;
+                }
+
+                trackedShaders += 1;
                 totalVariants += Math.Max(0, shader.totalVariantCount);
                 compiledVariants += Math.Max(0, shader.compiledVariantCount);
+            }
+
+            if (trackedShaders == 0)
+            {
+                return default;
             }
 
             var pending = Math.Max(0, totalVariants - compiledVariants);
 
             return new ShaderVariantStats
             {
-                shaderCount = shaders.Count,
+                shaderCount = trackedShaders,
                 totalVariants = ClampToInt(totalVariants),
                 compiledVariants = ClampToInt(compiledVariants),
                 pendingVariants = ClampToInt(pending)
@@ -577,6 +617,9 @@ namespace UnityProfileV2.Telemetry
                 ? CalculateShaderVariantStats(snapshotData.shaders)
                 : default;
 
+            var supportsShaderVariantQueries = options.includeShaders && ShaderVariantQueriesSupported &&
+                snapshotData.shaders.Any(shader => shader.hasAccurateCompiledVariantCount);
+
             var textureDiff = ComputeCategoryDiff(state?.Textures, textures, hasBaseline, info => info.instanceId);
             var meshDiff = ComputeCategoryDiff(state?.Meshes, meshes, hasBaseline, info => info.instanceId);
             var renderTextureDiff = ComputeCategoryDiff(state?.RenderTextures, renderTextures, hasBaseline, info => info.instanceId);
@@ -596,7 +639,8 @@ namespace UnityProfileV2.Telemetry
                 materialOrder = materialDiff.Order,
                 shaders = shaderDiff.Updates,
                 shaderOrder = shaderDiff.Order,
-                shaderVariantStats = shaderVariantStats
+                shaderVariantStats = shaderVariantStats,
+                supportsShaderVariantQueries = supportsShaderVariantQueries
             };
 
             if (state != null)
@@ -1291,6 +1335,7 @@ namespace UnityProfileV2.Telemetry
             public string keywordHash;
             public int totalVariantCount;
             public int compiledVariantCount;
+            public bool hasAccurateCompiledVariantCount;
 
             public static ShaderSignature FromShader(Shader shader, ShaderVariantInfo variantInfo)
             {
@@ -1312,7 +1357,8 @@ namespace UnityProfileV2.Telemetry
                     passCount = shader != null ? shader.passCount : 0,
                     keywordHash = keywordHash,
                     totalVariantCount = variantInfo.TotalVariantCount,
-                    compiledVariantCount = variantInfo.CompiledVariantCount
+                    compiledVariantCount = variantInfo.CompiledVariantCount,
+                    hasAccurateCompiledVariantCount = variantInfo.HasAccurateCompiledVariantCount
                 };
             }
 
@@ -1323,7 +1369,8 @@ namespace UnityProfileV2.Telemetry
                     string.Equals(path, other.path, StringComparison.Ordinal) &&
                     string.Equals(keywordHash, other.keywordHash, StringComparison.Ordinal) &&
                     totalVariantCount == other.totalVariantCount &&
-                    compiledVariantCount == other.compiledVariantCount;
+                    compiledVariantCount == other.compiledVariantCount &&
+                    hasAccurateCompiledVariantCount == other.hasAccurateCompiledVariantCount;
             }
 
             public override bool Equals(object obj)
@@ -1341,6 +1388,7 @@ namespace UnityProfileV2.Telemetry
                     hashCode = (hashCode * 397) ^ (keywordHash != null ? StringComparer.Ordinal.GetHashCode(keywordHash) : 0);
                     hashCode = (hashCode * 397) ^ totalVariantCount;
                     hashCode = (hashCode * 397) ^ compiledVariantCount;
+                    hashCode = (hashCode * 397) ^ hasAccurateCompiledVariantCount.GetHashCode();
                     return hashCode;
                 }
             }
@@ -2169,6 +2217,7 @@ namespace UnityProfileV2.Telemetry
         public float fps;
         public float deltaTime;
         public bool isIncremental;
+        public bool supportsShaderVariantQueries;
         public int[] textureOrder = Array.Empty<int>();
         public TextureInfo[] textures = Array.Empty<TextureInfo>();
         public int[] meshOrder = Array.Empty<int>();
@@ -2405,6 +2454,7 @@ namespace UnityProfileV2.Telemetry
         public int totalVariantCount;
         public int compiledVariantCount;
         public int pendingVariantCount;
+        public bool hasAccurateCompiledVariantCount;
         public bool IsValid => !string.IsNullOrEmpty(name);
 
         public static ShaderInfo FromShader(Shader shader, AssetTelemetryUtility.ShaderVariantInfo variantInfo)
@@ -2418,7 +2468,8 @@ namespace UnityProfileV2.Telemetry
                 keywords = AssetTelemetryUtility.GetShaderKeywords(shader),
                 totalVariantCount = variantInfo.TotalVariantCount,
                 compiledVariantCount = variantInfo.CompiledVariantCount,
-                pendingVariantCount = variantInfo.PendingVariantCount
+                pendingVariantCount = variantInfo.PendingVariantCount,
+                hasAccurateCompiledVariantCount = variantInfo.HasAccurateCompiledVariantCount
             };
         }
     }
