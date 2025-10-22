@@ -88,6 +88,16 @@ export interface ShaderInfo {
   passCount: number;
   keywords: string[];
   memoryBytes?: number;
+  totalVariantCount?: number;
+  compiledVariantCount?: number;
+  pendingVariantCount?: number;
+}
+
+export interface ShaderVariantStats {
+  shaderCount: number;
+  totalVariants: number;
+  compiledVariants: number;
+  pendingVariants: number;
 }
 
 export interface TelemetrySnapshot {
@@ -112,6 +122,7 @@ export interface TelemetrySnapshot {
   materials?: MaterialInfo[];
   shaderOrder?: number[];
   shaders: ShaderInfo[];
+  shaderVariantStats?: ShaderVariantStats;
   framePreview?: FramePreviewInfo | null;
 }
 

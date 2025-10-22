@@ -14,3 +14,14 @@ export function formatPercentage(value: number, fractionDigits = 1): string {
   if (!Number.isFinite(value)) return '—';
   return `${(value * 100).toFixed(fractionDigits)}%`;
 }
+
+export function formatInteger(value: number | null | undefined, fallback = '0'): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+  const rounded = Math.round(value);
+  if (!Number.isFinite(rounded)) {
+    return fallback;
+  }
+  return rounded.toLocaleString();
+}
