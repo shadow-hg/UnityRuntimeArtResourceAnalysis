@@ -91,6 +91,7 @@ export interface ShaderInfo {
   totalVariantCount?: number;
   compiledVariantCount?: number;
   pendingVariantCount?: number;
+  hasAccurateCompiledVariantCount?: boolean;
 }
 
 export interface ShaderVariantStats {
@@ -112,6 +113,7 @@ export interface TelemetrySnapshot {
   totalMaterialBytes?: number;
   totalShaderBytes?: number;
   shaderMemoryBytes?: number;
+  supportsShaderVariantQueries?: boolean;
   textureOrder?: number[];
   textures: TextureInfo[];
   meshOrder?: number[];
