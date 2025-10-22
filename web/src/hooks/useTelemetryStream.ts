@@ -18,6 +18,14 @@ const DEFAULT_SERVER_CONFIG: ServerConfig = {
     disableFramePreview: false,
     maxAssetsPerCategory: 200,
     autoManageSession: true,
+    assetCategoryVersion: 1,
+    assetCategories: {
+      includeTextures: true,
+      includeMeshes: true,
+      includeRenderTextures: true,
+      includeMaterials: true,
+      includeShaders: true,
+    },
   },
   history: {
     maxSessionFrames: 10000,
@@ -69,7 +77,10 @@ function ensureBoolean(value: unknown, fallback: boolean): boolean {
 
 function sanitizeServerConfig(rawConfig: Partial<ServerConfig> | null | undefined): ServerConfig {
   const base: ServerConfig = {
-    clientDefaults: { ...DEFAULT_SERVER_CONFIG.clientDefaults },
+    clientDefaults: {
+      ...DEFAULT_SERVER_CONFIG.clientDefaults,
+      assetCategories: { ...DEFAULT_SERVER_CONFIG.clientDefaults.assetCategories },
+    },
     history: { ...DEFAULT_SERVER_CONFIG.history },
   };
 
@@ -95,6 +106,37 @@ function sanitizeServerConfig(rawConfig: Partial<ServerConfig> | null | undefine
       clientDefaults.autoManageSession,
       base.clientDefaults.autoManageSession
     );
+    base.clientDefaults.assetCategoryVersion = ensureNumber(
+      clientDefaults.assetCategoryVersion,
+      base.clientDefaults.assetCategoryVersion,
+      { min: 0, integer: true }
+    );
+
+    const assetCategories = clientDefaults.assetCategories;
+    if (assetCategories && typeof assetCategories === 'object') {
+      base.clientDefaults.assetCategories = {
+        includeTextures: ensureBoolean(
+          assetCategories.includeTextures,
+          base.clientDefaults.assetCategories.includeTextures
+        ),
+        includeMeshes: ensureBoolean(
+          assetCategories.includeMeshes,
+          base.clientDefaults.assetCategories.includeMeshes
+        ),
+        includeRenderTextures: ensureBoolean(
+          assetCategories.includeRenderTextures,
+          base.clientDefaults.assetCategories.includeRenderTextures
+        ),
+        includeMaterials: ensureBoolean(
+          assetCategories.includeMaterials,
+          base.clientDefaults.assetCategories.includeMaterials
+        ),
+        includeShaders: ensureBoolean(
+          assetCategories.includeShaders,
+          base.clientDefaults.assetCategories.includeShaders
+        ),
+      };
+    }
   }
 
   const history = rawConfig?.history;

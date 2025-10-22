@@ -36,6 +36,11 @@ interface ServerSettingsFormValues {
   disableFramePreview: boolean;
   maxAssetsPerCategory: number;
   autoManageSession: boolean;
+  includeTextures: boolean;
+  includeMeshes: boolean;
+  includeRenderTextures: boolean;
+  includeMaterials: boolean;
+  includeShaders: boolean;
   maxSessionFrames: number;
 }
 
@@ -45,13 +50,19 @@ const DEFAULT_FORM_VALUES: ServerSettingsFormValues = {
   disableFramePreview: false,
   maxAssetsPerCategory: 200,
   autoManageSession: true,
+  includeTextures: true,
+  includeMeshes: true,
+  includeRenderTextures: true,
+  includeMaterials: true,
+  includeShaders: true,
   maxSessionFrames: 10000,
 };
 
 function buildInitialValues(config: ServerConfig | null): ServerSettingsFormValues {
   if (!config) {
-    return DEFAULT_FORM_VALUES;
+    return { ...DEFAULT_FORM_VALUES };
   }
+  const categories = config.clientDefaults?.assetCategories;
   return {
     sampleIntervalSeconds: config.clientDefaults?.sampleIntervalSeconds ?? DEFAULT_FORM_VALUES.sampleIntervalSeconds,
     framePreviewScale: config.clientDefaults?.framePreviewScale ?? DEFAULT_FORM_VALUES.framePreviewScale,
@@ -59,13 +70,19 @@ function buildInitialValues(config: ServerConfig | null): ServerSettingsFormValu
     maxAssetsPerCategory:
       config.clientDefaults?.maxAssetsPerCategory ?? DEFAULT_FORM_VALUES.maxAssetsPerCategory,
     autoManageSession: config.clientDefaults?.autoManageSession ?? DEFAULT_FORM_VALUES.autoManageSession,
+    includeTextures: categories?.includeTextures ?? DEFAULT_FORM_VALUES.includeTextures,
+    includeMeshes: categories?.includeMeshes ?? DEFAULT_FORM_VALUES.includeMeshes,
+    includeRenderTextures: categories?.includeRenderTextures ?? DEFAULT_FORM_VALUES.includeRenderTextures,
+    includeMaterials: categories?.includeMaterials ?? DEFAULT_FORM_VALUES.includeMaterials,
+    includeShaders: categories?.includeShaders ?? DEFAULT_FORM_VALUES.includeShaders,
     maxSessionFrames: config.history?.maxSessionFrames ?? DEFAULT_FORM_VALUES.maxSessionFrames,
   };
 }
 
 async function submitForm(
   form: FormInstance<ServerSettingsFormValues>,
-  onSubmit: (config: Partial<ServerConfig>) => Promise<void>
+  onSubmit: (config: Partial<ServerConfig>) => Promise<void>,
+  currentConfig: ServerConfig | null
 ) {
   const values = await form.validateFields();
   const payload: Partial<ServerConfig> = {
@@ -75,6 +92,14 @@ async function submitForm(
       disableFramePreview: values.disableFramePreview,
       maxAssetsPerCategory: values.maxAssetsPerCategory,
       autoManageSession: values.autoManageSession,
+      assetCategoryVersion: currentConfig?.clientDefaults?.assetCategoryVersion ?? 1,
+      assetCategories: {
+        includeTextures: values.includeTextures,
+        includeMeshes: values.includeMeshes,
+        includeRenderTextures: values.includeRenderTextures,
+        includeMaterials: values.includeMaterials,
+        includeShaders: values.includeShaders,
+      },
     },
     history: {
       maxSessionFrames: values.maxSessionFrames,
@@ -140,7 +165,7 @@ export default function ServerSettingsModal({
 
   const handleOk = async () => {
     try {
-      await submitForm(form, onSubmit);
+      await submitForm(form, onSubmit, config);
     } catch (error) {
       // Validation errors are handled by antd Form; other errors bubble to the caller.
     }
@@ -224,6 +249,47 @@ export default function ServerSettingsModal({
             label="自动管理会话"
             name="autoManageSession"
             tooltip="根据 Unity 播放状态自动开启和结束会话"
+            valuePropName="checked"
+          >
+            <Switch checkedChildren="开启" unCheckedChildren="关闭" />
+          </Form.Item>
+          <Typography.Title level={5}>采集资源类别</Typography.Title>
+          <Form.Item
+            label="采集纹理数据"
+            name="includeTextures"
+            tooltip="关闭后客户端将跳过纹理资源的采集"
+            valuePropName="checked"
+          >
+            <Switch checkedChildren="开启" unCheckedChildren="关闭" />
+          </Form.Item>
+          <Form.Item
+            label="采集网格数据"
+            name="includeMeshes"
+            tooltip="关闭后客户端将跳过网格资源的采集"
+            valuePropName="checked"
+          >
+            <Switch checkedChildren="开启" unCheckedChildren="关闭" />
+          </Form.Item>
+          <Form.Item
+            label="采集渲染纹理数据"
+            name="includeRenderTextures"
+            tooltip="关闭后客户端将跳过渲染纹理资源的采集"
+            valuePropName="checked"
+          >
+            <Switch checkedChildren="开启" unCheckedChildren="关闭" />
+          </Form.Item>
+          <Form.Item
+            label="采集材质数据"
+            name="includeMaterials"
+            tooltip="关闭后客户端将跳过材质资源的采集"
+            valuePropName="checked"
+          >
+            <Switch checkedChildren="开启" unCheckedChildren="关闭" />
+          </Form.Item>
+          <Form.Item
+            label="采集着色器数据"
+            name="includeShaders"
+            tooltip="关闭后客户端将跳过着色器资源的采集"
             valuePropName="checked"
           >
             <Switch checkedChildren="开启" unCheckedChildren="关闭" />

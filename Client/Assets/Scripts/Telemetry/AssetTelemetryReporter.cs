@@ -35,6 +35,7 @@ namespace UnityProfileV2.Telemetry
         private const int ServerConfigRequestTimeoutSeconds = 5;
         private const int ServerConfigRetryCount = 3;
         private const float ServerConfigRetryDelaySeconds = 1f;
+        private const float ServerConfigPollingIntervalSeconds = 1f;
 
         private string _sessionId;
         private float _lastSampleTime;
@@ -43,9 +44,11 @@ namespace UnityProfileV2.Telemetry
         private int _snapshotSequence;
         private Coroutine _sampleCoroutine;
         private Coroutine _initializationCoroutine;
+        private Coroutine _configPollingCoroutine;
         private bool _sessionManagedAutomatically;
         private TelemetrySnapshotOptions _snapshotOptions = TelemetrySnapshotOptions.Default;
         private AssetTelemetryUtility.TelemetryCollectionState _collectionState = new();
+        private ClientDefaultsPayload? _lastAppliedClientDefaults;
 
         private static CoroutineRunner _coroutineRunner;
 
@@ -120,6 +123,8 @@ namespace UnityProfileV2.Telemetry
                 _sampleCoroutine = null;
             }
 
+            StopConfigPolling();
+
             if (!string.IsNullOrEmpty(_sessionId))
             {
                 var sessionId = _sessionId;
@@ -131,6 +136,7 @@ namespace UnityProfileV2.Telemetry
             _snapshotSequence = 0;
             _serverEndpoint = ResolveServerEndpoint();
             _collectionState = new AssetTelemetryUtility.TelemetryCollectionState();
+            _lastAppliedClientDefaults = null;
 
             if (wasActive)
             {
@@ -380,6 +386,7 @@ namespace UnityProfileV2.Telemetry
             LoadServerEndpointOverrideFromPreferences();
             _serverEndpoint = ResolveServerEndpoint();
             _sessionManagedAutomatically = false;
+            _lastAppliedClientDefaults = null;
 
             if (_initializationCoroutine != null)
             {
@@ -403,6 +410,8 @@ namespace UnityProfileV2.Telemetry
                 _sampleCoroutine = null;
             }
 
+            StopConfigPolling();
+
             if (_sessionManagedAutomatically && !string.IsNullOrEmpty(_sessionId))
             {
                 var sessionId = _sessionId;
@@ -417,6 +426,8 @@ namespace UnityProfileV2.Telemetry
         {
             yield return LoadServerConfigCoroutine();
 
+            StartConfigPolling();
+
             if (_autoManageSession)
             {
                 _sessionManagedAutomatically = true;
@@ -428,6 +439,45 @@ namespace UnityProfileV2.Telemetry
             }
 
             _initializationCoroutine = null;
+        }
+
+        private void StartConfigPolling()
+        {
+            if (_configPollingCoroutine != null)
+            {
+                return;
+            }
+
+            if (ServerConfigPollingIntervalSeconds <= Mathf.Epsilon)
+            {
+                return;
+            }
+
+            _configPollingCoroutine = StartCoroutine(ConfigPollingCoroutine());
+        }
+
+        private void StopConfigPolling()
+        {
+            if (_configPollingCoroutine == null)
+            {
+                return;
+            }
+
+            StopCoroutine(_configPollingCoroutine);
+            _configPollingCoroutine = null;
+        }
+
+        private IEnumerator ConfigPollingCoroutine()
+        {
+            var wait = new WaitForSecondsRealtime(Mathf.Max(ServerConfigPollingIntervalSeconds, 0.01f));
+
+            while (isActiveAndEnabled)
+            {
+                yield return wait;
+                yield return RefreshServerConfigCoroutine();
+            }
+
+            _configPollingCoroutine = null;
         }
 
         private IEnumerator RegisterSessionCoroutine()
@@ -466,6 +516,71 @@ namespace UnityProfileV2.Telemetry
             _sampleCoroutine = StartCoroutine(SampleCoroutine());
         }
 
+        private bool ApplyServerConfigurationFromJson(string json)
+        {
+            if (string.IsNullOrEmpty(json) || json.IndexOf("\"clientDefaults\"", StringComparison.Ordinal) < 0)
+            {
+                Debug.LogWarning("[UnityProfileV2] Server configuration response did not contain client defaults.");
+                return false;
+            }
+
+            try
+            {
+                var payload = JsonUtility.FromJson<ServerConfigurationPayload>(json);
+                ApplyServerConfiguration(payload);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[UnityProfileV2] Failed to parse server configuration: {ex.Message}");
+                return false;
+            }
+        }
+
+        private IEnumerator RefreshServerConfigCoroutine(bool allowReconnect = true)
+        {
+            if (string.IsNullOrEmpty(_serverEndpoint))
+            {
+                if (allowReconnect)
+                {
+                    yield return LoadServerConfigCoroutine();
+                }
+
+                yield break;
+            }
+
+            using (var request = UnityWebRequest.Get(_serverEndpoint + "/config"))
+            {
+                request.downloadHandler = new DownloadHandlerBuffer();
+
+                if (ServerConfigRequestTimeoutSeconds > 0)
+                {
+                    request.timeout = Mathf.Max(ServerConfigRequestTimeoutSeconds, 0);
+                }
+
+                yield return request.SendWebRequest();
+
+                if (request.result == UnityWebRequest.Result.Success)
+                {
+                    var json = request.downloadHandler.text;
+
+                    if (ApplyServerConfigurationFromJson(json))
+                    {
+                        yield break;
+                    }
+                }
+                else if (request.result != UnityWebRequest.Result.InProgress)
+                {
+                    Debug.LogWarning($"[UnityProfileV2] Failed to refresh server configuration: {request.error}");
+                }
+            }
+
+            if (allowReconnect)
+            {
+                yield return LoadServerConfigCoroutine();
+            }
+        }
+
         private IEnumerator LoadServerConfigCoroutine()
         {
             var initialEndpoint = _serverEndpoint;
@@ -494,20 +609,9 @@ namespace UnityProfileV2.Telemetry
                         {
                             var json = request.downloadHandler.text;
 
-                            if (string.IsNullOrEmpty(json) || json.IndexOf("\"clientDefaults\"", StringComparison.Ordinal) < 0)
+                            if (!ApplyServerConfigurationFromJson(json))
                             {
-                                Debug.LogWarning("[UnityProfileV2] Server configuration response did not contain client defaults.");
                                 yield break;
-                            }
-
-                            try
-                            {
-                                var payload = JsonUtility.FromJson<ServerConfigurationPayload>(json);
-                                ApplyServerConfiguration(payload);
-                            }
-                            catch (Exception ex)
-                            {
-                                Debug.LogWarning($"[UnityProfileV2] Failed to parse server configuration: {ex.Message}");
                             }
 
                             if (!string.Equals(_serverEndpoint, endpoint, StringComparison.Ordinal))
@@ -559,6 +663,11 @@ namespace UnityProfileV2.Telemetry
 
         private void ApplyClientDefaults(ClientDefaultsPayload payload)
         {
+            if (_lastAppliedClientDefaults.HasValue && AreClientDefaultsEqual(_lastAppliedClientDefaults.Value, payload))
+            {
+                return;
+            }
+
             if (payload.maxAssetsPerCategory <= 0)
             {
                 payload.maxAssetsPerCategory = _maxAssetsPerCategory;
@@ -586,6 +695,57 @@ namespace UnityProfileV2.Telemetry
             {
                 _snapshotOptions = TelemetrySnapshotOptions.Default;
             }
+
+            _lastAppliedClientDefaults = payload;
+        }
+
+        private static bool AreClientDefaultsEqual(ClientDefaultsPayload a, ClientDefaultsPayload b)
+        {
+            if (!Mathf.Approximately(a.sampleIntervalSeconds, b.sampleIntervalSeconds))
+            {
+                return false;
+            }
+
+            if (!Mathf.Approximately(a.framePreviewScale, b.framePreviewScale))
+            {
+                return false;
+            }
+
+            if (a.disableFramePreview != b.disableFramePreview)
+            {
+                return false;
+            }
+
+            if (a.maxAssetsPerCategory != b.maxAssetsPerCategory)
+            {
+                return false;
+            }
+
+            if (a.autoManageSession != b.autoManageSession)
+            {
+                return false;
+            }
+
+            if (a.assetCategoryVersion != b.assetCategoryVersion)
+            {
+                return false;
+            }
+
+            if (a.assetCategoryVersion <= 0 && b.assetCategoryVersion <= 0)
+            {
+                return true;
+            }
+
+            return AreAssetCategoriesEqual(a.assetCategories, b.assetCategories);
+        }
+
+        private static bool AreAssetCategoriesEqual(AssetCategoryPayload a, AssetCategoryPayload b)
+        {
+            return a.includeTextures == b.includeTextures &&
+                   a.includeMeshes == b.includeMeshes &&
+                   a.includeRenderTextures == b.includeRenderTextures &&
+                   a.includeMaterials == b.includeMaterials &&
+                   a.includeShaders == b.includeShaders;
         }
 
         private IEnumerator EndSessionCoroutine(string sessionId)
