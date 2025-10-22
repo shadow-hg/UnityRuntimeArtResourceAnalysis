@@ -4,6 +4,7 @@ import {
   Button,
   ConfigProvider,
   Flex,
+  Input,
   Layout,
   Space,
   Switch,
@@ -34,20 +35,7 @@ import { formatBytes, formatFps } from './utils/format';
 const { Header, Sider, Content } = Layout;
 
 const DEFAULT_SERVER_PORT = 48080;
-
-function resolveDefaultServerUrl(): string {
-  const fallback = `http://localhost:${DEFAULT_SERVER_PORT}`;
-  if (typeof window === 'undefined') {
-    return fallback;
-  }
-
-  const { protocol, hostname } = window.location;
-  const normalizedProtocol = protocol === 'https:' ? 'https:' : 'http:';
-  const normalizedHost = hostname || '127.0.0.1';
-  return `${normalizedProtocol}//${normalizedHost}:${DEFAULT_SERVER_PORT}`;
-}
-
-const SERVER_URL = import.meta.env.VITE_SERVER_URL?.trim() || resolveDefaultServerUrl();
+const DEFAULT_SERVER_IP = '0.0.0.0';
 const UNKNOWN_IP_LABEL = '未知 IP';
 
 function stripTrailingSlash(value: string): string {
@@ -152,6 +140,12 @@ interface AppShellProps {
   serverConfig: ServerConfig | null;
   onOpenSettings: () => void;
   isSettingsLoading: boolean;
+  serverBaseUrl: string;
+  serverIp: string;
+  serverPort: string;
+  onChangeServerIp: (value: string) => void;
+  onChangeServerPort: (value: string) => void;
+  onToggleConnection: () => void;
 }
 
 function AppShell({
@@ -163,14 +157,20 @@ function AppShell({
   serverConfig,
   onOpenSettings,
   isSettingsLoading,
+  serverBaseUrl,
+  serverIp,
+  serverPort,
+  onChangeServerIp,
+  onChangeServerPort,
+  onToggleConnection,
 }: AppShellProps) {
   const sortedSessions = useMemo(
     () => [...sessions].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
     [sessions]
   );
   const serverDisplayUrl = useMemo(
-    () => deriveDisplayServerUrl(networkInfo, SERVER_URL),
-    [networkInfo]
+    () => (serverBaseUrl ? deriveDisplayServerUrl(networkInfo, serverBaseUrl) : '未连接'),
+    [networkInfo, serverBaseUrl]
   );
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [selectedFrame, setSelectedFrame] = useState<TelemetrySnapshot | null>(null);
@@ -335,6 +335,7 @@ function AppShell({
     : '等待客户端连接…';
 
   const badgeMeta = connectionBadgeMeta[connectionState];
+  const isConnectionActive = Boolean(serverBaseUrl);
 
   return (
     <Layout style={{ minHeight: '100vh', background: token.colorBgBase }}>
@@ -375,6 +376,29 @@ function AppShell({
             </Flex>
           </Flex>
           <Flex align="center" gap={16} wrap justify="flex-end">
+            <Flex align="center" gap={8} wrap>
+              <Input
+                value={serverIp}
+                onChange={(event) => onChangeServerIp(event.target.value)}
+                placeholder="服务器 IP"
+                style={{ width: 150 }}
+                allowClear
+              />
+              <Input
+                value={serverPort}
+                onChange={(event) => onChangeServerPort(event.target.value)}
+                placeholder="端口"
+                style={{ width: 100 }}
+                inputMode="numeric"
+              />
+              <Button
+                type={isConnectionActive ? 'default' : 'primary'}
+                onClick={onToggleConnection}
+                loading={connectionState === 'connecting' && isConnectionActive}
+              >
+                {isConnectionActive ? '断开' : '连接'}
+              </Button>
+            </Flex>
             {!isAutoFollowLatest && frames.length > 0 ? (
               <Tooltip title="回到实时最新帧">
                 <Button icon={<ReloadOutlined />} onClick={resumeLive} type="primary" ghost>
@@ -483,9 +507,9 @@ function AppShell({
               samplingIntervalMs={samplingIntervalMs}
               onChangeSamplingInterval={setSamplingIntervalMs}
               onSelectFrame={handleFrameSelect}
-              serverBaseUrl={SERVER_URL}
+              serverBaseUrl={serverBaseUrl}
             />
-            <ResourceExplorer frame={selectedFrame} serverBaseUrl={SERVER_URL} />
+            <ResourceExplorer frame={selectedFrame} serverBaseUrl={serverBaseUrl} />
           </Flex>
         </Content>
       </Layout>
@@ -494,6 +518,10 @@ function AppShell({
 }
 
 export default function App() {
+  const [serverIp, setServerIp] = useState(DEFAULT_SERVER_IP);
+  const [serverPort, setServerPort] = useState(String(DEFAULT_SERVER_PORT));
+  const [serverBaseUrl, setServerBaseUrl] = useState<string>('');
+
   const {
     sessions,
     connectionState,
@@ -503,7 +531,7 @@ export default function App() {
     updateServerConfig,
     clearServerHistory,
     deleteServerSession,
-  } = useTelemetryStream({ serverBaseUrl: SERVER_URL });
+  } = useTelemetryStream({ serverBaseUrl });
   const [isDarkMode, setIsDarkMode] = usePreferredDarkMode();
   const algorithm = isDarkMode ? theme.darkAlgorithm : theme.defaultAlgorithm;
   const [messageApi, contextHolder] = message.useMessage();
@@ -511,6 +539,31 @@ export default function App() {
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [isClearingHistory, setIsClearingHistory] = useState(false);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
+
+  const handleServerIpChange = useCallback((value: string) => {
+    setServerIp(value);
+  }, []);
+
+  const handleServerPortChange = useCallback((value: string) => {
+    const normalized = value.replace(/[^0-9]/g, '');
+    setServerPort(normalized);
+  }, []);
+
+  const handleToggleConnection = useCallback(() => {
+    if (serverBaseUrl) {
+      setServerBaseUrl('');
+      return;
+    }
+
+    const trimmedIp = serverIp.trim() || DEFAULT_SERVER_IP;
+    const parsedPort = Number.parseInt(serverPort, 10);
+    if (!Number.isInteger(parsedPort) || parsedPort <= 0 || parsedPort > 65535) {
+      messageApi.error('请输入有效的端口号');
+      return;
+    }
+
+    setServerBaseUrl(`http://${trimmedIp}:${parsedPort}`);
+  }, [serverBaseUrl, serverIp, serverPort, messageApi]);
 
   const handleOpenSettings = useCallback(() => {
     setIsSettingsOpen(true);
@@ -595,6 +648,12 @@ export default function App() {
         serverConfig={serverConfig}
         onOpenSettings={handleOpenSettings}
         isSettingsLoading={isConfigLoading}
+        serverBaseUrl={serverBaseUrl}
+        serverIp={serverIp}
+        serverPort={serverPort}
+        onChangeServerIp={handleServerIpChange}
+        onChangeServerPort={handleServerPortChange}
+        onToggleConnection={handleToggleConnection}
       />
       <ServerSettingsModal
         open={isSettingsOpen}
