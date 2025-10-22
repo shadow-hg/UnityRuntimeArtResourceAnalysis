@@ -33,6 +33,7 @@ interface ServerSettingsModalProps {
 interface ServerSettingsFormValues {
   sampleIntervalSeconds: number;
   framePreviewScale: number;
+  disableFramePreview: boolean;
   maxAssetsPerCategory: number;
   autoManageSession: boolean;
   maxSessionFrames: number;
@@ -41,6 +42,7 @@ interface ServerSettingsFormValues {
 const DEFAULT_FORM_VALUES: ServerSettingsFormValues = {
   sampleIntervalSeconds: 0,
   framePreviewScale: 0.2,
+  disableFramePreview: false,
   maxAssetsPerCategory: 200,
   autoManageSession: true,
   maxSessionFrames: 10000,
@@ -53,6 +55,7 @@ function buildInitialValues(config: ServerConfig | null): ServerSettingsFormValu
   return {
     sampleIntervalSeconds: config.clientDefaults?.sampleIntervalSeconds ?? DEFAULT_FORM_VALUES.sampleIntervalSeconds,
     framePreviewScale: config.clientDefaults?.framePreviewScale ?? DEFAULT_FORM_VALUES.framePreviewScale,
+    disableFramePreview: config.clientDefaults?.disableFramePreview ?? DEFAULT_FORM_VALUES.disableFramePreview,
     maxAssetsPerCategory:
       config.clientDefaults?.maxAssetsPerCategory ?? DEFAULT_FORM_VALUES.maxAssetsPerCategory,
     autoManageSession: config.clientDefaults?.autoManageSession ?? DEFAULT_FORM_VALUES.autoManageSession,
@@ -69,6 +72,7 @@ async function submitForm(
     clientDefaults: {
       sampleIntervalSeconds: values.sampleIntervalSeconds,
       framePreviewScale: values.framePreviewScale,
+      disableFramePreview: values.disableFramePreview,
       maxAssetsPerCategory: values.maxAssetsPerCategory,
       autoManageSession: values.autoManageSession,
     },
@@ -199,6 +203,14 @@ export default function ServerSettingsModal({
             rules={[{ required: true, type: 'number', min: 0, max: 1 }]}
           >
             <InputNumber min={0} max={1} step={0.05} precision={2} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item
+            label="禁用帧截图"
+            name="disableFramePreview"
+            tooltip="启用后客户端将跳过帧截图采集流程"
+            valuePropName="checked"
+          >
+            <Switch checkedChildren="禁用" unCheckedChildren="开启" />
           </Form.Item>
           <Form.Item
             label="每类资源最大数量"

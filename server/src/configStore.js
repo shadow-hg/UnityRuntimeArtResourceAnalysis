@@ -7,6 +7,7 @@ const DEFAULT_CONFIG = {
   clientDefaults: {
     sampleIntervalSeconds: 0,
     framePreviewScale: 0.2,
+    disableFramePreview: false,
     maxAssetsPerCategory: 200,
     autoManageSession: true,
   },
@@ -55,6 +56,12 @@ function mergeConfig(baseConfig, overrideConfig) {
         max: 1,
         fallback: baseConfig.clientDefaults.framePreviewScale,
       });
+    }
+    if ('disableFramePreview' in clientDefaults) {
+      merged.clientDefaults.disableFramePreview = ensureBoolean(
+        clientDefaults.disableFramePreview,
+        baseConfig.clientDefaults.disableFramePreview
+      );
     }
     if ('maxAssetsPerCategory' in clientDefaults) {
       merged.clientDefaults.maxAssetsPerCategory = ensureNumber(clientDefaults.maxAssetsPerCategory, {
