@@ -7,20 +7,14 @@ param (
 $ErrorActionPreference = 'Stop'
 
 function Ensure-Command {
-    param (
-        [Parameter(Mandatory = $true)][string]$Name
-    )
-
+    param ([Parameter(Mandatory = $true)][string]$Name)
     if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
         throw "'$Name' is required to run this script."
     }
 }
 
 function Invoke-KillPort {
-    param (
-        [Parameter(Mandatory = $true)][int]$Port
-    )
-
+    param ([Parameter(Mandatory = $true)][int]$Port)
     Write-Host "Ensuring port $Port is available..."
     try {
         & npx --yes kill-port $Port | Out-Null
@@ -55,6 +49,10 @@ Ensure-Command -Name 'npm'
 Invoke-KillPort -Port $resolvedServerPort
 Invoke-KillPort -Port $resolvedWebPort
 
+# 获取 npm.cmd 的绝对路径（可能在 "C:\Program Files\nodejs\"）
+$npmPath = (Get-Command npm.cmd).Source
+$npmPathQuoted = '"' + $npmPath + '"'  # 关键：强制整体加引号
+
 $originalPort = $env:PORT
 $serverProcess = $null
 $webProcess = $null
@@ -63,13 +61,24 @@ Push-Location $scriptDir
 try {
     Write-Host "Starting API server on port $resolvedServerPort"
     $env:PORT = $resolvedServerPort.ToString()
-    $serverProcess = Start-Process -FilePath 'npm' -ArgumentList 'run', 'dev' -WorkingDirectory $serverDir -NoNewWindow -PassThru
+    $serverProcess = Start-Process `
+        -FilePath "cmd.exe" `
+        -ArgumentList "/c $npmPathQuoted run dev" `
+        -WorkingDirectory $serverDir `
+        -NoNewWindow `
+        -PassThru
 
     Write-Host "Starting web client on port $resolvedWebPort"
     $env:PORT = $resolvedWebPort.ToString()
-    $webProcess = Start-Process -FilePath 'npm' -ArgumentList 'run', 'dev' -WorkingDirectory $webDir -NoNewWindow -PassThru
+    $webProcess = Start-Process `
+        -FilePath "cmd.exe" `
+        -ArgumentList "/c $npmPathQuoted run dev" `
+        -WorkingDirectory $webDir `
+        -NoNewWindow `
+        -PassThru
 
     Write-Host "Both processes are running. Press Ctrl+C to stop."
+
     try {
         Wait-Process -Id $serverProcess.Id, $webProcess.Id
     } finally {
@@ -90,6 +99,5 @@ try {
     } else {
         Remove-Item Env:PORT -ErrorAction SilentlyContinue
     }
-
     Pop-Location
 }
