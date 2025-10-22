@@ -5,13 +5,15 @@ import os from 'os';
 import path from 'path';
 import { promises as fs } from 'fs';
 import crypto from 'crypto';
+import { fileURLToPath } from 'url';
 import { Server as SocketIOServer } from 'socket.io';
 import { v4 as uuidv4 } from 'uuid';
 import { HistoryStore } from './historyStore.js';
 import { createConfigStore } from './configStore.js';
 
 const PORT = process.env.PORT || 48080;
-const PREVIEW_ROOT = path.join(process.cwd(), 'data', 'previews');
+const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const PREVIEW_ROOT = path.join(moduleDir, '..', 'data', 'previews');
 const FRAME_PREVIEW_DIR = 'frames';
 const app = express();
 const server = http.createServer(app);

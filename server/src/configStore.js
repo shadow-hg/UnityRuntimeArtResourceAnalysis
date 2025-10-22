@@ -1,7 +1,9 @@
 import { promises as fs } from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
-const CONFIG_FILE = path.join(process.cwd(), 'data', 'server-config.json');
+const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const CONFIG_FILE = path.join(moduleDir, '..', 'data', 'server-config.json');
 
 const DEFAULT_CONFIG = {
   clientDefaults: {

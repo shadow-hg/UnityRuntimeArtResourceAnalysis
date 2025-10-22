@@ -1,7 +1,9 @@
 import { promises as fs } from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
-const DATA_FILE = path.join(process.cwd(), 'data', 'telemetry-history.json');
+const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const DATA_FILE = path.join(moduleDir, '..', 'data', 'telemetry-history.json');
 const DEFAULT_MAX_SESSION_FRAMES = 10000;
 
 function ensureNumeric(value, fallback = 0) {
