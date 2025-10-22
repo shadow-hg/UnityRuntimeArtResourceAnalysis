@@ -682,6 +682,8 @@ namespace UnityProfileV2.Telemetry
             _framePreviewDisabled = payload.disableFramePreview;
             _collectFps = payload.collectFps;
 
+            AssetTelemetryUtility.ConfigureFramePreviewScale(_framePreviewDisabled ? 0f : _framePreviewScale);
+
             if (payload.assetCategoryVersion > 0)
             {
                 _snapshotOptions = new TelemetrySnapshotOptions

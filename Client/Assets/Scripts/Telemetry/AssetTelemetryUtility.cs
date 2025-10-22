@@ -5,6 +5,7 @@ using System.Linq;
 using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
+using Unity.Collections;
 using UnityEngine;
 using UnityEngine.Experimental.Rendering;
 using UnityEngine.Rendering;
@@ -1276,6 +1277,13 @@ namespace UnityProfileV2.Telemetry
         private static readonly Dictionary<int, CachedEntry<MaterialInfo, MaterialSignature>> MaterialCache = new();
         private static readonly Dictionary<int, CachedEntry<ShaderInfo, ShaderSignature>> ShaderCache = new();
 
+        private static RenderTexture FramePreviewRenderTexture;
+        private static Texture2D FramePreviewTexture;
+        private static int FramePreviewWidth;
+        private static int FramePreviewHeight;
+        private static int FramePreviewScreenWidth;
+        private static int FramePreviewScreenHeight;
+
         private static readonly HashSet<int> TextureSeenIds = new();
         private static readonly HashSet<int> MeshSeenIds = new();
         private static readonly HashSet<int> RenderTextureSeenIds = new();
@@ -1306,11 +1314,114 @@ namespace UnityProfileV2.Telemetry
                 yield break;
             }
 
-            if (framePreviewScale <= 0f)
+            var normalizedScale = Mathf.Clamp01(framePreviewScale);
+            if (normalizedScale <= 0f)
             {
                 yield break;
             }
 
+            if (!SystemInfo.supportsAsyncGPUReadback)
+            {
+                yield return PopulateFramePreviewLegacy(snapshot, normalizedScale);
+                yield break;
+            }
+
+            yield return PopulateFramePreviewAsync(snapshot, normalizedScale);
+        }
+
+        public static void ConfigureFramePreviewScale(float framePreviewScale)
+        {
+            var normalizedScale = Mathf.Clamp01(framePreviewScale);
+            if (normalizedScale <= 0f)
+            {
+                ReleaseFramePreviewResources();
+                return;
+            }
+
+            if (!SystemInfo.supportsAsyncGPUReadback)
+            {
+                ReleaseFramePreviewResources();
+                return;
+            }
+
+            EnsureFramePreviewResources(normalizedScale);
+        }
+
+        private static IEnumerator PopulateFramePreviewAsync(TelemetrySnapshot snapshot, float normalizedScale)
+        {
+            if (!EnsureFramePreviewResources(normalizedScale))
+            {
+                yield break;
+            }
+
+            yield return new WaitForEndOfFrame();
+
+            if (!EnsureFramePreviewResources(normalizedScale))
+            {
+                yield break;
+            }
+
+            if (FramePreviewRenderTexture == null || FramePreviewTexture == null)
+            {
+                yield break;
+            }
+
+            try
+            {
+                ScreenCapture.CaptureScreenshotIntoRenderTexture(FramePreviewRenderTexture);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[UnityProfileV2] Failed to capture frame preview: {ex.Message}\n{ex.StackTrace}");
+                yield break;
+            }
+
+            var request = AsyncGPUReadback.Request(FramePreviewRenderTexture, 0, TextureFormat.RGBA32);
+            while (!request.done)
+            {
+                yield return null;
+            }
+
+            if (request.hasError)
+            {
+                Debug.LogWarning("[UnityProfileV2] Failed to read frame preview via AsyncGPUReadback.");
+                yield break;
+            }
+
+            var data = request.GetData<byte>();
+            if (!data.IsCreated || data.Length <= 0)
+            {
+                yield break;
+            }
+
+            FramePreviewTexture.LoadRawTextureData(data);
+            FramePreviewTexture.Apply(false, false);
+
+            try
+            {
+                var pngData = ImageConversion.EncodeToPNG(FramePreviewTexture);
+                if (pngData != null && pngData.Length > 0)
+                {
+                    var base64 = Convert.ToBase64String(pngData);
+                    var orientation = DetermineOrientation(FramePreviewTexture.width, FramePreviewTexture.height);
+                    snapshot.framePreview = new FramePreviewInfo
+                    {
+                        width = FramePreviewTexture.width,
+                        height = FramePreviewTexture.height,
+                        captureTimestampUtc = DateTime.UtcNow.ToString("o"),
+                        previewBase64 = $"data:image/png;base64,{base64}",
+                        orientation = string.IsNullOrEmpty(orientation) ? null : orientation
+                    };
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[UnityProfileV2] Failed to encode frame preview: {ex.Message}\n{ex.StackTrace}");
+            }
+        }
+
+        private static IEnumerator PopulateFramePreviewLegacy(TelemetrySnapshot snapshot, float normalizedScale)
+        {
             yield return new WaitForEndOfFrame();
 
             Texture2D screenshot = null;
@@ -1325,7 +1436,6 @@ namespace UnityProfileV2.Telemetry
                 Debug.LogWarning($"[UnityProfileV2] Failed to capture frame preview: {ex.Message}\n{ex.StackTrace}");
             }
 
-            var normalizedScale = Mathf.Clamp01(framePreviewScale);
             if (screenshot != null && normalizedScale > 0f && normalizedScale < 0.999f)
             {
                 scaledScreenshot = TryScaleFramePreview(screenshot, normalizedScale);
@@ -1366,6 +1476,113 @@ namespace UnityProfileV2.Telemetry
             {
                 UnityEngine.Object.Destroy(screenshot);
             }
+        }
+
+        private static bool EnsureFramePreviewResources(float normalizedScale)
+        {
+            if (normalizedScale <= 0f)
+            {
+                ReleaseFramePreviewResources();
+                return false;
+            }
+
+            var screenWidth = Screen.width;
+            var screenHeight = Screen.height;
+            if (screenWidth <= 0 || screenHeight <= 0)
+            {
+                return false;
+            }
+
+            var targetWidth = Mathf.Max(1, Mathf.RoundToInt(screenWidth * normalizedScale));
+            var targetHeight = Mathf.Max(1, Mathf.RoundToInt(screenHeight * normalizedScale));
+
+            if (FramePreviewRenderTexture != null &&
+                FramePreviewWidth == targetWidth &&
+                FramePreviewHeight == targetHeight &&
+                FramePreviewScreenWidth == screenWidth &&
+                FramePreviewScreenHeight == screenHeight)
+            {
+                if (!FramePreviewRenderTexture.IsCreated() && !FramePreviewRenderTexture.Create())
+                {
+                    ReleaseFramePreviewResources();
+                    return false;
+                }
+
+                if (FramePreviewTexture == null ||
+                    FramePreviewTexture.width != targetWidth ||
+                    FramePreviewTexture.height != targetHeight)
+                {
+                    if (FramePreviewTexture != null)
+                    {
+                        UnityEngine.Object.Destroy(FramePreviewTexture);
+                    }
+
+                    FramePreviewTexture = new Texture2D(targetWidth, targetHeight, TextureFormat.RGBA32, false)
+                    {
+                        hideFlags = HideFlags.HideAndDontSave
+                    };
+                }
+
+                FramePreviewScreenWidth = screenWidth;
+                FramePreviewScreenHeight = screenHeight;
+                return true;
+            }
+
+            ReleaseFramePreviewResources();
+
+            FramePreviewRenderTexture = new RenderTexture(targetWidth, targetHeight, 0, RenderTextureFormat.ARGB32)
+            {
+                hideFlags = HideFlags.HideAndDontSave,
+                useMipMap = false,
+                autoGenerateMips = false,
+                antiAliasing = 1
+            };
+
+            if (!FramePreviewRenderTexture.Create())
+            {
+                ReleaseFramePreviewResources();
+                return false;
+            }
+
+            FramePreviewTexture = new Texture2D(targetWidth, targetHeight, TextureFormat.RGBA32, false)
+            {
+                hideFlags = HideFlags.HideAndDontSave
+            };
+
+            FramePreviewWidth = targetWidth;
+            FramePreviewHeight = targetHeight;
+            FramePreviewScreenWidth = screenWidth;
+            FramePreviewScreenHeight = screenHeight;
+            return true;
+        }
+
+        private static void ReleaseFramePreviewResources()
+        {
+            if (FramePreviewRenderTexture != null)
+            {
+                try
+                {
+                    FramePreviewRenderTexture.Release();
+                }
+                catch
+                {
+                    // Ignored: Release may throw if the texture is already released or during domain reload.
+                }
+
+                UnityEngine.Object.Destroy(FramePreviewRenderTexture);
+                FramePreviewRenderTexture = null;
+            }
+
+            if (FramePreviewTexture != null)
+            {
+                UnityEngine.Object.Destroy(FramePreviewTexture);
+                FramePreviewTexture = null;
+            }
+
+            FramePreviewWidth = 0;
+            FramePreviewHeight = 0;
+            FramePreviewScreenWidth = 0;
+            FramePreviewScreenHeight = 0;
         }
 
         private static Texture2D TryScaleFramePreview(Texture2D source, float scale)
