@@ -172,6 +172,8 @@ export interface ClientDefaultsConfig {
   disableFramePreview: boolean;
   maxAssetsPerCategory: number;
   autoManageSession: boolean;
+  collectShaderVariants: boolean;
+  collectFps: boolean;
   assetCategoryVersion: number;
   assetCategories: AssetCategoryConfig;
 }

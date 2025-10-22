@@ -12,6 +12,8 @@ const DEFAULT_CONFIG = {
     disableFramePreview: false,
     maxAssetsPerCategory: 200,
     autoManageSession: true,
+    collectShaderVariants: true,
+    collectFps: true,
     assetCategoryVersion: 1,
     assetCategories: {
       includeTextures: true,
@@ -87,6 +89,18 @@ function mergeConfig(baseConfig, overrideConfig) {
       merged.clientDefaults.autoManageSession = ensureBoolean(
         clientDefaults.autoManageSession,
         baseConfig.clientDefaults.autoManageSession
+      );
+    }
+    if ('collectShaderVariants' in clientDefaults) {
+      merged.clientDefaults.collectShaderVariants = ensureBoolean(
+        clientDefaults.collectShaderVariants,
+        baseConfig.clientDefaults.collectShaderVariants
+      );
+    }
+    if ('collectFps' in clientDefaults) {
+      merged.clientDefaults.collectFps = ensureBoolean(
+        clientDefaults.collectFps,
+        baseConfig.clientDefaults.collectFps
       );
     }
     if ('assetCategoryVersion' in clientDefaults) {
