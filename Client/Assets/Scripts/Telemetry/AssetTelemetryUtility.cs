@@ -996,9 +996,7 @@ namespace UnityProfileV2.Telemetry
 
                 if (!readbackRequest.Equals(default))
                 {
-#if UNITY_2022_2_OR_NEWER
-                    readbackRequest.Dispose();
-#endif
+                    DisposeAsyncReadbackRequest(ref readbackRequest);
                 }
 
                 if (primaryRenderTexture != null)
@@ -1022,9 +1020,7 @@ namespace UnityProfileV2.Telemetry
             if (readbackRequest.hasError)
             {
                 Debug.LogWarning("[UnityProfileV2] GPU readback failed while capturing frame preview.");
-#if UNITY_2022_2_OR_NEWER
-                readbackRequest.Dispose();
-#endif
+                DisposeAsyncReadbackRequest(ref readbackRequest);
 
                 if (primaryRenderTexture != null)
                 {
@@ -1048,9 +1044,7 @@ namespace UnityProfileV2.Telemetry
             var managedData = new byte[gpuData.Length];
             gpuData.CopyTo(managedData);
 
-#if UNITY_2022_2_OR_NEWER
-            readbackRequest.Dispose();
-#endif
+            DisposeAsyncReadbackRequest(ref readbackRequest);
 
             if (primaryRenderTexture != null)
             {
@@ -1140,6 +1134,24 @@ namespace UnityProfileV2.Telemetry
 
             return width >= height ? "landscape" : "portrait";
         }
+
+#if UNITY_2022_2_OR_NEWER
+        private static void DisposeAsyncReadbackRequest(ref AsyncGPUReadbackRequest request)
+        {
+            if (request.Equals(default))
+            {
+                return;
+            }
+
+            request.Dispose();
+            request = default;
+        }
+#else
+        private static void DisposeAsyncReadbackRequest(ref AsyncGPUReadbackRequest request)
+        {
+            request = default;
+        }
+#endif
 
         internal static string GetAssetPath(UnityEngine.Object obj)
         {
