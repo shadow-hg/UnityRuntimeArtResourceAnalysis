@@ -4,7 +4,15 @@
     "framePreviewScale": 0.2,
     "disableFramePreview": false,
     "maxAssetsPerCategory": 200,
-    "autoManageSession": true
+    "autoManageSession": true,
+    "assetCategoryVersion": 1,
+    "assetCategories": {
+      "includeTextures": true,
+      "includeMeshes": true,
+      "includeRenderTextures": true,
+      "includeMaterials": true,
+      "includeShaders": true
+    }
   },
   "history": {
     "maxSessionFrames": 10000

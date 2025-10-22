@@ -43,6 +43,7 @@ namespace UnityProfileV2.Telemetry
         private Coroutine _sampleCoroutine;
         private Coroutine _initializationCoroutine;
         private bool _sessionManagedAutomatically;
+        private TelemetrySnapshotOptions _snapshotOptions = TelemetrySnapshotOptions.Default;
 
         private static CoroutineRunner _coroutineRunner;
 
@@ -461,6 +462,23 @@ namespace UnityProfileV2.Telemetry
             _maxAssetsPerCategory = Mathf.Max(payload.maxAssetsPerCategory, 1);
             _autoManageSession = payload.autoManageSession;
             _framePreviewDisabled = payload.disableFramePreview;
+
+            if (payload.assetCategoryVersion > 0)
+            {
+                _snapshotOptions = new TelemetrySnapshotOptions
+                {
+                    includeTextures = payload.assetCategories.includeTextures,
+                    includeMeshes = payload.assetCategories.includeMeshes,
+                    includeRenderTextures = payload.assetCategories.includeRenderTextures,
+                    includeMaterials = payload.assetCategories.includeMaterials,
+                    includeShaders = payload.assetCategories.includeShaders,
+                    hasExplicitSelection = true
+                };
+            }
+            else
+            {
+                _snapshotOptions = TelemetrySnapshotOptions.Default;
+            }
         }
 
         private IEnumerator EndSessionCoroutine(string sessionId)
@@ -486,7 +504,7 @@ namespace UnityProfileV2.Telemetry
 
         private IEnumerator SendSnapshot()
         {
-            var snapshotTask = AssetTelemetryUtility.CreateSnapshotAsync(_maxAssetsPerCategory);
+            var snapshotTask = AssetTelemetryUtility.CreateSnapshotAsync(_maxAssetsPerCategory, _snapshotOptions);
 
             while (!snapshotTask.IsCompleted)
             {
@@ -591,6 +609,8 @@ namespace UnityProfileV2.Telemetry
             public bool disableFramePreview;
             public int maxAssetsPerCategory;
             public bool autoManageSession;
+            public int assetCategoryVersion;
+            public AssetCategoryPayload assetCategories;
         }
 
         [Serializable]
@@ -598,6 +618,16 @@ namespace UnityProfileV2.Telemetry
         {
             public string sessionId;
             public ClientDefaultsPayload clientConfig;
+        }
+
+        [Serializable]
+        private struct AssetCategoryPayload
+        {
+            public bool includeTextures;
+            public bool includeMeshes;
+            public bool includeRenderTextures;
+            public bool includeMaterials;
+            public bool includeShaders;
         }
 
         private static CoroutineRunner EnsureCoroutineRunner()
