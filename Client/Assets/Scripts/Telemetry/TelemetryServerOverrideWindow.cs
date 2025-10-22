@@ -19,6 +19,10 @@ namespace UnityProfileV2.Telemetry
         private const int BaseButtonFontSize = 18;
         private const int BaseTextFieldFontSize = 18;
         private const int BaseWindowTitleFontSize = 20;
+        private const int BaseSectionHeaderFontSize = 19;
+        private const float WindowPadding = 12f;
+        private const float SectionSpacing = 10f;
+        private const float ControlSpacing = 6f;
 
         [SerializeField]
         private Rect _expandedWindowRect = new Rect(20f, 20f, 360f, 220f);
@@ -49,11 +53,14 @@ namespace UnityProfileV2.Telemetry
         private float _statusMessageTimestamp;
         private string _autoDetectedEndpoint;
         private float _nextAutoDetectedRefreshTime;
+        private Vector2 _contentScrollPosition;
         private GUIStyle _labelStyle;
         private GUIStyle _statusLabelStyle;
         private GUIStyle _buttonStyle;
         private GUIStyle _textFieldStyle;
         private GUIStyle _windowStyle;
+        private GUIStyle _sectionBoxStyle;
+        private GUIStyle _sectionHeaderStyle;
 
         private void Awake()
         {
@@ -142,45 +149,64 @@ namespace UnityProfileV2.Telemetry
         {
             GUILayout.BeginVertical();
 
-            GUILayout.Label("服务器地址覆盖 (留空以使用自动检测)", _labelStyle);
+            _contentScrollPosition = GUILayout.BeginScrollView(_contentScrollPosition, GUILayout.ExpandHeight(true));
+
+            GUILayout.BeginVertical(_sectionBoxStyle);
+            GUILayout.Label("服务器地址覆盖", _sectionHeaderStyle);
+            GUILayout.Space(ControlSpacing * _uiScale);
+            GUILayout.Label("输入覆盖的服务器地址 (留空以使用自动检测)", _labelStyle);
+            GUILayout.Space(ControlSpacing * 0.5f * _uiScale);
             GUI.SetNextControlName("TelemetryServerOverrideField");
-            _inputValue = GUILayout.TextField(_inputValue ?? string.Empty, _textFieldStyle, GUILayout.ExpandWidth(true));
+            _inputValue = GUILayout.TextField(_inputValue ?? string.Empty, _textFieldStyle,
+                GUILayout.ExpandWidth(true), GUILayout.MinHeight(36f * _uiScale));
+            GUILayout.EndVertical();
 
-            GUILayout.Space(4f * _uiScale);
+            GUILayout.Space(SectionSpacing * _uiScale);
 
+            GUILayout.BeginVertical(_sectionBoxStyle);
+            GUILayout.Label("当前状态", _sectionHeaderStyle);
+            GUILayout.Space(ControlSpacing * _uiScale);
             GUILayout.Label($"当前使用: {_reporter.CurrentServerEndpoint}", _labelStyle);
             GUILayout.Label($"自动检测: {_autoDetectedEndpoint}", _labelStyle);
 
             if (!string.IsNullOrEmpty(_statusMessage))
             {
+                GUILayout.Space(ControlSpacing * _uiScale);
                 GUILayout.Label(_statusMessage, _statusLabelStyle);
             }
+            GUILayout.EndVertical();
 
-            GUILayout.Space(8f * _uiScale);
+            GUILayout.Space(SectionSpacing * _uiScale);
 
-            GUILayout.BeginHorizontal();
-            if (GUILayout.Button("应用地址", _buttonStyle, GUILayout.Height(32f * _uiScale)))
+            GUILayout.BeginVertical(_sectionBoxStyle);
+            GUILayout.Label("操作", _sectionHeaderStyle);
+            GUILayout.Space(ControlSpacing * _uiScale);
+            if (GUILayout.Button("应用地址", _buttonStyle, GUILayout.Height(40f * _uiScale)))
             {
                 ApplyOverride(_inputValue);
             }
 
-            if (GUILayout.Button("使用自动", _buttonStyle, GUILayout.Height(32f * _uiScale)))
+            GUILayout.Space(ControlSpacing * _uiScale);
+
+            if (GUILayout.Button("使用自动", _buttonStyle, GUILayout.Height(40f * _uiScale)))
             {
                 ApplyOverride(string.Empty);
             }
-            GUILayout.EndHorizontal();
 
-            GUILayout.Space(6f * _uiScale);
+            GUILayout.Space(ControlSpacing * _uiScale);
 
-            if (GUILayout.Button("折叠", _buttonStyle, GUILayout.Height(28f * _uiScale)))
+            if (GUILayout.Button("折叠", _buttonStyle, GUILayout.Height(32f * _uiScale)))
             {
                 _isExpanded = false;
                 _currentWindowRect = ClampRectToScreen(GetCenteredRect(_scaledCollapsedButtonSize.x, _scaledCollapsedButtonSize.y));
             }
+            GUILayout.EndVertical();
+
+            GUILayout.EndScrollView();
 
             GUILayout.EndVertical();
 
-            GUI.DragWindow(new Rect(0f, 0f, 10000f, 24f * _uiScale));
+            GUI.DragWindow(new Rect(0f, 0f, 10000f, 36f * _uiScale));
         }
 
         private void ApplyOverride(string value)
@@ -232,9 +258,18 @@ namespace UnityProfileV2.Telemetry
 
             _uiScale = Mathf.Clamp(targetScale, _minimumScale, _maximumScale);
 
-            _scaledExpandedWindowRect = new Rect(0f, 0f, _referenceExpandedWindowRect.width * _uiScale,
-                _referenceExpandedWindowRect.height * _uiScale);
-            _scaledCollapsedButtonSize = _referenceCollapsedButtonSize * _uiScale;
+            var scaledWidth = _referenceExpandedWindowRect.width * _uiScale;
+            var scaledHeight = _referenceExpandedWindowRect.height * _uiScale;
+            var horizontalMargin = Mathf.Clamp(Screen.width * 0.05f, 12f, 48f);
+            var verticalMargin = Mathf.Clamp(Screen.height * 0.1f, 18f, 96f);
+            var maxWidth = Mathf.Min(Mathf.Max(240f, Screen.width - horizontalMargin), Screen.width - 8f);
+            var maxHeight = Mathf.Min(Mathf.Max(220f, Screen.height - verticalMargin), Screen.height - 8f);
+
+            _scaledExpandedWindowRect = new Rect(0f, 0f, Mathf.Min(scaledWidth, maxWidth), Mathf.Min(scaledHeight, maxHeight));
+
+            var collapsedWidth = _referenceCollapsedButtonSize.x * _uiScale;
+            var collapsedHeight = _referenceCollapsedButtonSize.y * _uiScale;
+            _scaledCollapsedButtonSize = new Vector2(Mathf.Min(collapsedWidth, Screen.width * 0.8f), collapsedHeight);
 
             _stylesDirty = true;
 
@@ -260,7 +295,8 @@ namespace UnityProfileV2.Telemetry
 
         private void EnsureGuiStyles()
         {
-            if (!_stylesDirty && _labelStyle != null && _buttonStyle != null && _textFieldStyle != null && _windowStyle != null)
+            if (!_stylesDirty && _labelStyle != null && _buttonStyle != null && _textFieldStyle != null && _windowStyle != null &&
+                _sectionBoxStyle != null && _sectionHeaderStyle != null && _statusLabelStyle != null)
             {
                 return;
             }
@@ -269,6 +305,8 @@ namespace UnityProfileV2.Telemetry
             var buttonFontSize = Mathf.RoundToInt(BaseButtonFontSize * _uiScale);
             var textFieldFontSize = Mathf.RoundToInt(BaseTextFieldFontSize * _uiScale);
             var windowTitleFontSize = Mathf.RoundToInt(BaseWindowTitleFontSize * _uiScale);
+            var sectionHeaderFontSize = Mathf.RoundToInt(BaseSectionHeaderFontSize * _uiScale);
+            var padding = Mathf.RoundToInt(WindowPadding * _uiScale);
 
             _labelStyle = new GUIStyle(GUI.skin.label)
             {
@@ -283,7 +321,9 @@ namespace UnityProfileV2.Telemetry
 
             _buttonStyle = new GUIStyle(GUI.skin.button)
             {
-                fontSize = buttonFontSize
+                fontSize = buttonFontSize,
+                wordWrap = true,
+                alignment = TextAnchor.MiddleCenter
             };
 
             _textFieldStyle = new GUIStyle(GUI.skin.textField)
@@ -293,7 +333,22 @@ namespace UnityProfileV2.Telemetry
 
             _windowStyle = new GUIStyle(GUI.skin.window)
             {
-                fontSize = windowTitleFontSize
+                fontSize = windowTitleFontSize,
+                padding = new RectOffset(padding, padding, padding, padding)
+            };
+
+            _sectionBoxStyle = new GUIStyle(GUI.skin.box)
+            {
+                fontSize = labelFontSize,
+                padding = new RectOffset(padding, padding, padding, padding),
+                margin = new RectOffset(0, 0, Mathf.RoundToInt(ControlSpacing * _uiScale), Mathf.RoundToInt(ControlSpacing * _uiScale))
+            };
+            _sectionBoxStyle.stretchWidth = true;
+
+            _sectionHeaderStyle = new GUIStyle(_labelStyle)
+            {
+                fontSize = sectionHeaderFontSize,
+                fontStyle = FontStyle.Bold
             };
 
             _stylesDirty = false;
