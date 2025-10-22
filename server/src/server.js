@@ -121,22 +121,15 @@ function normalizeShaderVariantStats(stats) {
     return {
       shaderCount: 0,
       totalVariants: 0,
-      compiledVariants: 0,
-      pendingVariants: 0,
     };
   }
 
   const totalVariants = ensureNonNegativeInteger(stats.totalVariants, 0);
-  const compiledVariants = ensureNonNegativeInteger(stats.compiledVariants, 0);
   const shaderCount = ensureNonNegativeInteger(stats.shaderCount, 0);
-  const pendingFallback = Math.max(totalVariants - compiledVariants, 0);
-  const pendingVariants = ensureNonNegativeInteger(stats.pendingVariants, pendingFallback);
 
   return {
     shaderCount,
     totalVariants,
-    compiledVariants,
-    pendingVariants: Math.max(pendingFallback, pendingVariants),
   };
 }
 
@@ -320,27 +313,16 @@ async function expandIncrementalFrame(sessionId, frame) {
     if (
       aggregatedStats.shaderCount === 0 &&
       aggregatedStats.totalVariants === 0 &&
-      aggregatedStats.compiledVariants === 0 &&
       Array.isArray(normalizedFrame.shaders) &&
       normalizedFrame.shaders.length > 0
     ) {
       let totalVariants = 0;
-      let compiledVariants = 0;
       normalizedFrame.shaders.forEach((shader) => {
         totalVariants += ensureNonNegativeInteger(shader?.totalVariantCount, 0);
-        compiledVariants += ensureNonNegativeInteger(shader?.compiledVariantCount, 0);
       });
-      if (compiledVariants > totalVariants) {
-        totalVariants = compiledVariants;
-      }
       aggregatedStats.shaderCount = normalizedFrame.shaders.length;
       aggregatedStats.totalVariants = totalVariants;
-      aggregatedStats.compiledVariants = compiledVariants;
     }
-    aggregatedStats.pendingVariants = Math.max(
-      aggregatedStats.totalVariants - aggregatedStats.compiledVariants,
-      0
-    );
     normalizedFrame.shaderVariantStats = aggregatedStats;
   };
 

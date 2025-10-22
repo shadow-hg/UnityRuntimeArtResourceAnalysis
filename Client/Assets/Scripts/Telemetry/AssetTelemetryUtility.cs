@@ -60,8 +60,6 @@ namespace UnityProfileV2.Telemetry
         public struct ShaderVariantInfo
         {
             public int TotalVariantCount;
-            public int CompiledVariantCount;
-            public int PendingVariantCount;
         }
 
         public static TelemetrySnapshot CreateSnapshot(int maxAssetsPerCategory)
@@ -171,28 +169,15 @@ namespace UnityProfileV2.Telemetry
         private static ShaderVariantInfo GetShaderVariantInfo(Shader shader)
         {
 #if UNITY_EDITOR
-            var (totalVariantCount, compiledVariantCount) = GetShaderVariantCountsFromEditor(shader);
+            var totalVariantCount = GetShaderVariantCountFromEditor(shader);
             if (totalVariantCount < 0)
             {
                 totalVariantCount = 0;
             }
 
-            if (compiledVariantCount < 0)
-            {
-                compiledVariantCount = 0;
-            }
-
-            if (compiledVariantCount > totalVariantCount)
-            {
-                totalVariantCount = compiledVariantCount;
-            }
-
-            var pending = Math.Max(0, totalVariantCount - compiledVariantCount);
             return new ShaderVariantInfo
             {
                 TotalVariantCount = totalVariantCount,
-                CompiledVariantCount = compiledVariantCount,
-                PendingVariantCount = pending
             };
 #else
             return default;
@@ -228,20 +213,18 @@ namespace UnityProfileV2.Telemetry
                 new[] { typeof(Shader) },
                 null);
 
-        private static (int total, int compiled) GetShaderVariantCountsFromEditor(Shader shader)
+        private static int GetShaderVariantCountFromEditor(Shader shader)
         {
             if (shader == null)
             {
-                return (0, 0);
+                return 0;
             }
 
             var total = 0;
-            var compiled = 0;
 
             if (ShaderVariantCountWithBoolMethod != null)
             {
                 total = Math.Max(total, InvokeShaderVariantCount(ShaderVariantCountWithBoolMethod, shader, true));
-                compiled = Math.Max(compiled, InvokeShaderVariantCount(ShaderVariantCountWithBoolMethod, shader, false));
             }
 
             if (total <= 0 && ShaderVariantCountSingleMethod != null)
@@ -249,17 +232,7 @@ namespace UnityProfileV2.Telemetry
                 total = Math.Max(total, InvokeShaderVariantCount(ShaderVariantCountSingleMethod, shader, true));
             }
 
-            if (compiled <= 0 && total <= 0 && ShaderVariantCountSingleMethod != null)
-            {
-                compiled = Math.Max(compiled, InvokeShaderVariantCount(ShaderVariantCountSingleMethod, shader, true));
-            }
-
-            if (compiled > total && total > 0)
-            {
-                total = compiled;
-            }
-
-            return (total, compiled);
+            return total;
         }
 
         private static int InvokeShaderVariantCount(MethodInfo method, Shader shader, bool includeAllVariants)
@@ -317,28 +290,17 @@ namespace UnityProfileV2.Telemetry
             }
 
             long totalVariants = 0;
-            long compiledVariants = 0;
 
             for (var index = 0; index < shaders.Count; index += 1)
             {
                 var shader = shaders[index];
                 totalVariants += Math.Max(0, shader.totalVariantCount);
-                compiledVariants += Math.Max(0, shader.compiledVariantCount);
             }
-
-            if (compiledVariants > totalVariants)
-            {
-                totalVariants = compiledVariants;
-            }
-
-            var pending = Math.Max(0, totalVariants - compiledVariants);
 
             return new ShaderVariantStats
             {
                 shaderCount = shaders.Count,
-                totalVariants = ClampToInt(totalVariants),
-                compiledVariants = ClampToInt(compiledVariants),
-                pendingVariants = ClampToInt(pending)
+                totalVariants = ClampToInt(totalVariants)
             };
         }
 
@@ -1152,7 +1114,6 @@ namespace UnityProfileV2.Telemetry
             public int passCount;
             public string keywordHash;
             public int totalVariantCount;
-            public int compiledVariantCount;
 
             public static ShaderSignature FromShader(Shader shader, ShaderVariantInfo variantInfo)
             {
@@ -1174,7 +1135,6 @@ namespace UnityProfileV2.Telemetry
                     passCount = shader != null ? shader.passCount : 0,
                     keywordHash = keywordHash,
                     totalVariantCount = variantInfo.TotalVariantCount,
-                    compiledVariantCount = variantInfo.CompiledVariantCount
                 };
             }
 
@@ -1184,8 +1144,7 @@ namespace UnityProfileV2.Telemetry
                     string.Equals(name, other.name, StringComparison.Ordinal) &&
                     string.Equals(path, other.path, StringComparison.Ordinal) &&
                     string.Equals(keywordHash, other.keywordHash, StringComparison.Ordinal) &&
-                    totalVariantCount == other.totalVariantCount &&
-                    compiledVariantCount == other.compiledVariantCount;
+                    totalVariantCount == other.totalVariantCount;
             }
 
             public override bool Equals(object obj)
@@ -1202,7 +1161,6 @@ namespace UnityProfileV2.Telemetry
                     hashCode = (hashCode * 397) ^ (path != null ? StringComparer.Ordinal.GetHashCode(path) : 0);
                     hashCode = (hashCode * 397) ^ (keywordHash != null ? StringComparer.Ordinal.GetHashCode(keywordHash) : 0);
                     hashCode = (hashCode * 397) ^ totalVariantCount;
-                    hashCode = (hashCode * 397) ^ compiledVariantCount;
                     return hashCode;
                 }
             }
@@ -2019,8 +1977,6 @@ namespace UnityProfileV2.Telemetry
     {
         public int shaderCount;
         public int totalVariants;
-        public int compiledVariants;
-        public int pendingVariants;
     }
 
     [Serializable]
@@ -2265,8 +2221,6 @@ namespace UnityProfileV2.Telemetry
         public int passCount;
         public string[] keywords;
         public int totalVariantCount;
-        public int compiledVariantCount;
-        public int pendingVariantCount;
         public bool IsValid => !string.IsNullOrEmpty(name);
 
         public static ShaderInfo FromShader(Shader shader, AssetTelemetryUtility.ShaderVariantInfo variantInfo)
@@ -2279,8 +2233,6 @@ namespace UnityProfileV2.Telemetry
                 passCount = shader.passCount,
                 keywords = AssetTelemetryUtility.GetShaderKeywords(shader),
                 totalVariantCount = variantInfo.TotalVariantCount,
-                compiledVariantCount = variantInfo.CompiledVariantCount,
-                pendingVariantCount = variantInfo.PendingVariantCount
             };
         }
     }
