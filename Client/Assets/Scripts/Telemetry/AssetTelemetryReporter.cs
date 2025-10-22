@@ -609,26 +609,31 @@ namespace UnityProfileV2.Telemetry
 
         private IEnumerator SendSnapshot()
         {
-            var snapshotTask = AssetTelemetryUtility.CreateSnapshotAsync(_maxAssetsPerCategory, _snapshotOptions);
+            TelemetrySnapshot snapshot = null;
+            Exception snapshotError = null;
 
-            while (!snapshotTask.IsCompleted)
+            var snapshotRoutine = AssetTelemetryUtility.CreateSnapshotIncrementally(
+                _maxAssetsPerCategory,
+                _snapshotOptions,
+                result => snapshot = result,
+                error => snapshotError = error);
+
+            while (snapshotRoutine.MoveNext())
             {
-                yield return null;
+                yield return snapshotRoutine.Current;
             }
 
-            if (snapshotTask.IsFaulted)
+            if (snapshotError != null)
             {
-                Debug.LogError($"[UnityProfileV2] Failed to build telemetry snapshot: {snapshotTask.Exception?.GetBaseException().Message}");
+                Debug.LogError($"[UnityProfileV2] Failed to build telemetry snapshot: {snapshotError.Message}");
                 yield break;
             }
 
-            if (snapshotTask.IsCanceled)
+            if (snapshot == null)
             {
-                Debug.LogWarning("[UnityProfileV2] Telemetry snapshot creation was canceled.");
+                Debug.LogWarning("[UnityProfileV2] Telemetry snapshot creation produced no data.");
                 yield break;
             }
-
-            var snapshot = snapshotTask.Result;
             if (!_framePreviewDisabled)
             {
                 yield return AssetTelemetryUtility.PopulateFramePreview(snapshot, _framePreviewScale);
