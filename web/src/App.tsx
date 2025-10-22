@@ -531,6 +531,7 @@ export default function App() {
     updateServerConfig,
     clearServerHistory,
     deleteServerSession,
+    refreshServerConfig,
   } = useTelemetryStream({ serverBaseUrl });
   const [isDarkMode, setIsDarkMode] = usePreferredDarkMode();
   const algorithm = isDarkMode ? theme.darkAlgorithm : theme.defaultAlgorithm;
@@ -621,6 +622,34 @@ export default function App() {
     },
     [deleteServerSession, messageApi]
   );
+
+  useEffect(() => {
+    if (!isSettingsOpen) {
+      return;
+    }
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const config = await refreshServerConfig();
+        if (!config && !cancelled) {
+          messageApi.error('读取服务器配置失败');
+        }
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        console.error(error);
+        const description = error instanceof Error ? error.message : '读取服务器配置失败';
+        messageApi.error(`读取服务器配置失败：${description}`);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isSettingsOpen, refreshServerConfig, messageApi]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
