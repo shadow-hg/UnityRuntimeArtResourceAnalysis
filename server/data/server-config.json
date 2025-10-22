@@ -1,9 +1,9 @@
 {
   "clientDefaults": {
     "sampleIntervalSeconds": 0,
-    "framePreviewScale": 0.2,
+    "framePreviewScale": 0.08,
     "disableFramePreview": false,
-    "maxAssetsPerCategory": 200,
+    "maxAssetsPerCategory": 2000,
     "autoManageSession": true,
     "assetCategoryVersion": 1,
     "assetCategories": {
