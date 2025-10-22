@@ -2,8 +2,6 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
-using System.Reflection;
-using System.Text;
 using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Experimental.Rendering;
@@ -23,7 +21,6 @@ namespace UnityProfileV2.Telemetry
         public bool includeRenderTextures;
         public bool includeMaterials;
         public bool includeShaders;
-        public bool includeShaderVariants;
         public bool hasExplicitSelection;
 
         public static TelemetrySnapshotOptions Default => new TelemetrySnapshotOptions
@@ -33,7 +30,6 @@ namespace UnityProfileV2.Telemetry
             includeRenderTextures = true,
             includeMaterials = true,
             includeShaders = true,
-            includeShaderVariants = true,
             hasExplicitSelection = true
         };
     }
@@ -58,14 +54,6 @@ namespace UnityProfileV2.Telemetry
                 Shaders.Clear();
                 HasBaseline = false;
             }
-        }
-
-        public struct ShaderVariantInfo
-        {
-            public int TotalVariantCount;
-            public int CompiledVariantCount;
-            public int PendingVariantCount;
-            public bool HasAccurateCompiledVariantCount;
         }
 
         public static TelemetrySnapshot CreateSnapshot(int maxAssetsPerCategory)
@@ -101,8 +89,6 @@ namespace UnityProfileV2.Telemetry
                 return TelemetrySnapshotOptions.Default;
             }
 
-            var includeShaderVariants = options.includeShaders && options.includeShaderVariants;
-
             return new TelemetrySnapshotOptions
             {
                 includeTextures = options.includeTextures,
@@ -110,7 +96,6 @@ namespace UnityProfileV2.Telemetry
                 includeRenderTextures = options.includeRenderTextures,
                 includeMaterials = options.includeMaterials,
                 includeShaders = options.includeShaders,
-                includeShaderVariants = includeShaderVariants,
                 hasExplicitSelection = options.hasExplicitSelection
             };
         }
@@ -175,36 +160,6 @@ namespace UnityProfileV2.Telemetry
             return (int)value;
         }
 
-        private static ShaderVariantInfo GetShaderVariantInfo(Shader shader)
-        {
-            if (shader == null)
-            {
-                return default;
-            }
-
-            if (!RuntimeShaderVariantUsage.TryGetValue(shader.GetInstanceID(), out var variants))
-            {
-                return new ShaderVariantInfo
-                {
-                    TotalVariantCount = 0,
-                    CompiledVariantCount = 0,
-                    PendingVariantCount = 0,
-                    HasAccurateCompiledVariantCount = false
-                };
-            }
-
-            var variantCount = variants.Count;
-
-            return new ShaderVariantInfo
-            {
-                TotalVariantCount = variantCount,
-                CompiledVariantCount = variantCount,
-                PendingVariantCount = 0,
-                HasAccurateCompiledVariantCount = true
-            };
-        }
-
-
         private readonly struct CategoryDiff<TInfo>
             where TInfo : struct
         {
@@ -216,46 +171,6 @@ namespace UnityProfileV2.Telemetry
 
             public int[] Order { get; }
             public TInfo[] Updates { get; }
-        }
-
-        private static ShaderVariantStats CalculateShaderVariantStats(IReadOnlyList<ShaderInfo> shaders)
-        {
-            if (!ShaderVariantQueriesSupported || shaders == null || shaders.Count == 0)
-            {
-                return default;
-            }
-
-            long totalVariants = 0;
-            long compiledVariants = 0;
-            var trackedShaders = 0;
-
-            for (var index = 0; index < shaders.Count; index += 1)
-            {
-                var shader = shaders[index];
-                if (!shader.hasAccurateCompiledVariantCount)
-                {
-                    continue;
-                }
-
-                trackedShaders += 1;
-                totalVariants += Math.Max(0, shader.totalVariantCount);
-                compiledVariants += Math.Max(0, shader.compiledVariantCount);
-            }
-
-            if (trackedShaders == 0)
-            {
-                return default;
-            }
-
-            var pending = Math.Max(0, totalVariants - compiledVariants);
-
-            return new ShaderVariantStats
-            {
-                shaderCount = trackedShaders,
-                totalVariants = ClampToInt(totalVariants),
-                compiledVariants = ClampToInt(compiledVariants),
-                pendingVariants = ClampToInt(pending)
-            };
         }
 
         private static CategoryDiff<TInfo> ComputeCategoryDiff<TInfo>(
@@ -351,15 +266,6 @@ namespace UnityProfileV2.Telemetry
                     .ToArray()
                 : Array.Empty<ShaderInfo>();
 
-            var shouldIncludeShaderVariants = options.includeShaders && options.includeShaderVariants;
-
-            var shaderVariantStats = shouldIncludeShaderVariants
-                ? CalculateShaderVariantStats(snapshotData.shaders)
-                : default;
-
-            var supportsShaderVariantQueries = shouldIncludeShaderVariants && ShaderVariantQueriesSupported &&
-                snapshotData.shaders.Any(shader => shader.hasAccurateCompiledVariantCount);
-
             var textureDiff = ComputeCategoryDiff(state?.Textures, textures, hasBaseline, info => info.instanceId);
             var meshDiff = ComputeCategoryDiff(state?.Meshes, meshes, hasBaseline, info => info.instanceId);
             var renderTextureDiff = ComputeCategoryDiff(state?.RenderTextures, renderTextures, hasBaseline, info => info.instanceId);
@@ -378,9 +284,7 @@ namespace UnityProfileV2.Telemetry
                 materials = materialDiff.Updates,
                 materialOrder = materialDiff.Order,
                 shaders = shaderDiff.Updates,
-                shaderOrder = shaderDiff.Order,
-                shaderVariantStats = shaderVariantStats,
-                supportsShaderVariantQueries = supportsShaderVariantQueries
+                shaderOrder = shaderDiff.Order
             };
 
             if (state != null)
@@ -457,7 +361,7 @@ namespace UnityProfileV2.Telemetry
 
             if (options.includeShaders)
             {
-                data.shaders = CaptureShaderInfos(options.includeShaderVariants);
+                data.shaders = CaptureShaderInfos();
             }
 
             return data;
@@ -594,15 +498,10 @@ namespace UnityProfileV2.Telemetry
             return result;
         }
 
-        private static ShaderInfo[] CaptureShaderInfos(bool includeVariants)
+        private static ShaderInfo[] CaptureShaderInfos()
         {
             ShaderInfoBuffer.Clear();
             ShaderSeenIds.Clear();
-
-            if (includeVariants)
-            {
-                UpdateRuntimeShaderVariantUsage();
-            }
 
             foreach (var shader in EnumerateRuntimeObjects<Shader>())
             {
@@ -611,7 +510,7 @@ namespace UnityProfileV2.Telemetry
                     continue;
                 }
 
-                var info = GetOrCreateShaderInfo(shader, includeVariants);
+                var info = GetOrCreateShaderInfo(shader);
                 if (!info.IsValid)
                 {
                     continue;
@@ -628,135 +527,33 @@ namespace UnityProfileV2.Telemetry
             return result;
         }
 
-        private static void UpdateRuntimeShaderVariantUsage()
-        {
-            if (!Application.isPlaying)
-            {
-                return;
-            }
-
-            var renderers = UnityEngine.Object.FindObjectsOfType<Renderer>();
-            foreach (var renderer in renderers)
-            {
-                if (renderer == null)
-                {
-                    continue;
-                }
-
-                var materials = renderer.sharedMaterials;
-                if (materials == null)
-                {
-                    continue;
-                }
-
-                foreach (var material in materials)
-                {
-                    if (material == null)
-                    {
-                        continue;
-                    }
-
-                    var shader = material.shader;
-                    if (shader == null)
-                    {
-                        continue;
-                    }
-
-                    var combination = BuildKeywordCombination(material);
-                    RegisterRuntimeShaderVariant(shader, combination);
-                }
-            }
-        }
-
-        private static string BuildKeywordCombination(Material material)
-        {
-            var keywords = material.shaderKeywords;
-            if (keywords == null || keywords.Length == 0)
-            {
-                return string.Empty;
-            }
-
-            RuntimeShaderKeywordSet.Clear();
-            RuntimeShaderKeywordBuffer.Clear();
-            foreach (var keyword in keywords)
-            {
-                if (string.IsNullOrWhiteSpace(keyword))
-                {
-                    continue;
-                }
-
-                var trimmed = keyword.Trim();
-                if (trimmed.Length == 0)
-                {
-                    continue;
-                }
-
-                if (RuntimeShaderKeywordSet.Add(trimmed))
-                {
-                    RuntimeShaderKeywordBuffer.Add(trimmed);
-                }
-            }
-
-            if (RuntimeShaderKeywordBuffer.Count == 0)
-            {
-                return string.Empty;
-            }
-
-            RuntimeShaderKeywordBuffer.Sort(StringComparer.Ordinal);
-
-            RuntimeShaderKeywordBuilder.Clear();
-            for (var index = 0; index < RuntimeShaderKeywordBuffer.Count; index += 1)
-            {
-                if (index > 0)
-                {
-                    RuntimeShaderKeywordBuilder.Append('_');
-                }
-
-                RuntimeShaderKeywordBuilder.Append(RuntimeShaderKeywordBuffer[index]);
-            }
-
-            return RuntimeShaderKeywordBuilder.ToString();
-        }
-
-        private static void RegisterRuntimeShaderVariant(Shader shader, string keywordCombination)
-        {
-            if (shader == null)
-            {
-                return;
-            }
-
-            var shaderId = shader.GetInstanceID();
-            if (!RuntimeShaderVariantUsage.TryGetValue(shaderId, out var variants))
-            {
-                variants = new HashSet<string>(StringComparer.Ordinal);
-                RuntimeShaderVariantUsage[shaderId] = variants;
-            }
-
-            variants.Add(keywordCombination ?? string.Empty);
-        }
-
-        private static string[] GetRuntimeShaderKeywordVariants(Shader shader)
+        private static string[] GetShaderKeywordVariants(Shader shader)
         {
             if (shader == null)
             {
                 return Array.Empty<string>();
             }
 
-            if (!RuntimeShaderVariantUsage.TryGetValue(shader.GetInstanceID(), out var variants) || variants.Count == 0)
+            try
+            {
+                var keywords = shader.keywordSpace.keywordNames;
+                if (keywords == null || keywords.Length == 0)
+                {
+                    return Array.Empty<string>();
+                }
+
+                return keywords
+                    .Where(keyword => !string.IsNullOrWhiteSpace(keyword))
+                    .Select(keyword => keyword.Trim())
+                    .Where(keyword => keyword.Length > 0)
+                    .Distinct(StringComparer.Ordinal)
+                    .OrderBy(keyword => keyword, StringComparer.Ordinal)
+                    .ToArray();
+            }
+            catch
             {
                 return Array.Empty<string>();
             }
-
-            RuntimeShaderVariantListBuffer.Clear();
-            foreach (var variant in variants)
-            {
-                RuntimeShaderVariantListBuffer.Add(string.IsNullOrEmpty(variant) ? NoKeywordVariantLabel : variant);
-            }
-
-            RuntimeShaderVariantListBuffer.Sort(StringComparer.Ordinal);
-            var result = RuntimeShaderVariantListBuffer.ToArray();
-            RuntimeShaderVariantListBuffer.Clear();
-            return result;
         }
 
         private static TextureInfo GetOrCreateTextureInfo(Texture texture)
@@ -851,11 +648,10 @@ namespace UnityProfileV2.Telemetry
             return info;
         }
 
-        private static ShaderInfo GetOrCreateShaderInfo(Shader shader, bool includeVariants)
+        private static ShaderInfo GetOrCreateShaderInfo(Shader shader)
         {
             var instanceId = shader.GetInstanceID();
-            var variantInfo = includeVariants ? GetShaderVariantInfo(shader) : default;
-            var signature = ShaderSignature.FromShader(shader, variantInfo, includeVariants);
+            var signature = ShaderSignature.FromShader(shader);
 
             if (ShaderCache.TryGetValue(instanceId, out var cached) && cached.Signature.Equals(signature))
             {
@@ -864,7 +660,7 @@ namespace UnityProfileV2.Telemetry
                 return cachedInfo;
             }
 
-            var info = ShaderInfo.FromShader(shader, variantInfo, includeVariants);
+            var info = ShaderInfo.FromShader(shader);
             info.instanceId = instanceId;
             ShaderCache[instanceId] = new CachedEntry<ShaderInfo, ShaderSignature>
             {
@@ -1209,11 +1005,8 @@ namespace UnityProfileV2.Telemetry
             public string path;
             public int passCount;
             public string keywordHash;
-            public int totalVariantCount;
-            public int compiledVariantCount;
-            public bool hasAccurateCompiledVariantCount;
 
-            public static ShaderSignature FromShader(Shader shader, ShaderVariantInfo variantInfo, bool includeVariants)
+            public static ShaderSignature FromShader(Shader shader)
             {
                 var keywords = GetShaderKeywords(shader) ?? Array.Empty<string>();
                 var normalizedKeywords = keywords
@@ -1231,10 +1024,7 @@ namespace UnityProfileV2.Telemetry
                     name = shader != null ? shader.name : string.Empty,
                     path = GetAssetPath(shader),
                     passCount = shader != null ? shader.passCount : 0,
-                    keywordHash = keywordHash,
-                    totalVariantCount = includeVariants ? variantInfo.TotalVariantCount : 0,
-                    compiledVariantCount = includeVariants ? variantInfo.CompiledVariantCount : 0,
-                    hasAccurateCompiledVariantCount = includeVariants && variantInfo.HasAccurateCompiledVariantCount
+                    keywordHash = keywordHash
                 };
             }
 
@@ -1243,10 +1033,7 @@ namespace UnityProfileV2.Telemetry
                 return passCount == other.passCount &&
                     string.Equals(name, other.name, StringComparison.Ordinal) &&
                     string.Equals(path, other.path, StringComparison.Ordinal) &&
-                    string.Equals(keywordHash, other.keywordHash, StringComparison.Ordinal) &&
-                    totalVariantCount == other.totalVariantCount &&
-                    compiledVariantCount == other.compiledVariantCount &&
-                    hasAccurateCompiledVariantCount == other.hasAccurateCompiledVariantCount;
+                    string.Equals(keywordHash, other.keywordHash, StringComparison.Ordinal);
             }
 
             public override bool Equals(object obj)
@@ -1262,9 +1049,6 @@ namespace UnityProfileV2.Telemetry
                     hashCode = (hashCode * 397) ^ (name != null ? StringComparer.Ordinal.GetHashCode(name) : 0);
                     hashCode = (hashCode * 397) ^ (path != null ? StringComparer.Ordinal.GetHashCode(path) : 0);
                     hashCode = (hashCode * 397) ^ (keywordHash != null ? StringComparer.Ordinal.GetHashCode(keywordHash) : 0);
-                    hashCode = (hashCode * 397) ^ totalVariantCount;
-                    hashCode = (hashCode * 397) ^ compiledVariantCount;
-                    hashCode = (hashCode * 397) ^ hasAccurateCompiledVariantCount.GetHashCode();
                     return hashCode;
                 }
             }
@@ -1289,15 +1073,6 @@ namespace UnityProfileV2.Telemetry
         private static readonly List<RenderTextureInfo> RenderTextureInfoBuffer = new();
         private static readonly List<MaterialInfo> MaterialInfoBuffer = new();
         private static readonly List<ShaderInfo> ShaderInfoBuffer = new();
-
-        private const string NoKeywordVariantLabel = "无关键字";
-        private const bool ShaderVariantQueriesSupported = true;
-
-        private static readonly Dictionary<int, HashSet<string>> RuntimeShaderVariantUsage = new();
-        private static readonly HashSet<string> RuntimeShaderKeywordSet = new(StringComparer.Ordinal);
-        private static readonly List<string> RuntimeShaderKeywordBuffer = new();
-        private static readonly List<string> RuntimeShaderVariantListBuffer = new();
-        private static readonly StringBuilder RuntimeShaderKeywordBuilder = new();
 
         public static IEnumerator PopulateFramePreview(TelemetrySnapshot snapshot, float framePreviewScale)
         {
@@ -1913,44 +1688,7 @@ namespace UnityProfileV2.Telemetry
 
         internal static string[] GetShaderKeywords(Shader shader)
         {
-            var runtimeVariants = GetRuntimeShaderKeywordVariants(shader);
-            if (runtimeVariants.Length > 0)
-            {
-                return runtimeVariants;
-            }
-
-            if (shader == null)
-            {
-                return Array.Empty<string>();
-            }
-
-            try
-            {
-                var keywordSpace = shader.keywordSpace;
-                var keywordSpaceType = keywordSpace.GetType();
-
-                var namesProperty = keywordSpaceType.GetProperty("keywordNames", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                if (namesProperty?.GetValue(keywordSpace) is string[] names && names.Length > 0)
-                {
-                    return names;
-                }
-
-                var getKeywords = keywordSpaceType.GetMethod("GetKeywords", BindingFlags.Instance | BindingFlags.NonPublic);
-                if (getKeywords != null && getKeywords.Invoke(keywordSpace, null) is Array keywordArray)
-                {
-                    return keywordArray.Cast<object>()
-                        .Select(k => k?.ToString())
-                        .Where(s => !string.IsNullOrEmpty(s))
-                        .Distinct()
-                        .ToArray();
-                }
-            }
-            catch
-            {
-                // ignored - fall back to empty keyword list when reflection fails
-            }
-
-            return Array.Empty<string>();
+            return GetShaderKeywordVariants(shader);
         }
 #else
         private static readonly Dictionary<TextureFormat, int> TextureFormatBits = new()
@@ -2005,7 +1743,7 @@ namespace UnityProfileV2.Telemetry
 
         internal static string[] GetShaderKeywords(Shader shader)
         {
-            return GetRuntimeShaderKeywordVariants(shader);
+            return GetShaderKeywordVariants(shader);
         }
 #endif
 
@@ -2095,15 +1833,6 @@ namespace UnityProfileV2.Telemetry
     }
 
     [Serializable]
-    public struct ShaderVariantStats
-    {
-        public int shaderCount;
-        public int totalVariants;
-        public int compiledVariants;
-        public int pendingVariants;
-    }
-
-    [Serializable]
     public class TelemetrySnapshot
     {
         public string timestampUtc;
@@ -2111,7 +1840,6 @@ namespace UnityProfileV2.Telemetry
         public float fps;
         public float deltaTime;
         public bool isIncremental;
-        public bool supportsShaderVariantQueries;
         public int[] textureOrder = Array.Empty<int>();
         public TextureInfo[] textures = Array.Empty<TextureInfo>();
         public int[] meshOrder = Array.Empty<int>();
@@ -2122,7 +1850,6 @@ namespace UnityProfileV2.Telemetry
         public MaterialInfo[] materials = Array.Empty<MaterialInfo>();
         public int[] shaderOrder = Array.Empty<int>();
         public ShaderInfo[] shaders = Array.Empty<ShaderInfo>();
-        public ShaderVariantStats shaderVariantStats;
         public FramePreviewInfo framePreview;
     }
 
@@ -2345,13 +2072,10 @@ namespace UnityProfileV2.Telemetry
         public string path;
         public int passCount;
         public string[] keywords;
-        public int totalVariantCount;
-        public int compiledVariantCount;
-        public int pendingVariantCount;
-        public bool hasAccurateCompiledVariantCount;
+        public long memoryBytes;
         public bool IsValid => !string.IsNullOrEmpty(name);
 
-        public static ShaderInfo FromShader(Shader shader, AssetTelemetryUtility.ShaderVariantInfo variantInfo, bool includeVariants)
+        public static ShaderInfo FromShader(Shader shader)
         {
             return new ShaderInfo
             {
@@ -2360,10 +2084,9 @@ namespace UnityProfileV2.Telemetry
                 path = AssetTelemetryUtility.GetAssetPath(shader),
                 passCount = shader.passCount,
                 keywords = AssetTelemetryUtility.GetShaderKeywords(shader),
-                totalVariantCount = includeVariants ? variantInfo.TotalVariantCount : 0,
-                compiledVariantCount = includeVariants ? variantInfo.CompiledVariantCount : 0,
-                pendingVariantCount = includeVariants ? variantInfo.PendingVariantCount : 0,
-                hasAccurateCompiledVariantCount = includeVariants && variantInfo.HasAccurateCompiledVariantCount
+                memoryBytes = shader != null
+                    ? UnityEngine.Profiling.Profiler.GetRuntimeMemorySizeLong(shader)
+                    : 0
             };
         }
     }

@@ -37,7 +37,6 @@ interface ServerSettingsFormValues {
   disableFramePreview: boolean;
   maxAssetsPerCategory: number;
   autoManageSession: boolean;
-  collectShaderVariants: boolean;
   collectFps: boolean;
   includeTextures: boolean;
   includeMeshes: boolean;
@@ -53,7 +52,6 @@ const DEFAULT_FORM_VALUES: ServerSettingsFormValues = {
   disableFramePreview: false,
   maxAssetsPerCategory: 200,
   autoManageSession: true,
-  collectShaderVariants: true,
   collectFps: true,
   includeTextures: true,
   includeMeshes: true,
@@ -75,8 +73,6 @@ function buildInitialValues(config: ServerConfig | null): ServerSettingsFormValu
     maxAssetsPerCategory:
       config.clientDefaults?.maxAssetsPerCategory ?? DEFAULT_FORM_VALUES.maxAssetsPerCategory,
     autoManageSession: config.clientDefaults?.autoManageSession ?? DEFAULT_FORM_VALUES.autoManageSession,
-    collectShaderVariants:
-      config.clientDefaults?.collectShaderVariants ?? DEFAULT_FORM_VALUES.collectShaderVariants,
     collectFps: config.clientDefaults?.collectFps ?? DEFAULT_FORM_VALUES.collectFps,
     includeTextures: categories?.includeTextures ?? DEFAULT_FORM_VALUES.includeTextures,
     includeMeshes: categories?.includeMeshes ?? DEFAULT_FORM_VALUES.includeMeshes,
@@ -118,7 +114,6 @@ async function submitForm(
       disableFramePreview: values.disableFramePreview,
       maxAssetsPerCategory: values.maxAssetsPerCategory,
       autoManageSession: values.autoManageSession,
-      collectShaderVariants: values.collectShaderVariants,
       collectFps: values.collectFps,
       assetCategoryVersion: currentConfig?.clientDefaults?.assetCategoryVersion ?? 1,
       assetCategories: {
@@ -290,14 +285,6 @@ export default function ServerSettingsModal({
               label="自动管理会话"
               name="autoManageSession"
               tooltip="根据 Unity 播放状态自动开启和结束会话"
-              valuePropName="checked"
-            >
-              <Switch checkedChildren="开启" unCheckedChildren="关闭" />
-            </Form.Item>
-            <Form.Item
-              label="采集着色器变体数据"
-              name="collectShaderVariants"
-              tooltip="关闭后客户端不会统计着色器变体编译信息"
               valuePropName="checked"
             >
               <Switch checkedChildren="开启" unCheckedChildren="关闭" />

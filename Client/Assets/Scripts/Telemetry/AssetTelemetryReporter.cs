@@ -692,14 +692,12 @@ namespace UnityProfileV2.Telemetry
                     includeRenderTextures = payload.assetCategories.includeRenderTextures,
                     includeMaterials = payload.assetCategories.includeMaterials,
                     includeShaders = payload.assetCategories.includeShaders,
-                    includeShaderVariants = payload.collectShaderVariants,
                     hasExplicitSelection = true
                 };
             }
             else
             {
                 var defaultOptions = TelemetrySnapshotOptions.Default;
-                defaultOptions.includeShaderVariants = payload.collectShaderVariants;
                 _snapshotOptions = defaultOptions;
             }
 
@@ -729,11 +727,6 @@ namespace UnityProfileV2.Telemetry
             }
 
             if (a.autoManageSession != b.autoManageSession)
-            {
-                return false;
-            }
-
-            if (a.collectShaderVariants != b.collectShaderVariants)
             {
                 return false;
             }
@@ -911,7 +904,6 @@ namespace UnityProfileV2.Telemetry
             public bool disableFramePreview;
             public int maxAssetsPerCategory;
             public bool autoManageSession;
-            public bool collectShaderVariants;
             public bool collectFps;
             public int assetCategoryVersion;
             public AssetCategoryPayload assetCategories;

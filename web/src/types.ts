@@ -88,17 +88,6 @@ export interface ShaderInfo {
   passCount: number;
   keywords: string[];
   memoryBytes?: number;
-  totalVariantCount?: number;
-  compiledVariantCount?: number;
-  pendingVariantCount?: number;
-  hasAccurateCompiledVariantCount?: boolean;
-}
-
-export interface ShaderVariantStats {
-  shaderCount: number;
-  totalVariants: number;
-  compiledVariants: number;
-  pendingVariants: number;
 }
 
 export interface TelemetrySnapshot {
@@ -113,7 +102,6 @@ export interface TelemetrySnapshot {
   totalMaterialBytes?: number;
   totalShaderBytes?: number;
   shaderMemoryBytes?: number;
-  supportsShaderVariantQueries?: boolean;
   textureOrder?: number[];
   textures: TextureInfo[];
   meshOrder?: number[];
@@ -124,7 +112,6 @@ export interface TelemetrySnapshot {
   materials?: MaterialInfo[];
   shaderOrder?: number[];
   shaders: ShaderInfo[];
-  shaderVariantStats?: ShaderVariantStats;
   framePreview?: FramePreviewInfo | null;
 }
 
@@ -172,7 +159,6 @@ export interface ClientDefaultsConfig {
   disableFramePreview: boolean;
   maxAssetsPerCategory: number;
   autoManageSession: boolean;
-  collectShaderVariants: boolean;
   collectFps: boolean;
   assetCategoryVersion: number;
   assetCategories: AssetCategoryConfig;
