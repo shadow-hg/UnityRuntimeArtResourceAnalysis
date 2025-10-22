@@ -238,6 +238,21 @@ export class HistoryStore {
     return this.history.sessions;
   }
 
+  async getLastFrame(sessionId) {
+    await this.init();
+    const session = this.history.sessions.find((s) => s.id === sessionId);
+    if (!session || !Array.isArray(session.frames) || session.frames.length === 0) {
+      return null;
+    }
+
+    const last = session.frames[session.frames.length - 1];
+    try {
+      return JSON.parse(JSON.stringify(last));
+    } catch (err) {
+      return { ...last };
+    }
+  }
+
   async getSession(sessionId) {
     await this.init();
     return this.history.sessions.find((s) => s.id === sessionId) || null;

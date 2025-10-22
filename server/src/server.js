@@ -108,6 +108,12 @@ function sanitizeFramePayload(payload) {
     renderTextures = [],
     materials = [],
     framePreview = null,
+    textureOrder = [],
+    meshOrder = [],
+    renderTextureOrder = [],
+    materialOrder = [],
+    shaderOrder = [],
+    isIncremental = false,
     ...rest
   } = payload ?? {};
   const preview =
@@ -116,13 +122,204 @@ function sanitizeFramePayload(payload) {
       : undefined;
   return {
     ...rest,
+    isIncremental: Boolean(isIncremental),
     textures: cloneArray(textures),
     meshes: cloneArray(meshes),
     renderTextures: cloneArray(renderTextures),
     materials: cloneArray(materials),
     shaders: cloneArray(shaders),
     framePreview: preview,
+    textureOrder: Array.isArray(textureOrder) ? [...textureOrder] : [],
+    meshOrder: Array.isArray(meshOrder) ? [...meshOrder] : [],
+    renderTextureOrder: Array.isArray(renderTextureOrder) ? [...renderTextureOrder] : [],
+    materialOrder: Array.isArray(materialOrder) ? [...materialOrder] : [],
+    shaderOrder: Array.isArray(shaderOrder) ? [...shaderOrder] : [],
   };
+}
+
+function normalizeInstanceId(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+  const rounded = Math.round(parsed);
+  return Number.isInteger(rounded) ? rounded : null;
+}
+
+function resolveOrder(order, updates = [], previous = []) {
+  const resolved = [];
+  const seen = new Set();
+  const normalized = Array.isArray(order)
+    ? order
+        .map((value) => normalizeInstanceId(value))
+        .filter((value) => value != null)
+    : [];
+
+  const append = (items) => {
+    if (!Array.isArray(items)) {
+      return;
+    }
+    items.forEach((item) => {
+      const id = normalizeInstanceId(item?.instanceId);
+      if (id == null || seen.has(id)) {
+        return;
+      }
+      seen.add(id);
+      resolved.push(id);
+    });
+  };
+
+  normalized.forEach((id) => {
+    if (id == null || seen.has(id)) {
+      return;
+    }
+    seen.add(id);
+    resolved.push(id);
+  });
+
+  append(updates);
+
+  if (resolved.length === 0) {
+    append(previous);
+  }
+
+  return resolved;
+}
+
+function applyCategoryDelta(previousItems, updates, orderIds) {
+  const baseItems = Array.isArray(previousItems) ? previousItems : [];
+  const deltaItems = Array.isArray(updates) ? updates : [];
+  const hasExplicitOrder = Array.isArray(orderIds);
+  const finalOrder = resolveOrder(hasExplicitOrder ? orderIds : undefined, deltaItems, hasExplicitOrder ? [] : baseItems);
+
+  const map = new Map();
+  baseItems.forEach((item) => {
+    const id = normalizeInstanceId(item?.instanceId);
+    if (id == null) {
+      return;
+    }
+    map.set(id, { ...item });
+  });
+
+  deltaItems.forEach((item) => {
+    const id = normalizeInstanceId(item?.instanceId);
+    if (id == null) {
+      return;
+    }
+    map.set(id, { ...item });
+  });
+
+  if (hasExplicitOrder) {
+    const activeSet = new Set(finalOrder);
+    for (const key of Array.from(map.keys())) {
+      if (!activeSet.has(key)) {
+        map.delete(key);
+      }
+    }
+  }
+
+  const ordered = [];
+  const seen = new Set();
+  finalOrder.forEach((id) => {
+    if (id == null || seen.has(id) || !map.has(id)) {
+      return;
+    }
+    ordered.push(map.get(id));
+    seen.add(id);
+  });
+
+  for (const [id, item] of map.entries()) {
+    if (!seen.has(id)) {
+      ordered.push(item);
+      finalOrder.push(id);
+      seen.add(id);
+    }
+  }
+
+  return { items: ordered, order: finalOrder };
+}
+
+async function expandIncrementalFrame(sessionId, frame) {
+  const isIncremental = Boolean(frame?.isIncremental);
+  const normalizedFrame = { ...frame };
+
+  const ensureBaselineOrders = () => {
+    normalizedFrame.textureOrder = resolveOrder(normalizedFrame.textureOrder, normalizedFrame.textures);
+    normalizedFrame.meshOrder = resolveOrder(normalizedFrame.meshOrder, normalizedFrame.meshes);
+    normalizedFrame.renderTextureOrder = resolveOrder(
+      normalizedFrame.renderTextureOrder,
+      normalizedFrame.renderTextures
+    );
+    normalizedFrame.materialOrder = resolveOrder(normalizedFrame.materialOrder, normalizedFrame.materials);
+    normalizedFrame.shaderOrder = resolveOrder(normalizedFrame.shaderOrder, normalizedFrame.shaders);
+    normalizedFrame.isIncremental = false;
+  };
+
+  const updateTotals = () => {
+    const sumBytes = (items, key) =>
+      Array.isArray(items)
+        ? items.reduce((total, item) => total + (Number(item?.[key]) || 0), 0)
+        : 0;
+
+    normalizedFrame.totalTextureBytes = sumBytes(normalizedFrame.textures, 'EstimatedBytes');
+    normalizedFrame.totalMeshBytes = sumBytes(normalizedFrame.meshes, 'EstimatedBytes');
+    normalizedFrame.totalRenderTextureBytes = sumBytes(normalizedFrame.renderTextures, 'EstimatedBytes');
+    normalizedFrame.totalMaterialBytes = sumBytes(normalizedFrame.materials, 'memoryBytes');
+  };
+
+  if (!isIncremental) {
+    ensureBaselineOrders();
+    updateTotals();
+    return normalizedFrame;
+  }
+
+  const previousFrame = await historyStore.getLastFrame(sessionId);
+  if (!previousFrame) {
+    ensureBaselineOrders();
+    return normalizedFrame;
+  }
+
+  const textureDelta = applyCategoryDelta(
+    previousFrame.textures,
+    normalizedFrame.textures,
+    normalizedFrame.textureOrder
+  );
+  const meshDelta = applyCategoryDelta(
+    previousFrame.meshes,
+    normalizedFrame.meshes,
+    normalizedFrame.meshOrder
+  );
+  const renderTextureDelta = applyCategoryDelta(
+    previousFrame.renderTextures,
+    normalizedFrame.renderTextures,
+    normalizedFrame.renderTextureOrder
+  );
+  const materialDelta = applyCategoryDelta(
+    previousFrame.materials,
+    normalizedFrame.materials,
+    normalizedFrame.materialOrder
+  );
+  const shaderDelta = applyCategoryDelta(
+    previousFrame.shaders,
+    normalizedFrame.shaders,
+    normalizedFrame.shaderOrder
+  );
+
+  normalizedFrame.textures = textureDelta.items;
+  normalizedFrame.textureOrder = textureDelta.order;
+  normalizedFrame.meshes = meshDelta.items;
+  normalizedFrame.meshOrder = meshDelta.order;
+  normalizedFrame.renderTextures = renderTextureDelta.items;
+  normalizedFrame.renderTextureOrder = renderTextureDelta.order;
+  normalizedFrame.materials = materialDelta.items;
+  normalizedFrame.materialOrder = materialDelta.order;
+  normalizedFrame.shaders = shaderDelta.items;
+  normalizedFrame.shaderOrder = shaderDelta.order;
+  normalizedFrame.isIncremental = false;
+
+  updateTotals();
+
+  return normalizedFrame;
 }
 
 function extractBase64Components(value) {
@@ -237,30 +434,31 @@ async function persistFramePreview(sessionId, frameNumber, framePreview) {
 
 async function prepareFramePayload(sessionId, payload) {
   const sanitizedFrame = sanitizeFramePayload(payload);
-  const storedFrame = { ...sanitizedFrame };
-  const broadcastFrame = { ...sanitizedFrame };
+  const expandedFrame = await expandIncrementalFrame(sessionId, sanitizedFrame);
+  const storedFrame = { ...expandedFrame };
+  const broadcastFrame = { ...expandedFrame };
 
-  if (Array.isArray(sanitizedFrame.textures) && sanitizedFrame.textures.length > 0) {
+  if (Array.isArray(expandedFrame.textures) && expandedFrame.textures.length > 0) {
     const textures = await Promise.all(
-      sanitizedFrame.textures.map((texture) => persistTexturePreview(sessionId, texture))
+      expandedFrame.textures.map((texture) => persistTexturePreview(sessionId, texture))
     );
     storedFrame.textures = textures.map((result) => result.stored);
     broadcastFrame.textures = textures.map((result) => result.broadcast);
   }
 
-  if (Array.isArray(sanitizedFrame.renderTextures) && sanitizedFrame.renderTextures.length > 0) {
+  if (Array.isArray(expandedFrame.renderTextures) && expandedFrame.renderTextures.length > 0) {
     const renderTextures = await Promise.all(
-      sanitizedFrame.renderTextures.map((renderTexture) => persistTexturePreview(sessionId, renderTexture))
+      expandedFrame.renderTextures.map((renderTexture) => persistTexturePreview(sessionId, renderTexture))
     );
     storedFrame.renderTextures = renderTextures.map((result) => result.stored);
     broadcastFrame.renderTextures = renderTextures.map((result) => result.broadcast);
   }
 
-  if (sanitizedFrame.framePreview && typeof sanitizedFrame.framePreview === 'object') {
+  if (expandedFrame.framePreview && typeof expandedFrame.framePreview === 'object') {
     const { stored, broadcast } = await persistFramePreview(
       sessionId,
-      sanitizedFrame.frameNumber,
-      sanitizedFrame.framePreview
+      expandedFrame.frameNumber,
+      expandedFrame.framePreview
     );
     storedFrame.framePreview = stored;
     broadcastFrame.framePreview = broadcast;

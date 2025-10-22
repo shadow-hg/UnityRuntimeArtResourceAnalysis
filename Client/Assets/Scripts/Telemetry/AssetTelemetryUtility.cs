@@ -37,16 +37,36 @@ namespace UnityProfileV2.Telemetry
 
     public static class AssetTelemetryUtility
     {
+        public sealed class TelemetryCollectionState
+        {
+            internal Dictionary<int, TextureInfo> Textures { get; } = new();
+            internal Dictionary<int, MeshInfo> Meshes { get; } = new();
+            internal Dictionary<int, RenderTextureInfo> RenderTextures { get; } = new();
+            internal Dictionary<int, MaterialInfo> Materials { get; } = new();
+            internal Dictionary<int, ShaderInfo> Shaders { get; } = new();
+            internal bool HasBaseline { get; set; }
+
+            public void Reset()
+            {
+                Textures.Clear();
+                Meshes.Clear();
+                RenderTextures.Clear();
+                Materials.Clear();
+                Shaders.Clear();
+                HasBaseline = false;
+            }
+        }
+
         public static TelemetrySnapshot CreateSnapshot(int maxAssetsPerCategory)
         {
             return CreateSnapshot(maxAssetsPerCategory, TelemetrySnapshotOptions.Default);
         }
 
-        public static TelemetrySnapshot CreateSnapshot(int maxAssetsPerCategory, TelemetrySnapshotOptions options)
+        public static TelemetrySnapshot CreateSnapshot(int maxAssetsPerCategory, TelemetrySnapshotOptions options, TelemetryCollectionState state = null)
         {
             var normalizedOptions = NormalizeOptions(options);
             var snapshotData = CaptureSnapshotData(normalizedOptions);
-            return BuildSnapshot(maxAssetsPerCategory, normalizedOptions, snapshotData);
+            return BuildSnapshot(state, maxAssetsPerCategory, normalizedOptions, snapshotData);
         }
 
         public static Task<TelemetrySnapshot> CreateSnapshotAsync(int maxAssetsPerCategory)
@@ -54,11 +74,11 @@ namespace UnityProfileV2.Telemetry
             return CreateSnapshotAsync(maxAssetsPerCategory, TelemetrySnapshotOptions.Default);
         }
 
-        public static Task<TelemetrySnapshot> CreateSnapshotAsync(int maxAssetsPerCategory, TelemetrySnapshotOptions options)
+        public static Task<TelemetrySnapshot> CreateSnapshotAsync(int maxAssetsPerCategory, TelemetrySnapshotOptions options, TelemetryCollectionState state = null)
         {
             var normalizedOptions = NormalizeOptions(options);
             var snapshotData = CaptureSnapshotData(normalizedOptions);
-            return Task.Run(() => BuildSnapshot(maxAssetsPerCategory, normalizedOptions, snapshotData));
+            return Task.Run(() => BuildSnapshot(state, maxAssetsPerCategory, normalizedOptions, snapshotData));
         }
 
         private static TelemetrySnapshotOptions NormalizeOptions(TelemetrySnapshotOptions options)
@@ -81,9 +101,68 @@ namespace UnityProfileV2.Telemetry
             };
         }
 
-        private static TelemetrySnapshot BuildSnapshot(int maxAssetsPerCategory, TelemetrySnapshotOptions options, SnapshotData snapshotData)
+        private readonly struct CategoryDiff<TInfo>
+            where TInfo : struct
+        {
+            public CategoryDiff(int[] order, TInfo[] updates)
+            {
+                Order = order ?? Array.Empty<int>();
+                Updates = updates ?? Array.Empty<TInfo>();
+            }
+
+            public int[] Order { get; }
+            public TInfo[] Updates { get; }
+        }
+
+        private static CategoryDiff<TInfo> ComputeCategoryDiff<TInfo>(
+            Dictionary<int, TInfo> state,
+            IReadOnlyList<TInfo> next,
+            bool hasBaseline,
+            Func<TInfo, int> getId)
+            where TInfo : struct
+        {
+            if (next == null)
+            {
+                next = Array.Empty<TInfo>();
+            }
+
+            var order = new int[next.Count];
+            var updates = new List<TInfo>(next.Count);
+            var nextMap = new Dictionary<int, TInfo>(next.Count);
+
+            for (var index = 0; index < next.Count; index += 1)
+            {
+                var info = next[index];
+                var id = getId(info);
+                order[index] = id;
+                nextMap[id] = info;
+
+                if (!hasBaseline || state == null || !state.TryGetValue(id, out var existing) || !info.Equals(existing))
+                {
+                    updates.Add(info);
+                }
+            }
+
+            if (state != null)
+            {
+                state.Clear();
+                foreach (var pair in nextMap)
+                {
+                    state[pair.Key] = pair.Value;
+                }
+            }
+
+            return new CategoryDiff<TInfo>(order, updates.ToArray());
+        }
+
+        private static TelemetrySnapshot BuildSnapshot(
+            TelemetryCollectionState state,
+            int maxAssetsPerCategory,
+            TelemetrySnapshotOptions options,
+            SnapshotData snapshotData)
         {
             var maxPerCategory = Mathf.Max(1, maxAssetsPerCategory);
+            var hasBaseline = state?.HasBaseline ?? false;
 
             var textures = options.includeTextures
                 ? DistinctBy(
@@ -128,18 +207,33 @@ namespace UnityProfileV2.Telemetry
                     .ToArray()
                 : Array.Empty<ShaderInfo>();
 
-            return new TelemetrySnapshot
+            var textureDiff = ComputeCategoryDiff(state?.Textures, textures, hasBaseline, info => info.instanceId);
+            var meshDiff = ComputeCategoryDiff(state?.Meshes, meshes, hasBaseline, info => info.instanceId);
+            var renderTextureDiff = ComputeCategoryDiff(state?.RenderTextures, renderTextures, hasBaseline, info => info.instanceId);
+            var materialDiff = ComputeCategoryDiff(state?.Materials, materials, hasBaseline, info => info.instanceId);
+            var shaderDiff = ComputeCategoryDiff(state?.Shaders, shaders, hasBaseline, info => info.instanceId);
+
+            var snapshot = new TelemetrySnapshot
             {
-                textures = textures,
-                meshes = meshes,
-                renderTextures = renderTextures,
-                materials = materials,
-                shaders = shaders,
-                totalTextureBytes = textures.Sum(t => t.EstimatedBytes),
-                totalMeshBytes = meshes.Sum(m => m.EstimatedBytes),
-                totalRenderTextureBytes = renderTextures.Sum(r => r.EstimatedBytes),
-                totalMaterialBytes = materials.Sum(m => m.memoryBytes)
+                isIncremental = hasBaseline,
+                textures = textureDiff.Updates,
+                textureOrder = textureDiff.Order,
+                meshes = meshDiff.Updates,
+                meshOrder = meshDiff.Order,
+                renderTextures = renderTextureDiff.Updates,
+                renderTextureOrder = renderTextureDiff.Order,
+                materials = materialDiff.Updates,
+                materialOrder = materialDiff.Order,
+                shaders = shaderDiff.Updates,
+                shaderOrder = shaderDiff.Order
             };
+
+            if (state != null)
+            {
+                state.HasBaseline = true;
+            }
+
+            return snapshot;
         }
 
         private static IEnumerable<T> DistinctBy<T>(IEnumerable<T> source, Func<T, string> keySelector, StringComparison comparison = StringComparison.Ordinal)
@@ -381,10 +475,13 @@ namespace UnityProfileV2.Telemetry
 
             if (TextureCache.TryGetValue(instanceId, out var cached) && cached.Signature.Equals(signature))
             {
-                return cached.Info;
+                var cachedInfo = cached.Info;
+                cachedInfo.instanceId = instanceId;
+                return cachedInfo;
             }
 
             var info = TextureInfo.FromTexture(texture);
+            info.instanceId = instanceId;
             TextureCache[instanceId] = new CachedEntry<TextureInfo, TextureSignature>
             {
                 Info = info,
@@ -401,10 +498,13 @@ namespace UnityProfileV2.Telemetry
 
             if (MeshCache.TryGetValue(instanceId, out var cached) && cached.Signature.Equals(signature))
             {
-                return cached.Info;
+                var cachedInfo = cached.Info;
+                cachedInfo.instanceId = instanceId;
+                return cachedInfo;
             }
 
             var info = MeshInfo.FromMesh(mesh);
+            info.instanceId = instanceId;
             MeshCache[instanceId] = new CachedEntry<MeshInfo, MeshSignature>
             {
                 Info = info,
@@ -421,10 +521,13 @@ namespace UnityProfileV2.Telemetry
 
             if (RenderTextureCache.TryGetValue(instanceId, out var cached) && cached.Signature.Equals(signature))
             {
-                return cached.Info;
+                var cachedInfo = cached.Info;
+                cachedInfo.instanceId = instanceId;
+                return cachedInfo;
             }
 
             var info = RenderTextureInfo.FromRenderTexture(renderTexture);
+            info.instanceId = instanceId;
             RenderTextureCache[instanceId] = new CachedEntry<RenderTextureInfo, RenderTextureSignature>
             {
                 Info = info,
@@ -441,10 +544,13 @@ namespace UnityProfileV2.Telemetry
 
             if (MaterialCache.TryGetValue(instanceId, out var cached) && cached.Signature.Equals(signature))
             {
-                return cached.Info;
+                var cachedInfo = cached.Info;
+                cachedInfo.instanceId = instanceId;
+                return cachedInfo;
             }
 
             var info = MaterialInfo.FromMaterial(material);
+            info.instanceId = instanceId;
             MaterialCache[instanceId] = new CachedEntry<MaterialInfo, MaterialSignature>
             {
                 Info = info,
@@ -461,10 +567,13 @@ namespace UnityProfileV2.Telemetry
 
             if (ShaderCache.TryGetValue(instanceId, out var cached) && cached.Signature.Equals(signature))
             {
-                return cached.Info;
+                var cachedInfo = cached.Info;
+                cachedInfo.instanceId = instanceId;
+                return cachedInfo;
             }
 
             var info = ShaderInfo.FromShader(shader);
+            info.instanceId = instanceId;
             ShaderCache[instanceId] = new CachedEntry<ShaderInfo, ShaderSignature>
             {
                 Info = info,
@@ -1670,14 +1779,16 @@ namespace UnityProfileV2.Telemetry
         public int frameNumber;
         public float fps;
         public float deltaTime;
-        public long totalTextureBytes;
-        public long totalMeshBytes;
-        public long totalRenderTextureBytes;
-        public long totalMaterialBytes;
+        public bool isIncremental;
+        public int[] textureOrder = Array.Empty<int>();
         public TextureInfo[] textures = Array.Empty<TextureInfo>();
+        public int[] meshOrder = Array.Empty<int>();
         public MeshInfo[] meshes = Array.Empty<MeshInfo>();
+        public int[] renderTextureOrder = Array.Empty<int>();
         public RenderTextureInfo[] renderTextures = Array.Empty<RenderTextureInfo>();
+        public int[] materialOrder = Array.Empty<int>();
         public MaterialInfo[] materials = Array.Empty<MaterialInfo>();
+        public int[] shaderOrder = Array.Empty<int>();
         public ShaderInfo[] shaders = Array.Empty<ShaderInfo>();
         public FramePreviewInfo framePreview;
     }
@@ -1696,6 +1807,7 @@ namespace UnityProfileV2.Telemetry
     [Serializable]
     public struct TextureInfo
     {
+        public int instanceId;
         public string name;
         public string path;
         public int width;
@@ -1725,6 +1837,7 @@ namespace UnityProfileV2.Telemetry
 
             return new TextureInfo
             {
+                instanceId = texture != null ? texture.GetInstanceID() : 0,
                 name = texture.name,
                 path = AssetTelemetryUtility.GetAssetPath(texture),
                 width = texture.width,
@@ -1748,6 +1861,7 @@ namespace UnityProfileV2.Telemetry
     [Serializable]
     public struct MeshInfo
     {
+        public int instanceId;
         public string name;
         public string path;
         public int vertexCount;
@@ -1765,6 +1879,7 @@ namespace UnityProfileV2.Telemetry
             var boundsSize = mesh.bounds.size;
             return new MeshInfo
             {
+                instanceId = mesh != null ? mesh.GetInstanceID() : 0,
                 name = mesh.name,
                 path = AssetTelemetryUtility.GetAssetPath(mesh),
                 vertexCount = mesh.vertexCount,
@@ -1791,6 +1906,7 @@ namespace UnityProfileV2.Telemetry
     [Serializable]
     public struct MaterialInfo
     {
+        public int instanceId;
         public string name;
         public string path;
         public string shaderName;
@@ -1831,6 +1947,7 @@ namespace UnityProfileV2.Telemetry
 
             return new MaterialInfo
             {
+                instanceId = material.GetInstanceID(),
                 name = material.name,
                 path = AssetTelemetryUtility.GetAssetPath(material),
                 shaderName = shader != null ? shader.name : string.Empty,
@@ -1848,6 +1965,7 @@ namespace UnityProfileV2.Telemetry
     [Serializable]
     public struct RenderTextureInfo
     {
+        public int instanceId;
         public string name;
         public int width;
         public int height;
@@ -1869,6 +1987,7 @@ namespace UnityProfileV2.Telemetry
 
             return new RenderTextureInfo
             {
+                instanceId = renderTexture != null ? renderTexture.GetInstanceID() : 0,
                 name = renderTexture.name,
                 width = renderTexture.width,
                 height = renderTexture.height,
@@ -1888,6 +2007,7 @@ namespace UnityProfileV2.Telemetry
     [Serializable]
     public struct ShaderInfo
     {
+        public int instanceId;
         public string name;
         public string path;
         public int passCount;
@@ -1898,6 +2018,7 @@ namespace UnityProfileV2.Telemetry
         {
             return new ShaderInfo
             {
+                instanceId = shader != null ? shader.GetInstanceID() : 0,
                 name = shader.name,
                 path = AssetTelemetryUtility.GetAssetPath(shader),
                 passCount = shader.passCount,

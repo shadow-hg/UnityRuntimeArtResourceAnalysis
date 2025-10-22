@@ -1,4 +1,5 @@
 export interface TextureInfo {
+  instanceId?: number;
   name: string;
   path: string;
   width: number;
@@ -19,6 +20,7 @@ export interface TextureInfo {
 }
 
 export interface MeshInfo {
+  instanceId?: number;
   name: string;
   path: string;
   vertexCount: number;
@@ -32,6 +34,7 @@ export interface MeshInfo {
 }
 
 export interface RenderTextureInfo {
+  instanceId?: number;
   name: string;
   width: number;
   height: number;
@@ -65,6 +68,7 @@ export interface MaterialTextureReference {
 }
 
 export interface MaterialInfo {
+  instanceId?: number;
   name: string;
   path: string;
   shaderName?: string;
@@ -78,6 +82,7 @@ export interface MaterialInfo {
 }
 
 export interface ShaderInfo {
+  instanceId?: number;
   name: string;
   path: string;
   passCount: number;
@@ -86,6 +91,7 @@ export interface ShaderInfo {
 }
 
 export interface TelemetrySnapshot {
+  isIncremental?: boolean;
   timestampUtc: string;
   frameNumber: number;
   fps: number;
@@ -96,10 +102,15 @@ export interface TelemetrySnapshot {
   totalMaterialBytes?: number;
   totalShaderBytes?: number;
   shaderMemoryBytes?: number;
+  textureOrder?: number[];
   textures: TextureInfo[];
+  meshOrder?: number[];
   meshes: MeshInfo[];
+  renderTextureOrder?: number[];
   renderTextures?: RenderTextureInfo[];
+  materialOrder?: number[];
   materials?: MaterialInfo[];
+  shaderOrder?: number[];
   shaders: ShaderInfo[];
   framePreview?: FramePreviewInfo | null;
 }
