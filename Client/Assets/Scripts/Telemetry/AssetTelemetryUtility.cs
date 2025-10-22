@@ -1135,7 +1135,7 @@ namespace UnityProfileV2.Telemetry
             return width >= height ? "landscape" : "portrait";
         }
 
-#if UNITY_2022_2_OR_NEWER
+#if UNITY_2023_1_OR_NEWER
         private static void DisposeAsyncReadbackRequest(ref AsyncGPUReadbackRequest request)
         {
             if (request.Equals(default))
@@ -1143,6 +1143,8 @@ namespace UnityProfileV2.Telemetry
                 return;
             }
 
+            // AsyncGPUReadbackRequest.Dispose was introduced in Unity 2023.1.
+            // Guarding the call keeps 2022 LTS projects (like 2022.3.25) compiling.
             request.Dispose();
             request = default;
         }
