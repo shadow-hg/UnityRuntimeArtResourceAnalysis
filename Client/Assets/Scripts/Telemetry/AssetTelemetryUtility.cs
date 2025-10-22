@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Text;
 using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Experimental.Rendering;
@@ -176,300 +177,33 @@ namespace UnityProfileV2.Telemetry
 
         private static ShaderVariantInfo GetShaderVariantInfo(Shader shader)
         {
-#if UNITY_EDITOR
-            var (totalVariantCount, compiledVariantCount, hasAccurateCompiledCount) =
-                GetShaderVariantCountsFromEditor(shader);
-
-            if (totalVariantCount < 0)
+            if (shader == null)
             {
-                totalVariantCount = 0;
+                return default;
             }
 
-            if (!hasAccurateCompiledCount || compiledVariantCount < 0)
+            if (!RuntimeShaderVariantUsage.TryGetValue(shader.GetInstanceID(), out var variants))
             {
-                compiledVariantCount = 0;
+                return new ShaderVariantInfo
+                {
+                    TotalVariantCount = 0,
+                    CompiledVariantCount = 0,
+                    PendingVariantCount = 0,
+                    HasAccurateCompiledVariantCount = false
+                };
             }
 
-            if (hasAccurateCompiledCount && compiledVariantCount > totalVariantCount && totalVariantCount > 0)
-            {
-                compiledVariantCount = totalVariantCount;
-            }
-
-            var pending = hasAccurateCompiledCount
-                ? Math.Max(0, totalVariantCount - compiledVariantCount)
-                : 0;
+            var variantCount = variants.Count;
 
             return new ShaderVariantInfo
             {
-                TotalVariantCount = totalVariantCount,
-                CompiledVariantCount = compiledVariantCount,
-                PendingVariantCount = pending,
-                HasAccurateCompiledVariantCount = hasAccurateCompiledCount
+                TotalVariantCount = variantCount,
+                CompiledVariantCount = variantCount,
+                PendingVariantCount = 0,
+                HasAccurateCompiledVariantCount = true
             };
-#else
-            return default;
-#endif
         }
 
-#if UNITY_EDITOR
-        private static readonly MethodInfo ShaderVariantCountWithBoolMethod =
-            typeof(ShaderUtil).GetMethod(
-                "GetShaderVariantCount",
-                BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic,
-                null,
-                new[] { typeof(Shader), typeof(bool) },
-                null)
-            ?? typeof(ShaderUtil).GetMethod(
-                "GetVariantCount",
-                BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic,
-                null,
-                new[] { typeof(Shader), typeof(bool) },
-                null);
-
-        private static readonly MethodInfo ShaderVariantCountSingleMethod =
-            typeof(ShaderUtil).GetMethod(
-                "GetShaderVariantCount",
-                BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic,
-                null,
-                new[] { typeof(Shader) },
-                null)
-            ?? typeof(ShaderUtil).GetMethod(
-                "GetVariantCount",
-                BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic,
-                null,
-                new[] { typeof(Shader) },
-                null);
-
-        private static readonly MethodInfo ShaderVariantEntriesFilteredMethod =
-            typeof(ShaderUtil).GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
-                .FirstOrDefault(method => string.Equals(method.Name, "GetShaderVariantEntriesFiltered", StringComparison.Ordinal))
-            ?? typeof(ShaderUtil).GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
-                .FirstOrDefault(method => string.Equals(method.Name, "GetShaderVariantEntries", StringComparison.Ordinal));
-
-        private static readonly bool ShaderVariantQueriesSupported =
-            ShaderVariantCountWithBoolMethod != null || ShaderVariantEntriesFilteredMethod != null;
-
-        private static (int total, int compiled, bool hasAccurateCompiledCount) GetShaderVariantCountsFromEditor(Shader shader)
-        {
-            if (shader == null)
-            {
-                return (0, 0, false);
-            }
-
-            var total = 0;
-            var compiled = 0;
-            var hasAccurateCompiledCount = false;
-
-            if (ShaderVariantCountWithBoolMethod != null)
-            {
-                total = Math.Max(total, InvokeShaderVariantCount(ShaderVariantCountWithBoolMethod, shader, true));
-                var compiledEstimate = InvokeShaderVariantCount(ShaderVariantCountWithBoolMethod, shader, false);
-                if (compiledEstimate >= 0)
-                {
-                    compiled = Math.Max(compiled, compiledEstimate);
-                    hasAccurateCompiledCount = true;
-                }
-            }
-
-            if (total <= 0 && ShaderVariantCountSingleMethod != null)
-            {
-                total = Math.Max(total, InvokeShaderVariantCount(ShaderVariantCountSingleMethod, shader, true));
-            }
-
-            compiled = Math.Max(compiled, GetCompiledShaderVariantCount(shader, total, out var compiledFromEntries));
-            hasAccurateCompiledCount = hasAccurateCompiledCount || compiledFromEntries;
-
-            return (total, compiled, hasAccurateCompiledCount);
-        }
-
-        private static int InvokeShaderVariantCount(MethodInfo method, Shader shader, bool includeAllVariants)
-        {
-            if (method == null || shader == null)
-            {
-                return 0;
-            }
-
-            try
-            {
-                var parameters = method.GetParameters();
-                object result;
-
-                if (parameters.Length == 1)
-                {
-                    result = method.Invoke(null, new object[] { shader });
-                }
-                else if (parameters.Length == 2)
-                {
-                    result = method.Invoke(null, new object[] { shader, includeAllVariants });
-                }
-                else
-                {
-                    return 0;
-                }
-
-                return SafeConvertToInt(result);
-            }
-            catch
-            {
-                return 0;
-            }
-        }
-
-        private static int GetCompiledShaderVariantCount(Shader shader, int totalEstimate, out bool hasAccurateCount)
-        {
-            hasAccurateCount = false;
-            if (shader == null)
-            {
-                return 0;
-            }
-
-            if (ShaderVariantEntriesFilteredMethod == null)
-            {
-                return 0;
-            }
-
-            try
-            {
-                var parameters = ShaderVariantEntriesFilteredMethod.GetParameters();
-                var args = new object[parameters.Length];
-                var bufferSize = Math.Max(1, Math.Min(Math.Max(totalEstimate, 1), 4096));
-
-                for (var index = 0; index < parameters.Length; index += 1)
-                {
-                    var parameter = parameters[index];
-                    var parameterType = parameter.ParameterType;
-
-                    if (parameterType.IsByRef)
-                    {
-                        var elementType = parameterType.GetElementType() ?? typeof(object);
-                        args[index] = elementType == typeof(int)
-                            ? 0
-                            : Activator.CreateInstance(elementType);
-                        continue;
-                    }
-
-                    if (typeof(Shader).IsAssignableFrom(parameterType))
-                    {
-                        args[index] = shader;
-                        continue;
-                    }
-
-                    if (parameterType == typeof(bool))
-                    {
-                        var name = parameter.Name ?? string.Empty;
-                        if (name.IndexOf("includeAll", StringComparison.OrdinalIgnoreCase) >= 0)
-                        {
-                            args[index] = false;
-                        }
-                        else if (name.IndexOf("includeCompiled", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                 name.IndexOf("onlyCompiled", StringComparison.OrdinalIgnoreCase) >= 0)
-                        {
-                            args[index] = true;
-                        }
-                        else
-                        {
-                            args[index] = false;
-                        }
-
-                        continue;
-                    }
-
-                    if (parameterType == typeof(int))
-                    {
-                        args[index] = bufferSize;
-                        continue;
-                    }
-
-                    if (parameterType == typeof(string[]))
-                    {
-                        args[index] = Array.Empty<string>();
-                        continue;
-                    }
-
-                    if (parameterType.IsArray)
-                    {
-                        var elementType = parameterType.GetElementType() ?? typeof(object);
-                        args[index] = Array.CreateInstance(elementType, bufferSize);
-                        continue;
-                    }
-
-                    if (parameterType.IsValueType)
-                    {
-                        args[index] = Activator.CreateInstance(parameterType);
-                        continue;
-                    }
-
-                    args[index] = null;
-                }
-
-                var result = ShaderVariantEntriesFilteredMethod.Invoke(null, args);
-                var count = ExtractVariantCount(result);
-                if (count >= 0)
-                {
-                    hasAccurateCount = true;
-                    return count;
-                }
-
-                for (var index = 0; index < parameters.Length; index += 1)
-                {
-                    if (!parameters[index].ParameterType.IsByRef)
-                    {
-                        continue;
-                    }
-
-                    if (args[index] is int refCount)
-                    {
-                        hasAccurateCount = true;
-                        return Math.Max(0, refCount);
-                    }
-                }
-
-                return 0;
-            }
-            catch
-            {
-                return 0;
-            }
-        }
-#else
-        private const bool ShaderVariantQueriesSupported = false;
-
-        private static (int total, int compiled, bool hasAccurateCompiledCount) GetShaderVariantCountsFromEditor(Shader shader)
-        {
-            return (0, 0, false);
-        }
-#endif
-
-        private static int ExtractVariantCount(object result)
-        {
-            if (result == null)
-            {
-                return -1;
-            }
-
-            if (result is int intResult)
-            {
-                return Math.Max(0, intResult);
-            }
-
-            if (result is Array arrayResult)
-            {
-                return arrayResult.Length;
-            }
-
-            if (result is IEnumerable enumerableResult)
-            {
-                var count = 0;
-                foreach (var _ in enumerableResult)
-                {
-                    count += 1;
-                }
-
-                return count;
-            }
-
-            return -1;
-        }
 
         private readonly struct CategoryDiff<TInfo>
             where TInfo : struct
@@ -865,6 +599,11 @@ namespace UnityProfileV2.Telemetry
             ShaderInfoBuffer.Clear();
             ShaderSeenIds.Clear();
 
+            if (includeVariants)
+            {
+                UpdateRuntimeShaderVariantUsage();
+            }
+
             foreach (var shader in EnumerateRuntimeObjects<Shader>())
             {
                 if (shader == null)
@@ -886,6 +625,137 @@ namespace UnityProfileV2.Telemetry
 
             var result = ShaderInfoBuffer.ToArray();
             ShaderInfoBuffer.Clear();
+            return result;
+        }
+
+        private static void UpdateRuntimeShaderVariantUsage()
+        {
+            if (!Application.isPlaying)
+            {
+                return;
+            }
+
+            var renderers = UnityEngine.Object.FindObjectsOfType<Renderer>();
+            foreach (var renderer in renderers)
+            {
+                if (renderer == null)
+                {
+                    continue;
+                }
+
+                var materials = renderer.sharedMaterials;
+                if (materials == null)
+                {
+                    continue;
+                }
+
+                foreach (var material in materials)
+                {
+                    if (material == null)
+                    {
+                        continue;
+                    }
+
+                    var shader = material.shader;
+                    if (shader == null)
+                    {
+                        continue;
+                    }
+
+                    var combination = BuildKeywordCombination(material);
+                    RegisterRuntimeShaderVariant(shader, combination);
+                }
+            }
+        }
+
+        private static string BuildKeywordCombination(Material material)
+        {
+            var keywords = material.shaderKeywords;
+            if (keywords == null || keywords.Length == 0)
+            {
+                return string.Empty;
+            }
+
+            RuntimeShaderKeywordSet.Clear();
+            RuntimeShaderKeywordBuffer.Clear();
+            foreach (var keyword in keywords)
+            {
+                if (string.IsNullOrWhiteSpace(keyword))
+                {
+                    continue;
+                }
+
+                var trimmed = keyword.Trim();
+                if (trimmed.Length == 0)
+                {
+                    continue;
+                }
+
+                if (RuntimeShaderKeywordSet.Add(trimmed))
+                {
+                    RuntimeShaderKeywordBuffer.Add(trimmed);
+                }
+            }
+
+            if (RuntimeShaderKeywordBuffer.Count == 0)
+            {
+                return string.Empty;
+            }
+
+            RuntimeShaderKeywordBuffer.Sort(StringComparer.Ordinal);
+
+            RuntimeShaderKeywordBuilder.Clear();
+            for (var index = 0; index < RuntimeShaderKeywordBuffer.Count; index += 1)
+            {
+                if (index > 0)
+                {
+                    RuntimeShaderKeywordBuilder.Append('_');
+                }
+
+                RuntimeShaderKeywordBuilder.Append(RuntimeShaderKeywordBuffer[index]);
+            }
+
+            return RuntimeShaderKeywordBuilder.ToString();
+        }
+
+        private static void RegisterRuntimeShaderVariant(Shader shader, string keywordCombination)
+        {
+            if (shader == null)
+            {
+                return;
+            }
+
+            var shaderId = shader.GetInstanceID();
+            if (!RuntimeShaderVariantUsage.TryGetValue(shaderId, out var variants))
+            {
+                variants = new HashSet<string>(StringComparer.Ordinal);
+                RuntimeShaderVariantUsage[shaderId] = variants;
+            }
+
+            variants.Add(keywordCombination ?? string.Empty);
+        }
+
+        private static string[] GetRuntimeShaderKeywordVariants(Shader shader)
+        {
+            if (shader == null)
+            {
+                return Array.Empty<string>();
+            }
+
+            if (!RuntimeShaderVariantUsage.TryGetValue(shader.GetInstanceID(), out var variants) || variants.Count == 0)
+            {
+                return Array.Empty<string>();
+            }
+
+            RuntimeShaderVariantListBuffer.Clear();
+            foreach (var variant in variants)
+            {
+                RuntimeShaderVariantListBuffer.Add(string.IsNullOrEmpty(variant) ? NoKeywordVariantLabel : variant);
+            }
+
+            RuntimeShaderVariantListBuffer.Sort(StringComparer.Ordinal);
+            var result = RuntimeShaderVariantListBuffer.ToArray();
+            RuntimeShaderVariantListBuffer.Clear();
             return result;
         }
 
@@ -1419,6 +1289,15 @@ namespace UnityProfileV2.Telemetry
         private static readonly List<RenderTextureInfo> RenderTextureInfoBuffer = new();
         private static readonly List<MaterialInfo> MaterialInfoBuffer = new();
         private static readonly List<ShaderInfo> ShaderInfoBuffer = new();
+
+        private const string NoKeywordVariantLabel = "无关键字";
+        private const bool ShaderVariantQueriesSupported = true;
+
+        private static readonly Dictionary<int, HashSet<string>> RuntimeShaderVariantUsage = new();
+        private static readonly HashSet<string> RuntimeShaderKeywordSet = new(StringComparer.Ordinal);
+        private static readonly List<string> RuntimeShaderKeywordBuffer = new();
+        private static readonly List<string> RuntimeShaderVariantListBuffer = new();
+        private static readonly StringBuilder RuntimeShaderKeywordBuilder = new();
 
         public static IEnumerator PopulateFramePreview(TelemetrySnapshot snapshot, float framePreviewScale)
         {
@@ -2034,6 +1913,12 @@ namespace UnityProfileV2.Telemetry
 
         internal static string[] GetShaderKeywords(Shader shader)
         {
+            var runtimeVariants = GetRuntimeShaderKeywordVariants(shader);
+            if (runtimeVariants.Length > 0)
+            {
+                return runtimeVariants;
+            }
+
             if (shader == null)
             {
                 return Array.Empty<string>();
@@ -2118,7 +2003,10 @@ namespace UnityProfileV2.Telemetry
             return 32;
         }
 
-        internal static string[] GetShaderKeywords(Shader shader) => Array.Empty<string>();
+        internal static string[] GetShaderKeywords(Shader shader)
+        {
+            return GetRuntimeShaderKeywordVariants(shader);
+        }
 #endif
 
         internal static string[] GetMeshVertexAttributes(Mesh mesh)
