@@ -32,6 +32,8 @@ namespace UnityProfileV2.Telemetry
 
         private bool _framePreviewDisabled = false;
 
+        private bool _collectFps = true;
+
         private const int ServerConfigRequestTimeoutSeconds = 5;
         private const int ServerConfigRetryCount = 3;
         private const float ServerConfigRetryDelaySeconds = 1f;
@@ -678,6 +680,7 @@ namespace UnityProfileV2.Telemetry
             _maxAssetsPerCategory = Mathf.Max(payload.maxAssetsPerCategory, 1);
             _autoManageSession = payload.autoManageSession;
             _framePreviewDisabled = payload.disableFramePreview;
+            _collectFps = payload.collectFps;
 
             if (payload.assetCategoryVersion > 0)
             {
@@ -688,12 +691,15 @@ namespace UnityProfileV2.Telemetry
                     includeRenderTextures = payload.assetCategories.includeRenderTextures,
                     includeMaterials = payload.assetCategories.includeMaterials,
                     includeShaders = payload.assetCategories.includeShaders,
+                    includeShaderVariants = payload.collectShaderVariants,
                     hasExplicitSelection = true
                 };
             }
             else
             {
-                _snapshotOptions = TelemetrySnapshotOptions.Default;
+                var defaultOptions = TelemetrySnapshotOptions.Default;
+                defaultOptions.includeShaderVariants = payload.collectShaderVariants;
+                _snapshotOptions = defaultOptions;
             }
 
             _lastAppliedClientDefaults = payload;
@@ -722,6 +728,16 @@ namespace UnityProfileV2.Telemetry
             }
 
             if (a.autoManageSession != b.autoManageSession)
+            {
+                return false;
+            }
+
+            if (a.collectShaderVariants != b.collectShaderVariants)
+            {
+                return false;
+            }
+
+            if (a.collectFps != b.collectFps)
             {
                 return false;
             }
@@ -806,8 +822,8 @@ namespace UnityProfileV2.Telemetry
 
             snapshot.frameNumber = ++_snapshotSequence;
             snapshot.timestampUtc = DateTime.UtcNow.ToString("o");
-            snapshot.deltaTime = averageDeltaTime;
-            snapshot.fps = frameDelta > 0 ? frameDelta / elapsedRealtime : 0f;
+            snapshot.deltaTime = _collectFps ? averageDeltaTime : 0f;
+            snapshot.fps = _collectFps && frameDelta > 0 ? frameDelta / elapsedRealtime : 0f;
 
             _lastFrameCount = currentFrameCount;
             _lastSampleRealtime = nowRealtime;
@@ -879,6 +895,8 @@ namespace UnityProfileV2.Telemetry
             public bool disableFramePreview;
             public int maxAssetsPerCategory;
             public bool autoManageSession;
+            public bool collectShaderVariants;
+            public bool collectFps;
             public int assetCategoryVersion;
             public AssetCategoryPayload assetCategories;
         }

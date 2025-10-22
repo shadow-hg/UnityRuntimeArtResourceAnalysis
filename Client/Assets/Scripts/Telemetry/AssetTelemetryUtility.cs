@@ -22,6 +22,7 @@ namespace UnityProfileV2.Telemetry
         public bool includeRenderTextures;
         public bool includeMaterials;
         public bool includeShaders;
+        public bool includeShaderVariants;
         public bool hasExplicitSelection;
 
         public static TelemetrySnapshotOptions Default => new TelemetrySnapshotOptions
@@ -31,6 +32,7 @@ namespace UnityProfileV2.Telemetry
             includeRenderTextures = true,
             includeMaterials = true,
             includeShaders = true,
+            includeShaderVariants = true,
             hasExplicitSelection = true
         };
     }
@@ -98,6 +100,8 @@ namespace UnityProfileV2.Telemetry
                 return TelemetrySnapshotOptions.Default;
             }
 
+            var includeShaderVariants = options.includeShaders && options.includeShaderVariants;
+
             return new TelemetrySnapshotOptions
             {
                 includeTextures = options.includeTextures,
@@ -105,6 +109,7 @@ namespace UnityProfileV2.Telemetry
                 includeRenderTextures = options.includeRenderTextures,
                 includeMaterials = options.includeMaterials,
                 includeShaders = options.includeShaders,
+                includeShaderVariants = includeShaderVariants,
                 hasExplicitSelection = options.hasExplicitSelection
             };
         }
@@ -613,11 +618,13 @@ namespace UnityProfileV2.Telemetry
                     .ToArray()
                 : Array.Empty<ShaderInfo>();
 
-            var shaderVariantStats = options.includeShaders
+            var shouldIncludeShaderVariants = options.includeShaders && options.includeShaderVariants;
+
+            var shaderVariantStats = shouldIncludeShaderVariants
                 ? CalculateShaderVariantStats(snapshotData.shaders)
                 : default;
 
-            var supportsShaderVariantQueries = options.includeShaders && ShaderVariantQueriesSupported &&
+            var supportsShaderVariantQueries = shouldIncludeShaderVariants && ShaderVariantQueriesSupported &&
                 snapshotData.shaders.Any(shader => shader.hasAccurateCompiledVariantCount);
 
             var textureDiff = ComputeCategoryDiff(state?.Textures, textures, hasBaseline, info => info.instanceId);
@@ -717,7 +724,7 @@ namespace UnityProfileV2.Telemetry
 
             if (options.includeShaders)
             {
-                data.shaders = CaptureShaderInfos();
+                data.shaders = CaptureShaderInfos(options.includeShaderVariants);
             }
 
             return data;
@@ -854,7 +861,7 @@ namespace UnityProfileV2.Telemetry
             return result;
         }
 
-        private static ShaderInfo[] CaptureShaderInfos()
+        private static ShaderInfo[] CaptureShaderInfos(bool includeVariants)
         {
             ShaderInfoBuffer.Clear();
             ShaderSeenIds.Clear();
@@ -866,7 +873,7 @@ namespace UnityProfileV2.Telemetry
                     continue;
                 }
 
-                var info = GetOrCreateShaderInfo(shader);
+                var info = GetOrCreateShaderInfo(shader, includeVariants);
                 if (!info.IsValid)
                 {
                     continue;
@@ -975,11 +982,11 @@ namespace UnityProfileV2.Telemetry
             return info;
         }
 
-        private static ShaderInfo GetOrCreateShaderInfo(Shader shader)
+        private static ShaderInfo GetOrCreateShaderInfo(Shader shader, bool includeVariants)
         {
             var instanceId = shader.GetInstanceID();
-            var variantInfo = GetShaderVariantInfo(shader);
-            var signature = ShaderSignature.FromShader(shader, variantInfo);
+            var variantInfo = includeVariants ? GetShaderVariantInfo(shader) : default;
+            var signature = ShaderSignature.FromShader(shader, variantInfo, includeVariants);
 
             if (ShaderCache.TryGetValue(instanceId, out var cached) && cached.Signature.Equals(signature))
             {
@@ -988,7 +995,7 @@ namespace UnityProfileV2.Telemetry
                 return cachedInfo;
             }
 
-            var info = ShaderInfo.FromShader(shader, variantInfo);
+            var info = ShaderInfo.FromShader(shader, variantInfo, includeVariants);
             info.instanceId = instanceId;
             ShaderCache[instanceId] = new CachedEntry<ShaderInfo, ShaderSignature>
             {
@@ -1337,7 +1344,7 @@ namespace UnityProfileV2.Telemetry
             public int compiledVariantCount;
             public bool hasAccurateCompiledVariantCount;
 
-            public static ShaderSignature FromShader(Shader shader, ShaderVariantInfo variantInfo)
+            public static ShaderSignature FromShader(Shader shader, ShaderVariantInfo variantInfo, bool includeVariants)
             {
                 var keywords = GetShaderKeywords(shader) ?? Array.Empty<string>();
                 var normalizedKeywords = keywords
@@ -1356,9 +1363,9 @@ namespace UnityProfileV2.Telemetry
                     path = GetAssetPath(shader),
                     passCount = shader != null ? shader.passCount : 0,
                     keywordHash = keywordHash,
-                    totalVariantCount = variantInfo.TotalVariantCount,
-                    compiledVariantCount = variantInfo.CompiledVariantCount,
-                    hasAccurateCompiledVariantCount = variantInfo.HasAccurateCompiledVariantCount
+                    totalVariantCount = includeVariants ? variantInfo.TotalVariantCount : 0,
+                    compiledVariantCount = includeVariants ? variantInfo.CompiledVariantCount : 0,
+                    hasAccurateCompiledVariantCount = includeVariants && variantInfo.HasAccurateCompiledVariantCount
                 };
             }
 
@@ -2457,7 +2464,7 @@ namespace UnityProfileV2.Telemetry
         public bool hasAccurateCompiledVariantCount;
         public bool IsValid => !string.IsNullOrEmpty(name);
 
-        public static ShaderInfo FromShader(Shader shader, AssetTelemetryUtility.ShaderVariantInfo variantInfo)
+        public static ShaderInfo FromShader(Shader shader, AssetTelemetryUtility.ShaderVariantInfo variantInfo, bool includeVariants)
         {
             return new ShaderInfo
             {
@@ -2466,10 +2473,10 @@ namespace UnityProfileV2.Telemetry
                 path = AssetTelemetryUtility.GetAssetPath(shader),
                 passCount = shader.passCount,
                 keywords = AssetTelemetryUtility.GetShaderKeywords(shader),
-                totalVariantCount = variantInfo.TotalVariantCount,
-                compiledVariantCount = variantInfo.CompiledVariantCount,
-                pendingVariantCount = variantInfo.PendingVariantCount,
-                hasAccurateCompiledVariantCount = variantInfo.HasAccurateCompiledVariantCount
+                totalVariantCount = includeVariants ? variantInfo.TotalVariantCount : 0,
+                compiledVariantCount = includeVariants ? variantInfo.CompiledVariantCount : 0,
+                pendingVariantCount = includeVariants ? variantInfo.PendingVariantCount : 0,
+                hasAccurateCompiledVariantCount = includeVariants && variantInfo.HasAccurateCompiledVariantCount
             };
         }
     }
