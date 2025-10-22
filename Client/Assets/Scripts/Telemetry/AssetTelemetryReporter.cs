@@ -29,6 +29,8 @@ namespace UnityProfileV2.Telemetry
 
         private bool _autoManageSession = true;
 
+        private bool _framePreviewDisabled = false;
+
         private const int ServerConfigRequestTimeoutSeconds = 5;
         private const int ServerConfigRetryCount = 3;
         private const float ServerConfigRetryDelaySeconds = 1f;
@@ -458,6 +460,7 @@ namespace UnityProfileV2.Telemetry
             _framePreviewScale = Mathf.Clamp01(payload.framePreviewScale);
             _maxAssetsPerCategory = Mathf.Max(payload.maxAssetsPerCategory, 1);
             _autoManageSession = payload.autoManageSession;
+            _framePreviewDisabled = payload.disableFramePreview;
         }
 
         private IEnumerator EndSessionCoroutine(string sessionId)
@@ -483,8 +486,30 @@ namespace UnityProfileV2.Telemetry
 
         private IEnumerator SendSnapshot()
         {
-            var snapshot = AssetTelemetryUtility.CreateSnapshot(_maxAssetsPerCategory);
-            yield return AssetTelemetryUtility.PopulateFramePreview(snapshot, _framePreviewScale);
+            var snapshotTask = AssetTelemetryUtility.CreateSnapshotAsync(_maxAssetsPerCategory);
+
+            while (!snapshotTask.IsCompleted)
+            {
+                yield return null;
+            }
+
+            if (snapshotTask.IsFaulted)
+            {
+                Debug.LogError($"[UnityProfileV2] Failed to build telemetry snapshot: {snapshotTask.Exception?.GetBaseException().Message}");
+                yield break;
+            }
+
+            if (snapshotTask.IsCanceled)
+            {
+                Debug.LogWarning("[UnityProfileV2] Telemetry snapshot creation was canceled.");
+                yield break;
+            }
+
+            var snapshot = snapshotTask.Result;
+            if (!_framePreviewDisabled)
+            {
+                yield return AssetTelemetryUtility.PopulateFramePreview(snapshot, _framePreviewScale);
+            }
             var nowRealtime = Time.realtimeSinceStartup;
             var currentFrameCount = Time.frameCount;
             var frameDelta = Mathf.Max(currentFrameCount - _lastFrameCount, 0);
@@ -563,6 +588,7 @@ namespace UnityProfileV2.Telemetry
         {
             public float sampleIntervalSeconds;
             public float framePreviewScale;
+            public bool disableFramePreview;
             public int maxAssetsPerCategory;
             public bool autoManageSession;
         }

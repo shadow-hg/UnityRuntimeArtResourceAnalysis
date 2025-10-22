@@ -137,6 +137,7 @@ export interface NetworkInfoResponse {
 export interface ClientDefaultsConfig {
   sampleIntervalSeconds: number;
   framePreviewScale: number;
+  disableFramePreview: boolean;
   maxAssetsPerCategory: number;
   autoManageSession: boolean;
 }

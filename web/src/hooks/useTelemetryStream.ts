@@ -15,6 +15,7 @@ const DEFAULT_SERVER_CONFIG: ServerConfig = {
   clientDefaults: {
     sampleIntervalSeconds: 0,
     framePreviewScale: 0.2,
+    disableFramePreview: false,
     maxAssetsPerCategory: 200,
     autoManageSession: true,
   },
@@ -81,6 +82,10 @@ function sanitizeServerConfig(rawConfig: Partial<ServerConfig> | null | undefine
       min: 0,
       max: 1,
     });
+    base.clientDefaults.disableFramePreview = ensureBoolean(
+      clientDefaults.disableFramePreview,
+      base.clientDefaults.disableFramePreview
+    );
     base.clientDefaults.maxAssetsPerCategory = ensureNumber(
       clientDefaults.maxAssetsPerCategory,
       base.clientDefaults.maxAssetsPerCategory,

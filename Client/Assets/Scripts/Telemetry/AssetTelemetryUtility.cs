@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.SceneManagement;
@@ -16,48 +17,26 @@ namespace UnityProfileV2.Telemetry
     {
         public static TelemetrySnapshot CreateSnapshot(int maxAssetsPerCategory)
         {
-            var textures = EnumerateRuntimeObjects<Texture>()
-                .Where(texture => !IsRenderTextureLike(texture))
-                .Where(texture => texture is not Texture2D tex || !tex.hideFlags.HasFlag(HideFlags.DontSave))
-                .Select(TextureInfo.FromTexture)
-                .Where(info => info.IsValid && !info.isRenderTexture)
-                .Where(info => !IsTinyTexture(info.width, info.height))
-                .OrderByDescending(info => info.EstimatedBytes)
-                .GroupBy(info => info.name, StringComparer.OrdinalIgnoreCase)
-                .Select(group => group.First())
-                .Take(maxAssetsPerCategory)
-                .ToArray();
+            return CreateSnapshotAsync(maxAssetsPerCategory).GetAwaiter().GetResult();
+        }
 
-            var meshes = EnumerateRuntimeObjects<Mesh>()
-                .Select(MeshInfo.FromMesh)
-                .Where(info => info.IsValid)
-                .OrderByDescending(info => info.EstimatedBytes)
-                .Take(maxAssetsPerCategory)
-                .ToArray();
+        public static async Task<TelemetrySnapshot> CreateSnapshotAsync(int maxAssetsPerCategory)
+        {
+            var maxPerCategory = Mathf.Max(1, maxAssetsPerCategory);
 
-            var renderTextures = EnumerateRuntimeObjects<RenderTexture>()
-                .Select(RenderTextureInfo.FromRenderTexture)
-                .Where(info => info.IsValid)
-                .OrderByDescending(info => info.EstimatedBytes)
-                .GroupBy(info => info.name, StringComparer.OrdinalIgnoreCase)
-                .Select(group => group.First())
-                .Take(maxAssetsPerCategory)
-                .ToArray();
+            var texturesTask = Task.Run(() => CollectTextureInfos(maxPerCategory));
+            var meshesTask = Task.Run(() => CollectMeshInfos(maxPerCategory));
+            var renderTexturesTask = Task.Run(() => CollectRenderTextureInfos(maxPerCategory));
+            var materialsTask = Task.Run(() => CollectMaterialInfos(maxPerCategory));
+            var shadersTask = Task.Run(() => CollectShaderInfos(maxPerCategory));
 
-            var materials = EnumerateRuntimeObjects<Material>()
-                .Select(MaterialInfo.FromMaterial)
-                .Where(info => info.IsValid)
-                .OrderByDescending(info => info.memoryBytes)
-                .GroupBy(info => info.name, StringComparer.OrdinalIgnoreCase)
-                .Select(group => group.First())
-                .Take(maxAssetsPerCategory)
-                .ToArray();
+            await Task.WhenAll(texturesTask, meshesTask, renderTexturesTask, materialsTask, shadersTask).ConfigureAwait(false);
 
-            var shaders = EnumerateRuntimeObjects<Shader>()
-                .Select(ShaderInfo.FromShader)
-                .Where(info => info.IsValid)
-                .Take(maxAssetsPerCategory)
-                .ToArray();
+            var textures = texturesTask.Result;
+            var meshes = meshesTask.Result;
+            var renderTextures = renderTexturesTask.Result;
+            var materials = materialsTask.Result;
+            var shaders = shadersTask.Result;
 
             return new TelemetrySnapshot
             {
@@ -71,6 +50,64 @@ namespace UnityProfileV2.Telemetry
                 totalRenderTextureBytes = renderTextures.Sum(r => r.EstimatedBytes),
                 totalMaterialBytes = materials.Sum(m => m.memoryBytes)
             };
+        }
+
+        private static TextureInfo[] CollectTextureInfos(int maxAssetsPerCategory)
+        {
+            return EnumerateRuntimeObjects<Texture>()
+                .Where(texture => !IsRenderTextureLike(texture))
+                .Where(texture => texture is not Texture2D tex || !tex.hideFlags.HasFlag(HideFlags.DontSave))
+                .Select(TextureInfo.FromTexture)
+                .Where(info => info.IsValid && !info.isRenderTexture)
+                .Where(info => !IsTinyTexture(info.width, info.height))
+                .OrderByDescending(info => info.EstimatedBytes)
+                .GroupBy(info => info.name, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
+                .Take(maxAssetsPerCategory)
+                .ToArray();
+        }
+
+        private static MeshInfo[] CollectMeshInfos(int maxAssetsPerCategory)
+        {
+            return EnumerateRuntimeObjects<Mesh>()
+                .Select(MeshInfo.FromMesh)
+                .Where(info => info.IsValid)
+                .OrderByDescending(info => info.EstimatedBytes)
+                .Take(maxAssetsPerCategory)
+                .ToArray();
+        }
+
+        private static RenderTextureInfo[] CollectRenderTextureInfos(int maxAssetsPerCategory)
+        {
+            return EnumerateRuntimeObjects<RenderTexture>()
+                .Select(RenderTextureInfo.FromRenderTexture)
+                .Where(info => info.IsValid)
+                .OrderByDescending(info => info.EstimatedBytes)
+                .GroupBy(info => info.name, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
+                .Take(maxAssetsPerCategory)
+                .ToArray();
+        }
+
+        private static MaterialInfo[] CollectMaterialInfos(int maxAssetsPerCategory)
+        {
+            return EnumerateRuntimeObjects<Material>()
+                .Select(MaterialInfo.FromMaterial)
+                .Where(info => info.IsValid)
+                .OrderByDescending(info => info.memoryBytes)
+                .GroupBy(info => info.name, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
+                .Take(maxAssetsPerCategory)
+                .ToArray();
+        }
+
+        private static ShaderInfo[] CollectShaderInfos(int maxAssetsPerCategory)
+        {
+            return EnumerateRuntimeObjects<Shader>()
+                .Select(ShaderInfo.FromShader)
+                .Where(info => info.IsValid)
+                .Take(maxAssetsPerCategory)
+                .ToArray();
         }
 
         public static IEnumerator PopulateFramePreview(TelemetrySnapshot snapshot, float framePreviewScale)
