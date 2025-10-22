@@ -627,8 +627,8 @@ namespace UnityProfileV2.Telemetry
                     Mathf.Approximately(boundsSizeY, other.boundsSizeY) &&
                     Mathf.Approximately(boundsSizeZ, other.boundsSizeZ) &&
                     blendShapeCount == other.blendShapeCount &&
-                    string.Equals(name, other.name, StringComparer.Ordinal) &&
-                    string.Equals(path, other.path, StringComparer.Ordinal);
+                    string.Equals(name, other.name, StringComparison.Ordinal) &&
+                    string.Equals(path, other.path, StringComparison.Ordinal);
             }
 
             public override bool Equals(object obj)
@@ -694,7 +694,7 @@ namespace UnityProfileV2.Telemetry
                     format == other.format &&
                     graphicsFormat == other.graphicsFormat &&
                     antiAliasing == other.antiAliasing &&
-                    string.Equals(name, other.name, StringComparer.Ordinal);
+                    string.Equals(name, other.name, StringComparison.Ordinal);
             }
 
             public override bool Equals(object obj)
@@ -775,10 +775,10 @@ namespace UnityProfileV2.Telemetry
                 return renderQueue == other.renderQueue &&
                     enableInstancing == other.enableInstancing &&
                     doubleSidedGi == other.doubleSidedGi &&
-                    string.Equals(name, other.name, StringComparer.Ordinal) &&
-                    string.Equals(path, other.path, StringComparer.Ordinal) &&
-                    string.Equals(shaderName, other.shaderName, StringComparer.Ordinal) &&
-                    string.Equals(keywordHash, other.keywordHash, StringComparer.Ordinal);
+                    string.Equals(name, other.name, StringComparison.Ordinal) &&
+                    string.Equals(path, other.path, StringComparison.Ordinal) &&
+                    string.Equals(shaderName, other.shaderName, StringComparison.Ordinal) &&
+                    string.Equals(keywordHash, other.keywordHash, StringComparison.Ordinal);
             }
 
             public override bool Equals(object obj)
@@ -834,9 +834,9 @@ namespace UnityProfileV2.Telemetry
             public bool Equals(ShaderSignature other)
             {
                 return passCount == other.passCount &&
-                    string.Equals(name, other.name, StringComparer.Ordinal) &&
-                    string.Equals(path, other.path, StringComparer.Ordinal) &&
-                    string.Equals(keywordHash, other.keywordHash, StringComparer.Ordinal);
+                    string.Equals(name, other.name, StringComparison.Ordinal) &&
+                    string.Equals(path, other.path, StringComparison.Ordinal) &&
+                    string.Equals(keywordHash, other.keywordHash, StringComparison.Ordinal);
             }
 
             public override bool Equals(object obj)
