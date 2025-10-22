@@ -5,5 +5,7 @@ Client/Obj/
 Client/Build/
 Client/Builds/
 server/node_modules/
+server/data/previews/
+server/data/telemetry-history.json
 web/node_modules/
 web/dist/
