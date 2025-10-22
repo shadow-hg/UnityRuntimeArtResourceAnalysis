@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
+using Unity.Collections;
 using UnityEngine;
 using UnityEngine.Experimental.Rendering;
 using UnityEngine.Rendering;
@@ -45,8 +46,9 @@ namespace UnityProfileV2.Telemetry
         public static TelemetrySnapshot CreateSnapshot(int maxAssetsPerCategory, TelemetrySnapshotOptions options)
         {
             var normalizedOptions = NormalizeOptions(options);
+            _ = maxAssetsPerCategory;
             var snapshotData = CaptureSnapshotData(normalizedOptions);
-            return BuildSnapshot(maxAssetsPerCategory, normalizedOptions, snapshotData);
+            return BuildSnapshot(normalizedOptions, snapshotData);
         }
 
         public static Task<TelemetrySnapshot> CreateSnapshotAsync(int maxAssetsPerCategory)
@@ -57,8 +59,111 @@ namespace UnityProfileV2.Telemetry
         public static Task<TelemetrySnapshot> CreateSnapshotAsync(int maxAssetsPerCategory, TelemetrySnapshotOptions options)
         {
             var normalizedOptions = NormalizeOptions(options);
+            _ = maxAssetsPerCategory;
             var snapshotData = CaptureSnapshotData(normalizedOptions);
-            return Task.Run(() => BuildSnapshot(maxAssetsPerCategory, normalizedOptions, snapshotData));
+            return Task.Run(() => BuildSnapshot(normalizedOptions, snapshotData));
+        }
+
+        public static IEnumerator CreateSnapshotIncrementally(
+            int maxAssetsPerCategory,
+            TelemetrySnapshotOptions options,
+            Action<TelemetrySnapshot> onCompleted,
+            Action<Exception> onError = null)
+        {
+            if (onCompleted == null)
+            {
+                throw new ArgumentNullException(nameof(onCompleted));
+            }
+
+            var normalizedOptions = NormalizeOptions(options);
+            _ = maxAssetsPerCategory;
+            var snapshotData = new SnapshotData();
+
+            var texturesPending = normalizedOptions.includeTextures;
+            var meshesPending = normalizedOptions.includeMeshes;
+            var renderTexturesPending = normalizedOptions.includeRenderTextures;
+            var materialsPending = normalizedOptions.includeMaterials;
+            var shadersPending = normalizedOptions.includeShaders;
+
+            bool HasPendingWork()
+            {
+                return texturesPending || meshesPending || renderTexturesPending || materialsPending || shadersPending;
+            }
+
+            try
+            {
+                if (normalizedOptions.includeTextures)
+                {
+                    snapshotData.textures = CaptureTextureInfos();
+                    texturesPending = false;
+                    if (HasPendingWork())
+                    {
+                        yield return null;
+                    }
+                }
+
+                if (normalizedOptions.includeMeshes)
+                {
+                    snapshotData.meshes = CaptureMeshInfos();
+                    meshesPending = false;
+                    if (HasPendingWork())
+                    {
+                        yield return null;
+                    }
+                }
+
+                if (normalizedOptions.includeRenderTextures)
+                {
+                    snapshotData.renderTextures = CaptureRenderTextureInfos();
+                    renderTexturesPending = false;
+                    if (HasPendingWork())
+                    {
+                        yield return null;
+                    }
+                }
+
+                if (normalizedOptions.includeMaterials)
+                {
+                    snapshotData.materials = CaptureMaterialInfos();
+                    materialsPending = false;
+                    if (HasPendingWork())
+                    {
+                        yield return null;
+                    }
+                }
+
+                if (normalizedOptions.includeShaders)
+                {
+                    snapshotData.shaders = CaptureShaderInfos();
+                    shadersPending = false;
+                }
+            }
+            catch (Exception ex)
+            {
+                onError?.Invoke(ex);
+                yield break;
+            }
+
+            var buildTask = Task.Run(() => BuildSnapshot(normalizedOptions, snapshotData));
+
+            while (!buildTask.IsCompleted)
+            {
+                yield return null;
+            }
+
+            if (buildTask.IsFaulted)
+            {
+                onError?.Invoke(buildTask.Exception?.GetBaseException() ?? buildTask.Exception);
+                yield break;
+            }
+
+            if (buildTask.IsCanceled)
+            {
+                onError?.Invoke(new TaskCanceledException(buildTask));
+                yield break;
+            }
+
+            onCompleted(buildTask.Result);
         }
 
         private static TelemetrySnapshotOptions NormalizeOptions(TelemetrySnapshotOptions options)
@@ -81,51 +186,26 @@ namespace UnityProfileV2.Telemetry
             };
         }
 
-        private static TelemetrySnapshot BuildSnapshot(int maxAssetsPerCategory, TelemetrySnapshotOptions options, SnapshotData snapshotData)
+        private static TelemetrySnapshot BuildSnapshot(TelemetrySnapshotOptions options, SnapshotData snapshotData)
         {
-            var maxPerCategory = Mathf.Max(1, maxAssetsPerCategory);
-
             var textures = options.includeTextures
-                ? DistinctBy(
-                        snapshotData.textures
-                            .OrderByDescending(info => info.EstimatedBytes),
-                        info => info.name,
-                        StringComparison.OrdinalIgnoreCase)
-                    .Take(maxPerCategory)
-                    .ToArray()
+                ? snapshotData.textures ?? Array.Empty<TextureInfo>()
                 : Array.Empty<TextureInfo>();
 
             var meshes = options.includeMeshes
-                ? snapshotData.meshes
-                    .OrderByDescending(info => info.EstimatedBytes)
-                    .Take(maxPerCategory)
-                    .ToArray()
+                ? snapshotData.meshes ?? Array.Empty<MeshInfo>()
                 : Array.Empty<MeshInfo>();
 
             var renderTextures = options.includeRenderTextures
-                ? DistinctBy(
-                        snapshotData.renderTextures
-                            .OrderByDescending(info => info.EstimatedBytes),
-                        info => info.name,
-                        StringComparison.OrdinalIgnoreCase)
-                    .Take(maxPerCategory)
-                    .ToArray()
+                ? snapshotData.renderTextures ?? Array.Empty<RenderTextureInfo>()
                 : Array.Empty<RenderTextureInfo>();
 
             var materials = options.includeMaterials
-                ? DistinctBy(
-                        snapshotData.materials
-                            .OrderByDescending(info => info.memoryBytes),
-                        info => info.name,
-                        StringComparison.OrdinalIgnoreCase)
-                    .Take(maxPerCategory)
-                    .ToArray()
+                ? snapshotData.materials ?? Array.Empty<MaterialInfo>()
                 : Array.Empty<MaterialInfo>();
 
             var shaders = options.includeShaders
-                ? snapshotData.shaders
-                    .Take(maxPerCategory)
-                    .ToArray()
+                ? snapshotData.shaders ?? Array.Empty<ShaderInfo>()
                 : Array.Empty<ShaderInfo>();
 
             return new TelemetrySnapshot
@@ -140,46 +220,6 @@ namespace UnityProfileV2.Telemetry
                 totalRenderTextureBytes = renderTextures.Sum(r => r.EstimatedBytes),
                 totalMaterialBytes = materials.Sum(m => m.memoryBytes)
             };
-        }
-
-        private static IEnumerable<T> DistinctBy<T>(IEnumerable<T> source, Func<T, string> keySelector, StringComparison comparison = StringComparison.Ordinal)
-        {
-            if (source == null)
-            {
-                yield break;
-            }
-
-            var seenKeys = new HashSet<string>(StringComparerFromComparison(comparison));
-            foreach (var element in source)
-            {
-                var key = keySelector != null ? keySelector(element) : null;
-                key = key ?? string.Empty;
-
-                if (seenKeys.Add(key))
-                {
-                    yield return element;
-                }
-            }
-        }
-
-        private static StringComparer StringComparerFromComparison(StringComparison comparison)
-        {
-            switch (comparison)
-            {
-                case StringComparison.CurrentCulture:
-                    return StringComparer.CurrentCulture;
-                case StringComparison.CurrentCultureIgnoreCase:
-                    return StringComparer.CurrentCultureIgnoreCase;
-                case StringComparison.InvariantCulture:
-                    return StringComparer.InvariantCulture;
-                case StringComparison.InvariantCultureIgnoreCase:
-                    return StringComparer.InvariantCultureIgnoreCase;
-                case StringComparison.OrdinalIgnoreCase:
-                    return StringComparer.OrdinalIgnoreCase;
-                case StringComparison.Ordinal:
-                default:
-                    return StringComparer.Ordinal;
-            }
         }
 
         private static SnapshotData CaptureSnapshotData(TelemetrySnapshotOptions options)
@@ -891,109 +931,168 @@ namespace UnityProfileV2.Telemetry
 
             yield return new WaitForEndOfFrame();
 
-            Texture2D screenshot = null;
-            Texture2D scaledScreenshot = null;
+            var captureWidth = Screen.width;
+            var captureHeight = Screen.height;
 
-            try
-            {
-                screenshot = ScreenCapture.CaptureScreenshotAsTexture();
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning($"[UnityProfileV2] Failed to capture frame preview: {ex.Message}\n{ex.StackTrace}");
-            }
-
-            var normalizedScale = Mathf.Clamp01(framePreviewScale);
-            if (screenshot != null && normalizedScale > 0f && normalizedScale < 0.999f)
-            {
-                scaledScreenshot = TryScaleFramePreview(screenshot, normalizedScale);
-                if (scaledScreenshot != null)
-                {
-                    UnityEngine.Object.Destroy(screenshot);
-                    screenshot = scaledScreenshot;
-                }
-            }
-
-            if (screenshot == null)
+            if (captureWidth <= 0 || captureHeight <= 0)
             {
                 yield break;
             }
 
+            var normalizedScale = Mathf.Clamp01(framePreviewScale);
+
+            RenderTexture primaryRenderTexture = null;
+            RenderTexture targetRenderTexture = null;
+            AsyncGPUReadbackRequest readbackRequest = default;
+
             try
             {
-                var pngData = ImageConversion.EncodeToPNG(screenshot);
-                if (pngData != null && pngData.Length > 0)
+                primaryRenderTexture = RenderTexture.GetTemporary(captureWidth, captureHeight, 0, RenderTextureFormat.ARGB32);
+                targetRenderTexture = primaryRenderTexture;
+
+                if (normalizedScale > 0f && normalizedScale < 0.999f)
                 {
-                    var base64 = Convert.ToBase64String(pngData);
-                    var orientation = DetermineOrientation(screenshot.width, screenshot.height);
-                    snapshot.framePreview = new FramePreviewInfo
+                    var scaledWidth = Mathf.Max(1, Mathf.RoundToInt(captureWidth * normalizedScale));
+                    var scaledHeight = Mathf.Max(1, Mathf.RoundToInt(captureHeight * normalizedScale));
+                    targetRenderTexture = RenderTexture.GetTemporary(scaledWidth, scaledHeight, 0, RenderTextureFormat.ARGB32);
+                }
+
+                ScreenCapture.CaptureScreenshotIntoRenderTexture(primaryRenderTexture);
+
+                if (targetRenderTexture != primaryRenderTexture)
+                {
+                    Graphics.Blit(primaryRenderTexture, targetRenderTexture);
+                }
+
+                readbackRequest = AsyncGPUReadback.Request(targetRenderTexture, 0, TextureFormat.RGBA32);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[UnityProfileV2] Failed to capture frame preview: {ex.Message}\n{ex.StackTrace}");
+
+                if (!readbackRequest.Equals(default))
+                {
+                    readbackRequest.Dispose();
+                }
+
+                if (primaryRenderTexture != null)
+                {
+                    RenderTexture.ReleaseTemporary(primaryRenderTexture);
+                }
+
+                if (targetRenderTexture != null && targetRenderTexture != primaryRenderTexture)
+                {
+                    RenderTexture.ReleaseTemporary(targetRenderTexture);
+                }
+
+                yield break;
+            }
+
+            while (!readbackRequest.done)
+            {
+                yield return null;
+            }
+
+            if (readbackRequest.hasError)
+            {
+                Debug.LogWarning("[UnityProfileV2] GPU readback failed while capturing frame preview.");
+                readbackRequest.Dispose();
+
+                if (primaryRenderTexture != null)
+                {
+                    RenderTexture.ReleaseTemporary(primaryRenderTexture);
+                }
+
+                if (targetRenderTexture != null && targetRenderTexture != primaryRenderTexture)
+                {
+                    RenderTexture.ReleaseTemporary(targetRenderTexture);
+                }
+
+                yield break;
+            }
+
+            var targetWidth = targetRenderTexture.width;
+            var targetHeight = targetRenderTexture.height;
+            var orientationLabel = DetermineOrientation(targetWidth, targetHeight);
+            var captureTimestamp = DateTime.UtcNow.ToString("o");
+
+            var gpuData = readbackRequest.GetData<byte>();
+            var managedData = new byte[gpuData.Length];
+            gpuData.CopyTo(managedData);
+
+            readbackRequest.Dispose();
+
+            if (primaryRenderTexture != null)
+            {
+                RenderTexture.ReleaseTemporary(primaryRenderTexture);
+            }
+
+            if (targetRenderTexture != null && targetRenderTexture != primaryRenderTexture)
+            {
+                RenderTexture.ReleaseTemporary(targetRenderTexture);
+            }
+
+            Task<(FramePreviewInfo preview, Exception error)> encodeTask = Task.Run(() =>
+            {
+                NativeArray<byte> rawCopy = default;
+                NativeArray<byte> pngData = default;
+
+                try
+                {
+                    rawCopy = new NativeArray<byte>(managedData, Allocator.Persistent);
+
+                    pngData = ImageConversion.EncodeNativeArrayToPNG(
+                        rawCopy,
+                        GraphicsFormat.R8G8B8A8_UNorm,
+                        (uint)targetWidth,
+                        (uint)targetHeight);
+
+                    var pngBytes = pngData.ToArray();
+                    var base64 = Convert.ToBase64String(pngBytes);
+
+                    var preview = new FramePreviewInfo
                     {
-                        width = screenshot.width,
-                        height = screenshot.height,
-                        captureTimestampUtc = DateTime.UtcNow.ToString("o"),
+                        width = targetWidth,
+                        height = targetHeight,
+                        captureTimestampUtc = captureTimestamp,
                         previewBase64 = $"data:image/png;base64,{base64}",
-                        orientation = string.IsNullOrEmpty(orientation) ? null : orientation
+                        orientation = string.IsNullOrEmpty(orientationLabel) ? null : orientationLabel
                     };
+
+                    return (preview, (Exception)null);
                 }
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning($"[UnityProfileV2] Failed to encode frame preview: {ex.Message}\n{ex.StackTrace}");
-            }
-            finally
-            {
-                UnityEngine.Object.Destroy(screenshot);
-            }
-        }
-
-        private static Texture2D TryScaleFramePreview(Texture2D source, float scale)
-        {
-            if (source == null)
-            {
-                return null;
-            }
-
-            scale = Mathf.Clamp(scale, 0.001f, 1f);
-            var targetWidth = Mathf.Max(1, Mathf.RoundToInt(source.width * scale));
-            var targetHeight = Mathf.Max(1, Mathf.RoundToInt(source.height * scale));
-
-            if (targetWidth <= 0 || targetHeight <= 0)
-            {
-                return null;
-            }
-
-            if (targetWidth == source.width && targetHeight == source.height)
-            {
-                return null;
-            }
-
-            RenderTexture temporary = null;
-            var previousActive = RenderTexture.active;
-            try
-            {
-                temporary = RenderTexture.GetTemporary(targetWidth, targetHeight, 0, RenderTextureFormat.Default);
-                Graphics.Blit(source, temporary);
-                RenderTexture.active = temporary;
-                var scaled = new Texture2D(targetWidth, targetHeight, TextureFormat.RGBA32, false)
+                catch (Exception encodeError)
                 {
-                    hideFlags = HideFlags.HideAndDontSave
-                };
-                scaled.ReadPixels(new Rect(0, 0, targetWidth, targetHeight), 0, 0);
-                scaled.Apply(false, false);
-                return scaled;
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning($"[UnityProfileV2] Failed to scale frame preview: {ex.Message}\n{ex.StackTrace}");
-                return null;
-            }
-            finally
-            {
-                RenderTexture.active = previousActive;
-                if (temporary != null)
-                {
-                    RenderTexture.ReleaseTemporary(temporary);
+                    return (null, encodeError);
                 }
+                finally
+                {
+                    if (rawCopy.IsCreated)
+                    {
+                        rawCopy.Dispose();
+                    }
+
+                    if (pngData.IsCreated)
+                    {
+                        pngData.Dispose();
+                    }
+                }
+            });
+
+            while (!encodeTask.IsCompleted)
+            {
+                yield return null;
+            }
+
+            if (encodeTask.Result.error != null)
+            {
+                Debug.LogWarning($"[UnityProfileV2] Failed to encode frame preview: {encodeTask.Result.error.Message}\n{encodeTask.Result.error.StackTrace}");
+                yield break;
+            }
+
+            if (encodeTask.Result.preview != null)
+            {
+                snapshot.framePreview = encodeTask.Result.preview;
             }
         }
 
@@ -1696,6 +1795,7 @@ namespace UnityProfileV2.Telemetry
     [Serializable]
     public struct TextureInfo
     {
+        public int instanceId;
         public string name;
         public string path;
         public int width;
@@ -1725,6 +1825,7 @@ namespace UnityProfileV2.Telemetry
 
             return new TextureInfo
             {
+                instanceId = texture.GetInstanceID(),
                 name = texture.name,
                 path = AssetTelemetryUtility.GetAssetPath(texture),
                 width = texture.width,
@@ -1748,6 +1849,7 @@ namespace UnityProfileV2.Telemetry
     [Serializable]
     public struct MeshInfo
     {
+        public int instanceId;
         public string name;
         public string path;
         public int vertexCount;
@@ -1765,6 +1867,7 @@ namespace UnityProfileV2.Telemetry
             var boundsSize = mesh.bounds.size;
             return new MeshInfo
             {
+                instanceId = mesh.GetInstanceID(),
                 name = mesh.name,
                 path = AssetTelemetryUtility.GetAssetPath(mesh),
                 vertexCount = mesh.vertexCount,
@@ -1791,6 +1894,7 @@ namespace UnityProfileV2.Telemetry
     [Serializable]
     public struct MaterialInfo
     {
+        public int instanceId;
         public string name;
         public string path;
         public string shaderName;
@@ -1831,6 +1935,7 @@ namespace UnityProfileV2.Telemetry
 
             return new MaterialInfo
             {
+                instanceId = material.GetInstanceID(),
                 name = material.name,
                 path = AssetTelemetryUtility.GetAssetPath(material),
                 shaderName = shader != null ? shader.name : string.Empty,
@@ -1848,6 +1953,7 @@ namespace UnityProfileV2.Telemetry
     [Serializable]
     public struct RenderTextureInfo
     {
+        public int instanceId;
         public string name;
         public int width;
         public int height;
@@ -1869,6 +1975,7 @@ namespace UnityProfileV2.Telemetry
 
             return new RenderTextureInfo
             {
+                instanceId = renderTexture.GetInstanceID(),
                 name = renderTexture.name,
                 width = renderTexture.width,
                 height = renderTexture.height,
@@ -1888,6 +1995,7 @@ namespace UnityProfileV2.Telemetry
     [Serializable]
     public struct ShaderInfo
     {
+        public int instanceId;
         public string name;
         public string path;
         public int passCount;
@@ -1898,6 +2006,7 @@ namespace UnityProfileV2.Telemetry
         {
             return new ShaderInfo
             {
+                instanceId = shader.GetInstanceID(),
                 name = shader.name,
                 path = AssetTelemetryUtility.GetAssetPath(shader),
                 passCount = shader.passCount,

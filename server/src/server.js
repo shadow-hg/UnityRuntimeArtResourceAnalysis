@@ -8,7 +8,7 @@ import crypto from 'crypto';
 import { Server as SocketIOServer } from 'socket.io';
 import { v4 as uuidv4 } from 'uuid';
 import { HistoryStore } from './historyStore.js';
-import { createConfigStore } from './configStore.js';
+import { createConfigStore, DEFAULT_CONFIG } from './configStore.js';
 
 const PORT = process.env.PORT || 48080;
 const PREVIEW_ROOT = path.join(process.cwd(), 'data', 'previews');
@@ -125,6 +125,279 @@ function sanitizeFramePayload(payload) {
   };
 }
 
+function ensureFiniteNumber(value, fallback = 0) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string' && value.length > 0) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return fallback;
+}
+
+function ensurePositiveInteger(value, fallback) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+  const rounded = Math.round(numeric);
+  return rounded > 0 ? rounded : fallback;
+}
+
+function normalizeKeyPart(value) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed.toLowerCase() : '';
+}
+
+function extractInstanceId(item) {
+  if (!item || typeof item !== 'object') {
+    return null;
+  }
+  const candidate =
+    item.instanceId ?? item.instanceID ?? item.InstanceId ?? item.InstanceID ?? item.id ?? null;
+  const numeric = Number(candidate);
+  if (Number.isInteger(numeric)) {
+    return numeric;
+  }
+  return null;
+}
+
+function buildIndexedKey(prefix, index) {
+  return `${prefix}:index:${index}`;
+}
+
+function buildTextureKey(texture, index) {
+  const instanceId = extractInstanceId(texture);
+  if (instanceId != null) {
+    return `texture:id:${instanceId}`;
+  }
+  const name = normalizeKeyPart(texture?.name);
+  if (name) {
+    return `texture:name:${name}`;
+  }
+  const path = normalizeKeyPart(texture?.path);
+  if (path) {
+    return `texture:path:${path}`;
+  }
+  const width = ensureFiniteNumber(texture?.width, -1);
+  const height = ensureFiniteNumber(texture?.height, -1);
+  const format = normalizeKeyPart(texture?.formatName ?? texture?.format);
+  return `texture:${width}x${height}:${format}:${index}`;
+}
+
+function buildRenderTextureKey(renderTexture, index) {
+  const instanceId = extractInstanceId(renderTexture);
+  if (instanceId != null) {
+    return `renderTexture:id:${instanceId}`;
+  }
+  const name = normalizeKeyPart(renderTexture?.name);
+  if (name) {
+    return `renderTexture:name:${name}`;
+  }
+  return buildIndexedKey('renderTexture', index);
+}
+
+function buildMaterialKey(material, index) {
+  const instanceId = extractInstanceId(material);
+  if (instanceId != null) {
+    return `material:id:${instanceId}`;
+  }
+  const name = normalizeKeyPart(material?.name);
+  const shaderName = normalizeKeyPart(material?.shaderName);
+  if (name || shaderName) {
+    return `material:${name}|${shaderName}`;
+  }
+  const path = normalizeKeyPart(material?.path);
+  if (path) {
+    return `material:path:${path}`;
+  }
+  return buildIndexedKey('material', index);
+}
+
+function buildMeshKey(mesh, index) {
+  const instanceId = extractInstanceId(mesh);
+  if (instanceId != null) {
+    return `mesh:id:${instanceId}`;
+  }
+  const name = normalizeKeyPart(mesh?.name);
+  if (name) {
+    return `mesh:name:${name}`;
+  }
+  const path = normalizeKeyPart(mesh?.path);
+  if (path) {
+    return `mesh:path:${path}`;
+  }
+  return buildIndexedKey('mesh', index);
+}
+
+function buildShaderKey(shader, index) {
+  const instanceId = extractInstanceId(shader);
+  if (instanceId != null) {
+    return `shader:id:${instanceId}`;
+  }
+  const name = normalizeKeyPart(shader?.name);
+  if (name) {
+    return `shader:name:${name}`;
+  }
+  const path = normalizeKeyPart(shader?.path);
+  if (path) {
+    return `shader:path:${path}`;
+  }
+  return buildIndexedKey('shader', index);
+}
+
+function dedupeByKey(items, keyBuilder, scoreSelector) {
+  const bestByKey = new Map();
+  items.forEach((item, index) => {
+    const key = keyBuilder(item, index);
+    if (!key) {
+      return;
+    }
+    const score = scoreSelector(item, index);
+    const existing = bestByKey.get(key);
+    if (!existing || score > existing.score) {
+      bestByKey.set(key, { item, score });
+    }
+  });
+  return Array.from(bestByKey.values()).map((entry) => entry.item);
+}
+
+function processTextures(textures, limit) {
+  const normalized = Array.isArray(textures)
+    ? textures.filter((texture) => texture && typeof texture === 'object')
+    : [];
+  const deduped = dedupeByKey(normalized, buildTextureKey, (texture) =>
+    ensureFiniteNumber(texture?.EstimatedBytes, 0)
+  );
+  deduped.sort(
+    (a, b) => ensureFiniteNumber(b?.EstimatedBytes, 0) - ensureFiniteNumber(a?.EstimatedBytes, 0)
+  );
+  const limited = limit > 0 ? deduped.slice(0, limit) : deduped;
+  const total = limited.reduce(
+    (sum, texture) => sum + ensureFiniteNumber(texture?.EstimatedBytes, 0),
+    0
+  );
+  return { items: limited, total };
+}
+
+function processRenderTextures(renderTextures, limit) {
+  const normalized = Array.isArray(renderTextures)
+    ? renderTextures.filter((renderTexture) => renderTexture && typeof renderTexture === 'object')
+    : [];
+  const deduped = dedupeByKey(normalized, buildRenderTextureKey, (renderTexture) =>
+    ensureFiniteNumber(renderTexture?.EstimatedBytes, 0)
+  );
+  deduped.sort(
+    (a, b) =>
+      ensureFiniteNumber(b?.EstimatedBytes, 0) - ensureFiniteNumber(a?.EstimatedBytes, 0)
+  );
+  const limited = limit > 0 ? deduped.slice(0, limit) : deduped;
+  const total = limited.reduce(
+    (sum, renderTexture) => sum + ensureFiniteNumber(renderTexture?.EstimatedBytes, 0),
+    0
+  );
+  return { items: limited, total };
+}
+
+function processMaterials(materials, limit) {
+  const normalized = Array.isArray(materials)
+    ? materials.filter((material) => material && typeof material === 'object')
+    : [];
+  const deduped = dedupeByKey(normalized, buildMaterialKey, (material) =>
+    ensureFiniteNumber(material?.memoryBytes, 0)
+  );
+  deduped.sort(
+    (a, b) => ensureFiniteNumber(b?.memoryBytes, 0) - ensureFiniteNumber(a?.memoryBytes, 0)
+  );
+  const limited = limit > 0 ? deduped.slice(0, limit) : deduped;
+  const total = limited.reduce(
+    (sum, material) => sum + ensureFiniteNumber(material?.memoryBytes, 0),
+    0
+  );
+  return { items: limited, total };
+}
+
+function processMeshes(meshes, limit) {
+  const normalized = Array.isArray(meshes)
+    ? meshes.filter((mesh) => mesh && typeof mesh === 'object')
+    : [];
+  const deduped = dedupeByKey(normalized, buildMeshKey, (mesh) =>
+    ensureFiniteNumber(mesh?.EstimatedBytes ?? mesh?.assetBytes, 0)
+  );
+  deduped.sort(
+    (a, b) =>
+      ensureFiniteNumber(b?.EstimatedBytes ?? b?.assetBytes, 0) -
+      ensureFiniteNumber(a?.EstimatedBytes ?? a?.assetBytes, 0)
+  );
+  const limited = limit > 0 ? deduped.slice(0, limit) : deduped;
+  const total = limited.reduce(
+    (sum, mesh) => sum + ensureFiniteNumber(mesh?.EstimatedBytes ?? mesh?.assetBytes, 0),
+    0
+  );
+  return { items: limited, total };
+}
+
+function processShaders(shaders, limit) {
+  const normalized = Array.isArray(shaders)
+    ? shaders.filter((shader) => shader && typeof shader === 'object')
+    : [];
+  const seen = new Set();
+  const result = [];
+  normalized.forEach((shader, index) => {
+    const key = buildShaderKey(shader, index);
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    result.push(shader);
+  });
+  const limited = limit > 0 ? result.slice(0, limit) : result;
+  return { items: limited };
+}
+
+function processFrameAssets(frame, clientDefaults) {
+  const maxAssetsPerCategory = ensurePositiveInteger(
+    clientDefaults?.maxAssetsPerCategory,
+    DEFAULT_CONFIG.clientDefaults.maxAssetsPerCategory
+  );
+
+  const { items: textures, total: textureBytes } = processTextures(
+    frame.textures,
+    maxAssetsPerCategory
+  );
+  frame.textures = textures;
+  frame.totalTextureBytes = textureBytes;
+
+  const { items: renderTextures, total: renderTextureBytes } = processRenderTextures(
+    frame.renderTextures,
+    maxAssetsPerCategory
+  );
+  frame.renderTextures = renderTextures;
+  frame.totalRenderTextureBytes = renderTextureBytes;
+
+  const { items: materials, total: materialBytes } = processMaterials(
+    frame.materials,
+    maxAssetsPerCategory
+  );
+  frame.materials = materials;
+  frame.totalMaterialBytes = materialBytes;
+
+  const { items: meshes, total: meshBytes } = processMeshes(frame.meshes, maxAssetsPerCategory);
+  frame.meshes = meshes;
+  frame.totalMeshBytes = meshBytes;
+
+  const { items: shaders } = processShaders(frame.shaders, maxAssetsPerCategory);
+  frame.shaders = shaders;
+
+  return frame;
+}
+
 function extractBase64Components(value) {
   if (typeof value !== 'string' || value.length === 0) {
     return { payload: null, contentType: null };
@@ -236,31 +509,34 @@ async function persistFramePreview(sessionId, frameNumber, framePreview) {
 }
 
 async function prepareFramePayload(sessionId, payload) {
+  await configStore.init();
   const sanitizedFrame = sanitizeFramePayload(payload);
-  const storedFrame = { ...sanitizedFrame };
-  const broadcastFrame = { ...sanitizedFrame };
+  const clientDefaults = configStore.getClientDefaults();
+  const processedFrame = processFrameAssets(sanitizedFrame, clientDefaults);
+  const storedFrame = { ...processedFrame };
+  const broadcastFrame = { ...processedFrame };
 
-  if (Array.isArray(sanitizedFrame.textures) && sanitizedFrame.textures.length > 0) {
+  if (Array.isArray(processedFrame.textures) && processedFrame.textures.length > 0) {
     const textures = await Promise.all(
-      sanitizedFrame.textures.map((texture) => persistTexturePreview(sessionId, texture))
+      processedFrame.textures.map((texture) => persistTexturePreview(sessionId, texture))
     );
     storedFrame.textures = textures.map((result) => result.stored);
     broadcastFrame.textures = textures.map((result) => result.broadcast);
   }
 
-  if (Array.isArray(sanitizedFrame.renderTextures) && sanitizedFrame.renderTextures.length > 0) {
+  if (Array.isArray(processedFrame.renderTextures) && processedFrame.renderTextures.length > 0) {
     const renderTextures = await Promise.all(
-      sanitizedFrame.renderTextures.map((renderTexture) => persistTexturePreview(sessionId, renderTexture))
+      processedFrame.renderTextures.map((renderTexture) => persistTexturePreview(sessionId, renderTexture))
     );
     storedFrame.renderTextures = renderTextures.map((result) => result.stored);
     broadcastFrame.renderTextures = renderTextures.map((result) => result.broadcast);
   }
 
-  if (sanitizedFrame.framePreview && typeof sanitizedFrame.framePreview === 'object') {
+  if (processedFrame.framePreview && typeof processedFrame.framePreview === 'object') {
     const { stored, broadcast } = await persistFramePreview(
       sessionId,
-      sanitizedFrame.frameNumber,
-      sanitizedFrame.framePreview
+      processedFrame.frameNumber,
+      processedFrame.framePreview
     );
     storedFrame.framePreview = stored;
     broadcastFrame.framePreview = broadcast;
