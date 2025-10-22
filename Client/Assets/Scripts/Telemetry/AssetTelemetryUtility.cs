@@ -86,10 +86,11 @@ namespace UnityProfileV2.Telemetry
             var maxPerCategory = Mathf.Max(1, maxAssetsPerCategory);
 
             var textures = options.includeTextures
-                ? snapshotData.textures
-                    .OrderByDescending(info => info.EstimatedBytes)
-                    .GroupBy(info => info.name, StringComparer.OrdinalIgnoreCase)
-                    .Select(group => group.First())
+                ? DistinctBy(
+                        snapshotData.textures
+                            .OrderByDescending(info => info.EstimatedBytes),
+                        info => info.name,
+                        StringComparer.OrdinalIgnoreCase)
                     .Take(maxPerCategory)
                     .ToArray()
                 : Array.Empty<TextureInfo>();
@@ -102,19 +103,21 @@ namespace UnityProfileV2.Telemetry
                 : Array.Empty<MeshInfo>();
 
             var renderTextures = options.includeRenderTextures
-                ? snapshotData.renderTextures
-                    .OrderByDescending(info => info.EstimatedBytes)
-                    .GroupBy(info => info.name, StringComparer.OrdinalIgnoreCase)
-                    .Select(group => group.First())
+                ? DistinctBy(
+                        snapshotData.renderTextures
+                            .OrderByDescending(info => info.EstimatedBytes),
+                        info => info.name,
+                        StringComparer.OrdinalIgnoreCase)
                     .Take(maxPerCategory)
                     .ToArray()
                 : Array.Empty<RenderTextureInfo>();
 
             var materials = options.includeMaterials
-                ? snapshotData.materials
-                    .OrderByDescending(info => info.memoryBytes)
-                    .GroupBy(info => info.name, StringComparer.OrdinalIgnoreCase)
-                    .Select(group => group.First())
+                ? DistinctBy(
+                        snapshotData.materials
+                            .OrderByDescending(info => info.memoryBytes),
+                        info => info.name,
+                        StringComparer.OrdinalIgnoreCase)
                     .Take(maxPerCategory)
                     .ToArray()
                 : Array.Empty<MaterialInfo>();
@@ -137,6 +140,26 @@ namespace UnityProfileV2.Telemetry
                 totalRenderTextureBytes = renderTextures.Sum(r => r.EstimatedBytes),
                 totalMaterialBytes = materials.Sum(m => m.memoryBytes)
             };
+        }
+
+        private static IEnumerable<T> DistinctBy<T>(IEnumerable<T> source, Func<T, string> keySelector, IEqualityComparer<string> comparer)
+        {
+            if (source == null)
+            {
+                yield break;
+            }
+
+            var seenKeys = new HashSet<string>(comparer ?? StringComparer.Ordinal);
+            foreach (var element in source)
+            {
+                var key = keySelector != null ? keySelector(element) : null;
+                key = key ?? string.Empty;
+
+                if (seenKeys.Add(key))
+                {
+                    yield return element;
+                }
+            }
         }
 
         private static SnapshotData CaptureSnapshotData(TelemetrySnapshotOptions options)
@@ -618,7 +641,7 @@ namespace UnityProfileV2.Telemetry
             public int depth;
             public int mipCount;
             public bool useMipMap;
-            public RenderTextureDimension dimension;
+            public TextureDimension dimension;
             public RenderTextureFormat format;
             public GraphicsFormat graphicsFormat;
             public int antiAliasing;
@@ -633,7 +656,7 @@ namespace UnityProfileV2.Telemetry
                     depth = renderTexture != null ? renderTexture.depth : 0,
                     mipCount = renderTexture != null ? renderTexture.mipmapCount : 0,
                     useMipMap = renderTexture != null && renderTexture.useMipMap,
-                    dimension = renderTexture != null ? renderTexture.dimension : RenderTextureDimension.Unknown,
+                    dimension = renderTexture != null ? renderTexture.dimension : TextureDimension.Unknown,
                     format = renderTexture != null ? renderTexture.format : RenderTextureFormat.Default,
                     graphicsFormat = renderTexture != null ? renderTexture.graphicsFormat : GraphicsFormat.None,
                     antiAliasing = renderTexture != null ? renderTexture.antiAliasing : 1
