@@ -167,6 +167,27 @@ function deepClone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function normalizeConfig(config) {
+  return mergeConfig(DEFAULT_CONFIG, config ?? {});
+}
+
+function stableStringify(value) {
+  return JSON.stringify(
+    value,
+    (key, current) => {
+      if (!current || typeof current !== 'object' || Array.isArray(current)) {
+        return current;
+      }
+      return Object.keys(current)
+        .sort()
+        .reduce((acc, prop) => {
+          acc[prop] = current[prop];
+          return acc;
+        }, {});
+    }
+  );
+}
+
 export class ConfigStore {
   constructor() {
     this.config = deepClone(DEFAULT_CONFIG);
@@ -182,7 +203,12 @@ export class ConfigStore {
     try {
       const file = await fs.readFile(CONFIG_FILE, 'utf-8');
       const parsed = JSON.parse(file);
-      this.config = mergeConfig(DEFAULT_CONFIG, parsed);
+      const normalized = normalizeConfig(parsed);
+      const shouldPersist = stableStringify(parsed) !== stableStringify(normalized);
+      this.config = normalized;
+      if (shouldPersist) {
+        await this.persist();
+      }
     } catch (err) {
       if (err.code !== 'ENOENT') {
         console.warn('Failed to read server config file, falling back to defaults', err);
@@ -194,11 +220,11 @@ export class ConfigStore {
   }
 
   getConfig() {
-    return deepClone(this.config);
+    return deepClone(normalizeConfig(this.config));
   }
 
   getClientDefaults() {
-    return deepClone(this.config.clientDefaults);
+    return deepClone(normalizeConfig(this.config).clientDefaults);
   }
 
   getHistoryConfig() {
@@ -207,7 +233,8 @@ export class ConfigStore {
 
   async update(partialConfig = {}) {
     await this.init();
-    const nextConfig = mergeConfig(this.config, partialConfig);
+    const merged = mergeConfig(this.config, partialConfig);
+    const nextConfig = normalizeConfig(merged);
     this.config = nextConfig;
     await this.persist();
     this.emitChange();
