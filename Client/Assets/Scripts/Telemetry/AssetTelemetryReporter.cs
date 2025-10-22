@@ -14,6 +14,7 @@ namespace UnityProfileV2.Telemetry
     public class AssetTelemetryReporter : MonoBehaviour
     {
         private const int DefaultServerPort = 48080;
+        internal const string ServerEndpointPlayerPrefsKey = "UnityProfileV2.Telemetry.ServerEndpointOverride";
 
         [SerializeField]
         [Tooltip("Optional override for the telemetry server endpoint (e.g. http://localhost:48080). Leave empty to auto-detect.")]
@@ -46,6 +47,108 @@ namespace UnityProfileV2.Telemetry
         private TelemetrySnapshotOptions _snapshotOptions = TelemetrySnapshotOptions.Default;
 
         private static CoroutineRunner _coroutineRunner;
+
+        public string ServerEndpointOverride => _serverEndpointOverride;
+
+        public string CurrentServerEndpoint => _serverEndpoint;
+
+        public string GetAutoDetectedServerEndpoint()
+        {
+            return BuildEndpointFromHost(ResolveLocalIpAddress());
+        }
+
+        public void ApplyServerEndpointOverride(string endpoint, bool persist = true)
+        {
+            var sanitized = SanitizeEndpoint(endpoint);
+
+            if (string.IsNullOrWhiteSpace(endpoint))
+            {
+                sanitized = string.Empty;
+            }
+
+            if (string.Equals(_serverEndpointOverride, sanitized, StringComparison.Ordinal))
+            {
+                if (persist)
+                {
+                    PersistServerEndpointOverride(sanitized);
+                }
+
+                return;
+            }
+
+            _serverEndpointOverride = sanitized;
+
+            if (persist)
+            {
+                PersistServerEndpointOverride(sanitized);
+            }
+
+            RestartTelemetry();
+        }
+
+        private void PersistServerEndpointOverride(string sanitizedEndpoint)
+        {
+            if (string.IsNullOrEmpty(sanitizedEndpoint))
+            {
+                if (PlayerPrefs.HasKey(ServerEndpointPlayerPrefsKey))
+                {
+                    PlayerPrefs.DeleteKey(ServerEndpointPlayerPrefsKey);
+                }
+            }
+            else
+            {
+                PlayerPrefs.SetString(ServerEndpointPlayerPrefsKey, sanitizedEndpoint);
+            }
+
+            PlayerPrefs.Save();
+        }
+
+        private void RestartTelemetry()
+        {
+            var wasActive = isActiveAndEnabled;
+
+            if (_initializationCoroutine != null)
+            {
+                StopCoroutine(_initializationCoroutine);
+                _initializationCoroutine = null;
+            }
+
+            if (_sampleCoroutine != null)
+            {
+                StopCoroutine(_sampleCoroutine);
+                _sampleCoroutine = null;
+            }
+
+            if (!string.IsNullOrEmpty(_sessionId))
+            {
+                var sessionId = _sessionId;
+                _sessionId = null;
+                EnsureCoroutineRunner().StartCoroutine(EndSessionCoroutine(sessionId));
+            }
+
+            _sessionManagedAutomatically = false;
+            _snapshotSequence = 0;
+            _serverEndpoint = ResolveServerEndpoint();
+
+            if (wasActive)
+            {
+                _initializationCoroutine = StartCoroutine(InitializeAndMaybeRegisterCoroutine());
+            }
+        }
+
+        private void LoadServerEndpointOverrideFromPreferences()
+        {
+            _serverEndpointOverride = SanitizeEndpoint(_serverEndpointOverride);
+
+            if (!PlayerPrefs.HasKey(ServerEndpointPlayerPrefsKey))
+            {
+                return;
+            }
+
+            var persisted = PlayerPrefs.GetString(ServerEndpointPlayerPrefsKey, string.Empty);
+            var sanitized = SanitizeEndpoint(persisted);
+            _serverEndpointOverride = string.IsNullOrEmpty(sanitized) ? string.Empty : sanitized;
+        }
 
         private static bool IsSupportedInterface(NetworkInterface networkInterface)
         {
@@ -266,11 +369,13 @@ namespace UnityProfileV2.Telemetry
 
         private void Awake()
         {
+            LoadServerEndpointOverrideFromPreferences();
             _serverEndpoint = ResolveServerEndpoint();
         }
 
         private void OnEnable()
         {
+            LoadServerEndpointOverrideFromPreferences();
             _serverEndpoint = ResolveServerEndpoint();
             _sessionManagedAutomatically = false;
 
