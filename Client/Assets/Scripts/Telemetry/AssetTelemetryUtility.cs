@@ -57,7 +57,7 @@ namespace UnityProfileV2.Telemetry
             }
         }
 
-        private struct ShaderVariantInfo
+        public struct ShaderVariantInfo
         {
             public int TotalVariantCount;
             public int CompiledVariantCount;
