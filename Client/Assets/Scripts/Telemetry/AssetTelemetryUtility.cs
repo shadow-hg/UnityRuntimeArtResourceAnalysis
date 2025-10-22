@@ -79,70 +79,32 @@ namespace UnityProfileV2.Telemetry
             _ = maxAssetsPerCategory;
             var snapshotData = new SnapshotData();
 
-            var texturesPending = normalizedOptions.includeTextures;
-            var meshesPending = normalizedOptions.includeMeshes;
-            var renderTexturesPending = normalizedOptions.includeRenderTextures;
-            var materialsPending = normalizedOptions.includeMaterials;
-            var shadersPending = normalizedOptions.includeShaders;
+            var captureEnumerator = CaptureSnapshotDataIncrementally(normalizedOptions, snapshotData);
 
-            bool HasPendingWork()
+            while (true)
             {
-                return texturesPending || meshesPending || renderTexturesPending || materialsPending || shadersPending;
+                bool moveNext;
+
+                try
+                {
+                    moveNext = captureEnumerator.MoveNext();
+                }
+                catch (Exception ex)
+                {
+                    (captureEnumerator as IDisposable)?.Dispose();
+                    onError?.Invoke(ex);
+                    yield break;
+                }
+
+                if (!moveNext)
+                {
+                    break;
+                }
+
+                yield return captureEnumerator.Current;
             }
 
-            try
-            {
-                if (normalizedOptions.includeTextures)
-                {
-                    snapshotData.textures = CaptureTextureInfos();
-                    texturesPending = false;
-                    if (HasPendingWork())
-                    {
-                        yield return null;
-                    }
-                }
-
-                if (normalizedOptions.includeMeshes)
-                {
-                    snapshotData.meshes = CaptureMeshInfos();
-                    meshesPending = false;
-                    if (HasPendingWork())
-                    {
-                        yield return null;
-                    }
-                }
-
-                if (normalizedOptions.includeRenderTextures)
-                {
-                    snapshotData.renderTextures = CaptureRenderTextureInfos();
-                    renderTexturesPending = false;
-                    if (HasPendingWork())
-                    {
-                        yield return null;
-                    }
-                }
-
-                if (normalizedOptions.includeMaterials)
-                {
-                    snapshotData.materials = CaptureMaterialInfos();
-                    materialsPending = false;
-                    if (HasPendingWork())
-                    {
-                        yield return null;
-                    }
-                }
-
-                if (normalizedOptions.includeShaders)
-                {
-                    snapshotData.shaders = CaptureShaderInfos();
-                    shadersPending = false;
-                }
-            }
-            catch (Exception ex)
-            {
-                onError?.Invoke(ex);
-                yield break;
-            }
+            (captureEnumerator as IDisposable)?.Dispose();
 
             var buildTask = Task.Run(() => BuildSnapshot(normalizedOptions, snapshotData));
 
@@ -184,6 +146,68 @@ namespace UnityProfileV2.Telemetry
                 includeShaders = options.includeShaders,
                 hasExplicitSelection = options.hasExplicitSelection
             };
+        }
+
+        private static IEnumerator CaptureSnapshotDataIncrementally(
+            TelemetrySnapshotOptions normalizedOptions,
+            SnapshotData snapshotData)
+        {
+            var texturesPending = normalizedOptions.includeTextures;
+            var meshesPending = normalizedOptions.includeMeshes;
+            var renderTexturesPending = normalizedOptions.includeRenderTextures;
+            var materialsPending = normalizedOptions.includeMaterials;
+            var shadersPending = normalizedOptions.includeShaders;
+
+            bool HasPendingWork()
+            {
+                return texturesPending || meshesPending || renderTexturesPending || materialsPending || shadersPending;
+            }
+
+            if (normalizedOptions.includeTextures)
+            {
+                snapshotData.textures = CaptureTextureInfos();
+                texturesPending = false;
+                if (HasPendingWork())
+                {
+                    yield return null;
+                }
+            }
+
+            if (normalizedOptions.includeMeshes)
+            {
+                snapshotData.meshes = CaptureMeshInfos();
+                meshesPending = false;
+                if (HasPendingWork())
+                {
+                    yield return null;
+                }
+            }
+
+            if (normalizedOptions.includeRenderTextures)
+            {
+                snapshotData.renderTextures = CaptureRenderTextureInfos();
+                renderTexturesPending = false;
+                if (HasPendingWork())
+                {
+                    yield return null;
+                }
+            }
+
+            if (normalizedOptions.includeMaterials)
+            {
+                snapshotData.materials = CaptureMaterialInfos();
+                materialsPending = false;
+                if (HasPendingWork())
+                {
+                    yield return null;
+                }
+            }
+
+            if (normalizedOptions.includeShaders)
+            {
+                snapshotData.shaders = CaptureShaderInfos();
+                shadersPending = false;
+            }
         }
 
         private static TelemetrySnapshot BuildSnapshot(TelemetrySnapshotOptions options, SnapshotData snapshotData)
@@ -972,7 +996,9 @@ namespace UnityProfileV2.Telemetry
 
                 if (!readbackRequest.Equals(default))
                 {
+#if UNITY_2022_2_OR_NEWER
                     readbackRequest.Dispose();
+#endif
                 }
 
                 if (primaryRenderTexture != null)
@@ -996,7 +1022,9 @@ namespace UnityProfileV2.Telemetry
             if (readbackRequest.hasError)
             {
                 Debug.LogWarning("[UnityProfileV2] GPU readback failed while capturing frame preview.");
+#if UNITY_2022_2_OR_NEWER
                 readbackRequest.Dispose();
+#endif
 
                 if (primaryRenderTexture != null)
                 {
@@ -1020,7 +1048,9 @@ namespace UnityProfileV2.Telemetry
             var managedData = new byte[gpuData.Length];
             gpuData.CopyTo(managedData);
 
+#if UNITY_2022_2_OR_NEWER
             readbackRequest.Dispose();
+#endif
 
             if (primaryRenderTexture != null)
             {
