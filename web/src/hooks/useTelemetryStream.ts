@@ -18,6 +18,8 @@ const DEFAULT_SERVER_CONFIG: ServerConfig = {
     disableFramePreview: false,
     maxAssetsPerCategory: 200,
     autoManageSession: true,
+    collectShaderVariants: true,
+    collectFps: true,
     assetCategoryVersion: 1,
     assetCategories: {
       includeTextures: true,
@@ -105,6 +107,14 @@ function sanitizeServerConfig(rawConfig: Partial<ServerConfig> | null | undefine
     base.clientDefaults.autoManageSession = ensureBoolean(
       clientDefaults.autoManageSession,
       base.clientDefaults.autoManageSession
+    );
+    base.clientDefaults.collectShaderVariants = ensureBoolean(
+      clientDefaults.collectShaderVariants,
+      base.clientDefaults.collectShaderVariants
+    );
+    base.clientDefaults.collectFps = ensureBoolean(
+      clientDefaults.collectFps,
+      base.clientDefaults.collectFps
     );
     base.clientDefaults.assetCategoryVersion = ensureNumber(
       clientDefaults.assetCategoryVersion,
