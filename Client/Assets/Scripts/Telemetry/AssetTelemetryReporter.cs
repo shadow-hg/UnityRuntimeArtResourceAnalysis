@@ -14,6 +14,7 @@ namespace UnityProfileV2.Telemetry
     public class AssetTelemetryReporter : MonoBehaviour
     {
         private const int DefaultServerPort = 48080;
+        private const float DefaultSampleIntervalSeconds = 1f;
         internal const string ServerEndpointPlayerPrefsKey = "UnityProfileV2.Telemetry.ServerEndpointOverride";
 
         [SerializeField]
@@ -22,7 +23,7 @@ namespace UnityProfileV2.Telemetry
 
         private string _serverEndpoint = string.Empty;
 
-        private float _sampleIntervalSeconds = 0f;
+        private float _sampleIntervalSeconds = DefaultSampleIntervalSeconds;
 
         private float _framePreviewScale = 0.2f;
 
@@ -675,7 +676,7 @@ namespace UnityProfileV2.Telemetry
                 payload.maxAssetsPerCategory = _maxAssetsPerCategory;
             }
 
-            _sampleIntervalSeconds = Mathf.Max(payload.sampleIntervalSeconds, 0f);
+            _sampleIntervalSeconds = NormalizeSampleInterval(payload.sampleIntervalSeconds);
             _framePreviewScale = Mathf.Clamp01(payload.framePreviewScale);
             _maxAssetsPerCategory = Mathf.Max(payload.maxAssetsPerCategory, 1);
             _autoManageSession = payload.autoManageSession;
@@ -762,6 +763,21 @@ namespace UnityProfileV2.Telemetry
                    a.includeRenderTextures == b.includeRenderTextures &&
                    a.includeMaterials == b.includeMaterials &&
                    a.includeShaders == b.includeShaders;
+        }
+
+        private static float NormalizeSampleInterval(float value)
+        {
+            if (float.IsNaN(value) || float.IsInfinity(value))
+            {
+                return DefaultSampleIntervalSeconds;
+            }
+
+            if (value <= 0f)
+            {
+                return DefaultSampleIntervalSeconds;
+            }
+
+            return value;
         }
 
         private IEnumerator EndSessionCoroutine(string sessionId)

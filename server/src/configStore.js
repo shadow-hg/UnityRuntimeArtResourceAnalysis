@@ -7,7 +7,7 @@ const CONFIG_FILE = path.join(moduleDir, '..', 'data', 'server-config.json');
 
 const DEFAULT_CONFIG = {
   clientDefaults: {
-    sampleIntervalSeconds: 0,
+    sampleIntervalSeconds: 1,
     framePreviewScale: 0.2,
     disableFramePreview: false,
     maxAssetsPerCategory: 200,
