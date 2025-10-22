@@ -182,9 +182,9 @@ namespace UnityProfileV2.Telemetry
                 compiledVariantCount = 0;
             }
 
-            if (compiledVariantCount > totalVariantCount)
+            if (compiledVariantCount > totalVariantCount && totalVariantCount > 0)
             {
-                totalVariantCount = compiledVariantCount;
+                compiledVariantCount = totalVariantCount;
             }
 
             var pending = Math.Max(0, totalVariantCount - compiledVariantCount);
@@ -228,6 +228,12 @@ namespace UnityProfileV2.Telemetry
                 new[] { typeof(Shader) },
                 null);
 
+        private static readonly MethodInfo ShaderVariantEntriesFilteredMethod =
+            typeof(ShaderUtil).GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
+                .FirstOrDefault(method => string.Equals(method.Name, "GetShaderVariantEntriesFiltered", StringComparison.Ordinal))
+            ?? typeof(ShaderUtil).GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
+                .FirstOrDefault(method => string.Equals(method.Name, "GetShaderVariantEntries", StringComparison.Ordinal));
+
         private static (int total, int compiled) GetShaderVariantCountsFromEditor(Shader shader)
         {
             if (shader == null)
@@ -249,15 +255,7 @@ namespace UnityProfileV2.Telemetry
                 total = Math.Max(total, InvokeShaderVariantCount(ShaderVariantCountSingleMethod, shader, true));
             }
 
-            if (compiled <= 0 && total <= 0 && ShaderVariantCountSingleMethod != null)
-            {
-                compiled = Math.Max(compiled, InvokeShaderVariantCount(ShaderVariantCountSingleMethod, shader, true));
-            }
-
-            if (compiled > total && total > 0)
-            {
-                total = compiled;
-            }
+            compiled = Math.Max(compiled, GetCompiledShaderVariantCount(shader, total));
 
             return (total, compiled);
         }
@@ -294,6 +292,151 @@ namespace UnityProfileV2.Telemetry
                 return 0;
             }
         }
+
+        private static int GetCompiledShaderVariantCount(Shader shader, int totalEstimate)
+        {
+            if (shader == null)
+            {
+                return 0;
+            }
+
+            if (ShaderVariantEntriesFilteredMethod == null)
+            {
+                return -1;
+            }
+
+            try
+            {
+                var parameters = ShaderVariantEntriesFilteredMethod.GetParameters();
+                var args = new object[parameters.Length];
+                var bufferSize = Math.Max(1, Math.Min(Math.Max(totalEstimate, 1), 4096));
+
+                for (var index = 0; index < parameters.Length; index += 1)
+                {
+                    var parameter = parameters[index];
+                    var parameterType = parameter.ParameterType;
+
+                    if (parameterType.IsByRef)
+                    {
+                        var elementType = parameterType.GetElementType() ?? typeof(object);
+                        args[index] = elementType == typeof(int)
+                            ? 0
+                            : Activator.CreateInstance(elementType);
+                        continue;
+                    }
+
+                    if (typeof(Shader).IsAssignableFrom(parameterType))
+                    {
+                        args[index] = shader;
+                        continue;
+                    }
+
+                    if (parameterType == typeof(bool))
+                    {
+                        var name = parameter.Name ?? string.Empty;
+                        if (name.IndexOf("includeAll", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            args[index] = false;
+                        }
+                        else if (name.IndexOf("includeCompiled", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                 name.IndexOf("onlyCompiled", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            args[index] = true;
+                        }
+                        else
+                        {
+                            args[index] = false;
+                        }
+
+                        continue;
+                    }
+
+                    if (parameterType == typeof(int))
+                    {
+                        args[index] = bufferSize;
+                        continue;
+                    }
+
+                    if (parameterType == typeof(string[]))
+                    {
+                        args[index] = Array.Empty<string>();
+                        continue;
+                    }
+
+                    if (parameterType.IsArray)
+                    {
+                        var elementType = parameterType.GetElementType() ?? typeof(object);
+                        args[index] = Array.CreateInstance(elementType, bufferSize);
+                        continue;
+                    }
+
+                    if (parameterType.IsValueType)
+                    {
+                        args[index] = Activator.CreateInstance(parameterType);
+                        continue;
+                    }
+
+                    args[index] = null;
+                }
+
+                var result = ShaderVariantEntriesFilteredMethod.Invoke(null, args);
+                var count = ExtractVariantCount(result);
+                if (count >= 0)
+                {
+                    return count;
+                }
+
+                for (var index = 0; index < parameters.Length; index += 1)
+                {
+                    if (!parameters[index].ParameterType.IsByRef)
+                    {
+                        continue;
+                    }
+
+                    if (args[index] is int refCount)
+                    {
+                        return Math.Max(0, refCount);
+                    }
+                }
+
+                return -1;
+            }
+            catch
+            {
+                return -1;
+            }
+        }
+
+        private static int ExtractVariantCount(object result)
+        {
+            if (result == null)
+            {
+                return -1;
+            }
+
+            if (result is int intResult)
+            {
+                return Math.Max(0, intResult);
+            }
+
+            if (result is Array arrayResult)
+            {
+                return arrayResult.Length;
+            }
+
+            if (result is IEnumerable enumerableResult)
+            {
+                var count = 0;
+                foreach (var _ in enumerableResult)
+                {
+                    count += 1;
+                }
+
+                return count;
+            }
+
+            return -1;
+        }
 #endif
 
         private readonly struct CategoryDiff<TInfo>
@@ -324,11 +467,6 @@ namespace UnityProfileV2.Telemetry
                 var shader = shaders[index];
                 totalVariants += Math.Max(0, shader.totalVariantCount);
                 compiledVariants += Math.Max(0, shader.compiledVariantCount);
-            }
-
-            if (compiledVariants > totalVariants)
-            {
-                totalVariants = compiledVariants;
             }
 
             var pending = Math.Max(0, totalVariants - compiledVariants);
