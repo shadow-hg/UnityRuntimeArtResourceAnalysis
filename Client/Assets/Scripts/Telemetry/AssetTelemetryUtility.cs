@@ -5,6 +5,7 @@ using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
 using UnityEngine;
+using UnityEngine.Experimental.Rendering;
 using UnityEngine.Rendering;
 using UnityEngine.SceneManagement;
 #if UNITY_EDITOR
@@ -13,27 +14,116 @@ using UnityEditor;
 
 namespace UnityProfileV2.Telemetry
 {
+    [Serializable]
+    public struct TelemetrySnapshotOptions
+    {
+        public bool includeTextures;
+        public bool includeMeshes;
+        public bool includeRenderTextures;
+        public bool includeMaterials;
+        public bool includeShaders;
+        public bool hasExplicitSelection;
+
+        public static TelemetrySnapshotOptions Default => new TelemetrySnapshotOptions
+        {
+            includeTextures = true,
+            includeMeshes = true,
+            includeRenderTextures = true,
+            includeMaterials = true,
+            includeShaders = true,
+            hasExplicitSelection = true
+        };
+    }
+
     public static class AssetTelemetryUtility
     {
         public static TelemetrySnapshot CreateSnapshot(int maxAssetsPerCategory)
         {
-            return CreateSnapshotInternal(maxAssetsPerCategory);
+            return CreateSnapshot(maxAssetsPerCategory, TelemetrySnapshotOptions.Default);
+        }
+
+        public static TelemetrySnapshot CreateSnapshot(int maxAssetsPerCategory, TelemetrySnapshotOptions options)
+        {
+            var normalizedOptions = NormalizeOptions(options);
+            var snapshotData = CaptureSnapshotData(normalizedOptions);
+            return BuildSnapshot(maxAssetsPerCategory, normalizedOptions, snapshotData);
         }
 
         public static Task<TelemetrySnapshot> CreateSnapshotAsync(int maxAssetsPerCategory)
         {
-            return Task.FromResult(CreateSnapshotInternal(maxAssetsPerCategory));
+            return CreateSnapshotAsync(maxAssetsPerCategory, TelemetrySnapshotOptions.Default);
         }
 
-        private static TelemetrySnapshot CreateSnapshotInternal(int maxAssetsPerCategory)
+        public static Task<TelemetrySnapshot> CreateSnapshotAsync(int maxAssetsPerCategory, TelemetrySnapshotOptions options)
+        {
+            var normalizedOptions = NormalizeOptions(options);
+            var snapshotData = CaptureSnapshotData(normalizedOptions);
+            return Task.Run(() => BuildSnapshot(maxAssetsPerCategory, normalizedOptions, snapshotData));
+        }
+
+        private static TelemetrySnapshotOptions NormalizeOptions(TelemetrySnapshotOptions options)
+        {
+            if (!options.hasExplicitSelection &&
+                !options.includeTextures && !options.includeMeshes && !options.includeRenderTextures &&
+                !options.includeMaterials && !options.includeShaders)
+            {
+                return TelemetrySnapshotOptions.Default;
+            }
+
+            return new TelemetrySnapshotOptions
+            {
+                includeTextures = options.includeTextures,
+                includeMeshes = options.includeMeshes,
+                includeRenderTextures = options.includeRenderTextures,
+                includeMaterials = options.includeMaterials,
+                includeShaders = options.includeShaders,
+                hasExplicitSelection = options.hasExplicitSelection
+            };
+        }
+
+        private static TelemetrySnapshot BuildSnapshot(int maxAssetsPerCategory, TelemetrySnapshotOptions options, SnapshotData snapshotData)
         {
             var maxPerCategory = Mathf.Max(1, maxAssetsPerCategory);
 
-            var textures = CollectTextureInfos(maxPerCategory);
-            var meshes = CollectMeshInfos(maxPerCategory);
-            var renderTextures = CollectRenderTextureInfos(maxPerCategory);
-            var materials = CollectMaterialInfos(maxPerCategory);
-            var shaders = CollectShaderInfos(maxPerCategory);
+            var textures = options.includeTextures
+                ? snapshotData.textures
+                    .OrderByDescending(info => info.EstimatedBytes)
+                    .GroupBy(info => info.name, StringComparer.OrdinalIgnoreCase)
+                    .Select(group => group.First())
+                    .Take(maxPerCategory)
+                    .ToArray()
+                : Array.Empty<TextureInfo>();
+
+            var meshes = options.includeMeshes
+                ? snapshotData.meshes
+                    .OrderByDescending(info => info.EstimatedBytes)
+                    .Take(maxPerCategory)
+                    .ToArray()
+                : Array.Empty<MeshInfo>();
+
+            var renderTextures = options.includeRenderTextures
+                ? snapshotData.renderTextures
+                    .OrderByDescending(info => info.EstimatedBytes)
+                    .GroupBy(info => info.name, StringComparer.OrdinalIgnoreCase)
+                    .Select(group => group.First())
+                    .Take(maxPerCategory)
+                    .ToArray()
+                : Array.Empty<RenderTextureInfo>();
+
+            var materials = options.includeMaterials
+                ? snapshotData.materials
+                    .OrderByDescending(info => info.memoryBytes)
+                    .GroupBy(info => info.name, StringComparer.OrdinalIgnoreCase)
+                    .Select(group => group.First())
+                    .Take(maxPerCategory)
+                    .ToArray()
+                : Array.Empty<MaterialInfo>();
+
+            var shaders = options.includeShaders
+                ? snapshotData.shaders
+                    .Take(maxPerCategory)
+                    .ToArray()
+                : Array.Empty<ShaderInfo>();
 
             return new TelemetrySnapshot
             {
@@ -49,63 +139,700 @@ namespace UnityProfileV2.Telemetry
             };
         }
 
-        private static TextureInfo[] CollectTextureInfos(int maxAssetsPerCategory)
+        private static SnapshotData CaptureSnapshotData(TelemetrySnapshotOptions options)
         {
-            return EnumerateRuntimeObjects<Texture>()
-                .Where(texture => !IsRenderTextureLike(texture))
-                .Where(texture => texture is not Texture2D tex || !tex.hideFlags.HasFlag(HideFlags.DontSave))
-                .Select(TextureInfo.FromTexture)
-                .Where(info => info.IsValid && !info.isRenderTexture)
-                .Where(info => !IsTinyTexture(info.width, info.height))
-                .OrderByDescending(info => info.EstimatedBytes)
-                .GroupBy(info => info.name, StringComparer.OrdinalIgnoreCase)
-                .Select(group => group.First())
-                .Take(maxAssetsPerCategory)
-                .ToArray();
+            var data = new SnapshotData();
+
+            if (options.includeTextures)
+            {
+                data.textures = CaptureTextureInfos();
+            }
+
+            if (options.includeMeshes)
+            {
+                data.meshes = CaptureMeshInfos();
+            }
+
+            if (options.includeRenderTextures)
+            {
+                data.renderTextures = CaptureRenderTextureInfos();
+            }
+
+            if (options.includeMaterials)
+            {
+                data.materials = CaptureMaterialInfos();
+            }
+
+            if (options.includeShaders)
+            {
+                data.shaders = CaptureShaderInfos();
+            }
+
+            return data;
         }
 
-        private static MeshInfo[] CollectMeshInfos(int maxAssetsPerCategory)
+        private static TextureInfo[] CaptureTextureInfos()
         {
-            return EnumerateRuntimeObjects<Mesh>()
-                .Select(MeshInfo.FromMesh)
-                .Where(info => info.IsValid)
-                .OrderByDescending(info => info.EstimatedBytes)
-                .Take(maxAssetsPerCategory)
-                .ToArray();
+            TextureInfoBuffer.Clear();
+            TextureSeenIds.Clear();
+
+            foreach (var texture in EnumerateRuntimeObjects<Texture>())
+            {
+                if (texture == null)
+                {
+                    continue;
+                }
+
+                if (IsRenderTextureLike(texture))
+                {
+                    continue;
+                }
+
+                if (texture is Texture2D tex && tex.hideFlags.HasFlag(HideFlags.DontSave))
+                {
+                    continue;
+                }
+
+                var info = GetOrCreateTextureInfo(texture);
+                if (!info.IsValid || info.isRenderTexture)
+                {
+                    continue;
+                }
+
+                if (IsTinyTexture(info.width, info.height))
+                {
+                    continue;
+                }
+
+                TextureInfoBuffer.Add(info);
+                TextureSeenIds.Add(texture.GetInstanceID());
+            }
+
+            PruneCache(TextureCache, TextureSeenIds);
+
+            var result = TextureInfoBuffer.ToArray();
+            TextureInfoBuffer.Clear();
+            return result;
         }
 
-        private static RenderTextureInfo[] CollectRenderTextureInfos(int maxAssetsPerCategory)
+        private static MeshInfo[] CaptureMeshInfos()
         {
-            return EnumerateRuntimeObjects<RenderTexture>()
-                .Select(RenderTextureInfo.FromRenderTexture)
-                .Where(info => info.IsValid)
-                .OrderByDescending(info => info.EstimatedBytes)
-                .GroupBy(info => info.name, StringComparer.OrdinalIgnoreCase)
-                .Select(group => group.First())
-                .Take(maxAssetsPerCategory)
-                .ToArray();
+            MeshInfoBuffer.Clear();
+            MeshSeenIds.Clear();
+
+            foreach (var mesh in EnumerateRuntimeObjects<Mesh>())
+            {
+                if (mesh == null)
+                {
+                    continue;
+                }
+
+                var info = GetOrCreateMeshInfo(mesh);
+                if (!info.IsValid)
+                {
+                    continue;
+                }
+
+                MeshInfoBuffer.Add(info);
+                MeshSeenIds.Add(mesh.GetInstanceID());
+            }
+
+            PruneCache(MeshCache, MeshSeenIds);
+
+            var result = MeshInfoBuffer.ToArray();
+            MeshInfoBuffer.Clear();
+            return result;
         }
 
-        private static MaterialInfo[] CollectMaterialInfos(int maxAssetsPerCategory)
+        private static RenderTextureInfo[] CaptureRenderTextureInfos()
         {
-            return EnumerateRuntimeObjects<Material>()
-                .Select(MaterialInfo.FromMaterial)
-                .Where(info => info.IsValid)
-                .OrderByDescending(info => info.memoryBytes)
-                .GroupBy(info => info.name, StringComparer.OrdinalIgnoreCase)
-                .Select(group => group.First())
-                .Take(maxAssetsPerCategory)
-                .ToArray();
+            RenderTextureInfoBuffer.Clear();
+            RenderTextureSeenIds.Clear();
+
+            foreach (var renderTexture in EnumerateRuntimeObjects<RenderTexture>())
+            {
+                if (renderTexture == null)
+                {
+                    continue;
+                }
+
+                var info = GetOrCreateRenderTextureInfo(renderTexture);
+                if (!info.IsValid)
+                {
+                    continue;
+                }
+
+                RenderTextureInfoBuffer.Add(info);
+                RenderTextureSeenIds.Add(renderTexture.GetInstanceID());
+            }
+
+            PruneCache(RenderTextureCache, RenderTextureSeenIds);
+
+            var result = RenderTextureInfoBuffer.ToArray();
+            RenderTextureInfoBuffer.Clear();
+            return result;
         }
 
-        private static ShaderInfo[] CollectShaderInfos(int maxAssetsPerCategory)
+        private static MaterialInfo[] CaptureMaterialInfos()
         {
-            return EnumerateRuntimeObjects<Shader>()
-                .Select(ShaderInfo.FromShader)
-                .Where(info => info.IsValid)
-                .Take(maxAssetsPerCategory)
-                .ToArray();
+            MaterialInfoBuffer.Clear();
+            MaterialSeenIds.Clear();
+
+            foreach (var material in EnumerateRuntimeObjects<Material>())
+            {
+                if (material == null)
+                {
+                    continue;
+                }
+
+                var info = GetOrCreateMaterialInfo(material);
+                if (!info.IsValid)
+                {
+                    continue;
+                }
+
+                MaterialInfoBuffer.Add(info);
+                MaterialSeenIds.Add(material.GetInstanceID());
+            }
+
+            PruneCache(MaterialCache, MaterialSeenIds);
+
+            var result = MaterialInfoBuffer.ToArray();
+            MaterialInfoBuffer.Clear();
+            return result;
         }
+
+        private static ShaderInfo[] CaptureShaderInfos()
+        {
+            ShaderInfoBuffer.Clear();
+            ShaderSeenIds.Clear();
+
+            foreach (var shader in EnumerateRuntimeObjects<Shader>())
+            {
+                if (shader == null)
+                {
+                    continue;
+                }
+
+                var info = GetOrCreateShaderInfo(shader);
+                if (!info.IsValid)
+                {
+                    continue;
+                }
+
+                ShaderInfoBuffer.Add(info);
+                ShaderSeenIds.Add(shader.GetInstanceID());
+            }
+
+            PruneCache(ShaderCache, ShaderSeenIds);
+
+            var result = ShaderInfoBuffer.ToArray();
+            ShaderInfoBuffer.Clear();
+            return result;
+        }
+
+        private static TextureInfo GetOrCreateTextureInfo(Texture texture)
+        {
+            var instanceId = texture.GetInstanceID();
+            var signature = TextureSignature.FromTexture(texture);
+
+            if (TextureCache.TryGetValue(instanceId, out var cached) && cached.Signature.Equals(signature))
+            {
+                return cached.Info;
+            }
+
+            var info = TextureInfo.FromTexture(texture);
+            TextureCache[instanceId] = new CachedEntry<TextureInfo, TextureSignature>
+            {
+                Info = info,
+                Signature = signature
+            };
+
+            return info;
+        }
+
+        private static MeshInfo GetOrCreateMeshInfo(Mesh mesh)
+        {
+            var instanceId = mesh.GetInstanceID();
+            var signature = MeshSignature.FromMesh(mesh);
+
+            if (MeshCache.TryGetValue(instanceId, out var cached) && cached.Signature.Equals(signature))
+            {
+                return cached.Info;
+            }
+
+            var info = MeshInfo.FromMesh(mesh);
+            MeshCache[instanceId] = new CachedEntry<MeshInfo, MeshSignature>
+            {
+                Info = info,
+                Signature = signature
+            };
+
+            return info;
+        }
+
+        private static RenderTextureInfo GetOrCreateRenderTextureInfo(RenderTexture renderTexture)
+        {
+            var instanceId = renderTexture.GetInstanceID();
+            var signature = RenderTextureSignature.FromRenderTexture(renderTexture);
+
+            if (RenderTextureCache.TryGetValue(instanceId, out var cached) && cached.Signature.Equals(signature))
+            {
+                return cached.Info;
+            }
+
+            var info = RenderTextureInfo.FromRenderTexture(renderTexture);
+            RenderTextureCache[instanceId] = new CachedEntry<RenderTextureInfo, RenderTextureSignature>
+            {
+                Info = info,
+                Signature = signature
+            };
+
+            return info;
+        }
+
+        private static MaterialInfo GetOrCreateMaterialInfo(Material material)
+        {
+            var instanceId = material.GetInstanceID();
+            var signature = MaterialSignature.FromMaterial(material);
+
+            if (MaterialCache.TryGetValue(instanceId, out var cached) && cached.Signature.Equals(signature))
+            {
+                return cached.Info;
+            }
+
+            var info = MaterialInfo.FromMaterial(material);
+            MaterialCache[instanceId] = new CachedEntry<MaterialInfo, MaterialSignature>
+            {
+                Info = info,
+                Signature = signature
+            };
+
+            return info;
+        }
+
+        private static ShaderInfo GetOrCreateShaderInfo(Shader shader)
+        {
+            var instanceId = shader.GetInstanceID();
+            var signature = ShaderSignature.FromShader(shader);
+
+            if (ShaderCache.TryGetValue(instanceId, out var cached) && cached.Signature.Equals(signature))
+            {
+                return cached.Info;
+            }
+
+            var info = ShaderInfo.FromShader(shader);
+            ShaderCache[instanceId] = new CachedEntry<ShaderInfo, ShaderSignature>
+            {
+                Info = info,
+                Signature = signature
+            };
+
+            return info;
+        }
+
+        private static void PruneCache<TInfo, TSignature>(Dictionary<int, CachedEntry<TInfo, TSignature>> cache, HashSet<int> seenIds)
+        {
+            RemovalBuffer.Clear();
+            foreach (var key in cache.Keys)
+            {
+                if (!seenIds.Contains(key))
+                {
+                    RemovalBuffer.Add(key);
+                }
+            }
+
+            foreach (var key in RemovalBuffer)
+            {
+                cache.Remove(key);
+            }
+
+            RemovalBuffer.Clear();
+            seenIds.Clear();
+        }
+
+        private sealed class SnapshotData
+        {
+            public TextureInfo[] textures = Array.Empty<TextureInfo>();
+            public MeshInfo[] meshes = Array.Empty<MeshInfo>();
+            public RenderTextureInfo[] renderTextures = Array.Empty<RenderTextureInfo>();
+            public MaterialInfo[] materials = Array.Empty<MaterialInfo>();
+            public ShaderInfo[] shaders = Array.Empty<ShaderInfo>();
+        }
+
+        private struct CachedEntry<TInfo, TSignature>
+        {
+            public TInfo Info;
+            public TSignature Signature;
+        }
+
+        private struct TextureSignature : IEquatable<TextureSignature>
+        {
+            public string name;
+            public string path;
+            public int width;
+            public int height;
+            public TextureFormat format;
+            public TextureWrapMode wrapMode;
+            public FilterMode filterMode;
+            public int mipCount;
+            public bool isRenderTexture;
+            public string textureClass;
+            public string contentHash;
+
+            public static TextureSignature FromTexture(Texture texture)
+            {
+                var signature = new TextureSignature
+                {
+                    name = texture != null ? texture.name : string.Empty,
+                    path = GetAssetPath(texture),
+                    width = texture != null ? texture.width : 0,
+                    height = texture != null ? texture.height : 0,
+                    wrapMode = texture != null ? texture.wrapMode : TextureWrapMode.Clamp,
+                    filterMode = texture != null ? texture.filterMode : FilterMode.Bilinear,
+                    isRenderTexture = texture != null && IsRenderTextureLike(texture),
+                    textureClass = texture != null ? texture.GetType().Name : string.Empty,
+                    mipCount = 1,
+                    format = TextureFormat.RGBA32,
+                    contentHash = string.Empty
+                };
+
+                if (texture is Texture2D tex2D)
+                {
+                    signature.format = tex2D.format;
+                    signature.mipCount = tex2D.mipmapCount;
+#if UNITY_2018_2_OR_NEWER
+                    signature.contentHash = tex2D.imageContentsHash.ToString();
+#endif
+                }
+
+                return signature;
+            }
+
+            public bool Equals(TextureSignature other)
+            {
+                return width == other.width &&
+                    height == other.height &&
+                    format == other.format &&
+                    wrapMode == other.wrapMode &&
+                    filterMode == other.filterMode &&
+                    mipCount == other.mipCount &&
+                    isRenderTexture == other.isRenderTexture &&
+                    string.Equals(name, other.name, StringComparison.Ordinal) &&
+                    string.Equals(path, other.path, StringComparison.Ordinal) &&
+                    string.Equals(textureClass, other.textureClass, StringComparison.Ordinal) &&
+                    string.Equals(contentHash, other.contentHash, StringComparison.Ordinal);
+            }
+
+            public override bool Equals(object obj)
+            {
+                return obj is TextureSignature other && Equals(other);
+            }
+
+            public override int GetHashCode()
+            {
+                unchecked
+                {
+                    var hashCode = width;
+                    hashCode = (hashCode * 397) ^ height;
+                    hashCode = (hashCode * 397) ^ (int)format;
+                    hashCode = (hashCode * 397) ^ (int)wrapMode;
+                    hashCode = (hashCode * 397) ^ (int)filterMode;
+                    hashCode = (hashCode * 397) ^ mipCount;
+                    hashCode = (hashCode * 397) ^ isRenderTexture.GetHashCode();
+                    hashCode = (hashCode * 397) ^ (name != null ? StringComparer.Ordinal.GetHashCode(name) : 0);
+                    hashCode = (hashCode * 397) ^ (path != null ? StringComparer.Ordinal.GetHashCode(path) : 0);
+                    hashCode = (hashCode * 397) ^ (textureClass != null ? StringComparer.Ordinal.GetHashCode(textureClass) : 0);
+                    hashCode = (hashCode * 397) ^ (contentHash != null ? StringComparer.Ordinal.GetHashCode(contentHash) : 0);
+                    return hashCode;
+                }
+            }
+        }
+
+        private struct MeshSignature : IEquatable<MeshSignature>
+        {
+            public string name;
+            public string path;
+            public int vertexCount;
+            public int subMeshCount;
+            public float boundsSizeX;
+            public float boundsSizeY;
+            public float boundsSizeZ;
+            public int blendShapeCount;
+
+            public static MeshSignature FromMesh(Mesh mesh)
+            {
+                var bounds = mesh.bounds.size;
+                return new MeshSignature
+                {
+                    name = mesh != null ? mesh.name : string.Empty,
+                    path = GetAssetPath(mesh),
+                    vertexCount = mesh != null ? mesh.vertexCount : 0,
+                    subMeshCount = mesh != null ? mesh.subMeshCount : 0,
+                    boundsSizeX = bounds.x,
+                    boundsSizeY = bounds.y,
+                    boundsSizeZ = bounds.z,
+                    blendShapeCount = mesh != null ? mesh.blendShapeCount : 0
+                };
+            }
+
+            public bool Equals(MeshSignature other)
+            {
+                return vertexCount == other.vertexCount &&
+                    subMeshCount == other.subMeshCount &&
+                    Mathf.Approximately(boundsSizeX, other.boundsSizeX) &&
+                    Mathf.Approximately(boundsSizeY, other.boundsSizeY) &&
+                    Mathf.Approximately(boundsSizeZ, other.boundsSizeZ) &&
+                    blendShapeCount == other.blendShapeCount &&
+                    string.Equals(name, other.name, StringComparer.Ordinal) &&
+                    string.Equals(path, other.path, StringComparer.Ordinal);
+            }
+
+            public override bool Equals(object obj)
+            {
+                return obj is MeshSignature other && Equals(other);
+            }
+
+            public override int GetHashCode()
+            {
+                unchecked
+                {
+                    var hashCode = vertexCount;
+                    hashCode = (hashCode * 397) ^ subMeshCount;
+                    hashCode = (hashCode * 397) ^ Mathf.RoundToInt(boundsSizeX * 1000f);
+                    hashCode = (hashCode * 397) ^ Mathf.RoundToInt(boundsSizeY * 1000f);
+                    hashCode = (hashCode * 397) ^ Mathf.RoundToInt(boundsSizeZ * 1000f);
+                    hashCode = (hashCode * 397) ^ blendShapeCount;
+                    hashCode = (hashCode * 397) ^ (name != null ? StringComparer.Ordinal.GetHashCode(name) : 0);
+                    hashCode = (hashCode * 397) ^ (path != null ? StringComparer.Ordinal.GetHashCode(path) : 0);
+                    return hashCode;
+                }
+            }
+        }
+
+        private struct RenderTextureSignature : IEquatable<RenderTextureSignature>
+        {
+            public string name;
+            public int width;
+            public int height;
+            public int depth;
+            public int mipCount;
+            public bool useMipMap;
+            public RenderTextureDimension dimension;
+            public RenderTextureFormat format;
+            public GraphicsFormat graphicsFormat;
+            public int antiAliasing;
+
+            public static RenderTextureSignature FromRenderTexture(RenderTexture renderTexture)
+            {
+                return new RenderTextureSignature
+                {
+                    name = renderTexture != null ? renderTexture.name : string.Empty,
+                    width = renderTexture != null ? renderTexture.width : 0,
+                    height = renderTexture != null ? renderTexture.height : 0,
+                    depth = renderTexture != null ? renderTexture.depth : 0,
+                    mipCount = renderTexture != null ? renderTexture.mipmapCount : 0,
+                    useMipMap = renderTexture != null && renderTexture.useMipMap,
+                    dimension = renderTexture != null ? renderTexture.dimension : RenderTextureDimension.Unknown,
+                    format = renderTexture != null ? renderTexture.format : RenderTextureFormat.Default,
+                    graphicsFormat = renderTexture != null ? renderTexture.graphicsFormat : GraphicsFormat.None,
+                    antiAliasing = renderTexture != null ? renderTexture.antiAliasing : 1
+                };
+            }
+
+            public bool Equals(RenderTextureSignature other)
+            {
+                return width == other.width &&
+                    height == other.height &&
+                    depth == other.depth &&
+                    mipCount == other.mipCount &&
+                    useMipMap == other.useMipMap &&
+                    dimension == other.dimension &&
+                    format == other.format &&
+                    graphicsFormat == other.graphicsFormat &&
+                    antiAliasing == other.antiAliasing &&
+                    string.Equals(name, other.name, StringComparer.Ordinal);
+            }
+
+            public override bool Equals(object obj)
+            {
+                return obj is RenderTextureSignature other && Equals(other);
+            }
+
+            public override int GetHashCode()
+            {
+                unchecked
+                {
+                    var hashCode = width;
+                    hashCode = (hashCode * 397) ^ height;
+                    hashCode = (hashCode * 397) ^ depth;
+                    hashCode = (hashCode * 397) ^ mipCount;
+                    hashCode = (hashCode * 397) ^ useMipMap.GetHashCode();
+                    hashCode = (hashCode * 397) ^ (int)dimension;
+                    hashCode = (hashCode * 397) ^ (int)format;
+                    hashCode = (hashCode * 397) ^ (int)graphicsFormat;
+                    hashCode = (hashCode * 397) ^ antiAliasing;
+                    hashCode = (hashCode * 397) ^ (name != null ? StringComparer.Ordinal.GetHashCode(name) : 0);
+                    return hashCode;
+                }
+            }
+        }
+
+        private struct MaterialSignature : IEquatable<MaterialSignature>
+        {
+            public string name;
+            public string path;
+            public string shaderName;
+            public int renderQueue;
+            public bool enableInstancing;
+            public bool doubleSidedGi;
+            public string keywordHash;
+
+            public static MaterialSignature FromMaterial(Material material)
+            {
+                var shader = material != null ? material.shader : null;
+                var keywords = material != null ? material.shaderKeywords ?? Array.Empty<string>() : Array.Empty<string>();
+                var normalizedKeywords = keywords
+                    .Where(keyword => !string.IsNullOrWhiteSpace(keyword))
+                    .Select(keyword => keyword.Trim())
+                    .Where(keyword => keyword.Length > 0)
+                    .Distinct(StringComparer.Ordinal)
+                    .OrderBy(keyword => keyword, StringComparer.Ordinal)
+                    .ToArray();
+
+                var keywordHash = normalizedKeywords.Length > 0 ? string.Join("|", normalizedKeywords) : string.Empty;
+
+                var doubleSidedGi = false;
+                if (material != null)
+                {
+                    try
+                    {
+                        doubleSidedGi = material.doubleSidedGI;
+                    }
+                    catch
+                    {
+                        doubleSidedGi = false;
+                    }
+                }
+
+                return new MaterialSignature
+                {
+                    name = material != null ? material.name : string.Empty,
+                    path = GetAssetPath(material),
+                    shaderName = shader != null ? shader.name : string.Empty,
+                    renderQueue = material != null ? material.renderQueue : 0,
+                    enableInstancing = material != null && material.enableInstancing,
+                    doubleSidedGi = doubleSidedGi,
+                    keywordHash = keywordHash
+                };
+            }
+
+            public bool Equals(MaterialSignature other)
+            {
+                return renderQueue == other.renderQueue &&
+                    enableInstancing == other.enableInstancing &&
+                    doubleSidedGi == other.doubleSidedGi &&
+                    string.Equals(name, other.name, StringComparer.Ordinal) &&
+                    string.Equals(path, other.path, StringComparer.Ordinal) &&
+                    string.Equals(shaderName, other.shaderName, StringComparer.Ordinal) &&
+                    string.Equals(keywordHash, other.keywordHash, StringComparer.Ordinal);
+            }
+
+            public override bool Equals(object obj)
+            {
+                return obj is MaterialSignature other && Equals(other);
+            }
+
+            public override int GetHashCode()
+            {
+                unchecked
+                {
+                    var hashCode = renderQueue;
+                    hashCode = (hashCode * 397) ^ enableInstancing.GetHashCode();
+                    hashCode = (hashCode * 397) ^ doubleSidedGi.GetHashCode();
+                    hashCode = (hashCode * 397) ^ (name != null ? StringComparer.Ordinal.GetHashCode(name) : 0);
+                    hashCode = (hashCode * 397) ^ (path != null ? StringComparer.Ordinal.GetHashCode(path) : 0);
+                    hashCode = (hashCode * 397) ^ (shaderName != null ? StringComparer.Ordinal.GetHashCode(shaderName) : 0);
+                    hashCode = (hashCode * 397) ^ (keywordHash != null ? StringComparer.Ordinal.GetHashCode(keywordHash) : 0);
+                    return hashCode;
+                }
+            }
+        }
+
+        private struct ShaderSignature : IEquatable<ShaderSignature>
+        {
+            public string name;
+            public string path;
+            public int passCount;
+            public string keywordHash;
+
+            public static ShaderSignature FromShader(Shader shader)
+            {
+                var keywords = GetShaderKeywords(shader) ?? Array.Empty<string>();
+                var normalizedKeywords = keywords
+                    .Where(keyword => !string.IsNullOrWhiteSpace(keyword))
+                    .Select(keyword => keyword.Trim())
+                    .Where(keyword => keyword.Length > 0)
+                    .Distinct(StringComparer.Ordinal)
+                    .OrderBy(keyword => keyword, StringComparer.Ordinal)
+                    .ToArray();
+
+                var keywordHash = normalizedKeywords.Length > 0 ? string.Join("|", normalizedKeywords) : string.Empty;
+
+                return new ShaderSignature
+                {
+                    name = shader != null ? shader.name : string.Empty,
+                    path = GetAssetPath(shader),
+                    passCount = shader != null ? shader.passCount : 0,
+                    keywordHash = keywordHash
+                };
+            }
+
+            public bool Equals(ShaderSignature other)
+            {
+                return passCount == other.passCount &&
+                    string.Equals(name, other.name, StringComparer.Ordinal) &&
+                    string.Equals(path, other.path, StringComparer.Ordinal) &&
+                    string.Equals(keywordHash, other.keywordHash, StringComparer.Ordinal);
+            }
+
+            public override bool Equals(object obj)
+            {
+                return obj is ShaderSignature other && Equals(other);
+            }
+
+            public override int GetHashCode()
+            {
+                unchecked
+                {
+                    var hashCode = passCount;
+                    hashCode = (hashCode * 397) ^ (name != null ? StringComparer.Ordinal.GetHashCode(name) : 0);
+                    hashCode = (hashCode * 397) ^ (path != null ? StringComparer.Ordinal.GetHashCode(path) : 0);
+                    hashCode = (hashCode * 397) ^ (keywordHash != null ? StringComparer.Ordinal.GetHashCode(keywordHash) : 0);
+                    return hashCode;
+                }
+            }
+        }
+
+        private static readonly Dictionary<int, CachedEntry<TextureInfo, TextureSignature>> TextureCache = new();
+        private static readonly Dictionary<int, CachedEntry<MeshInfo, MeshSignature>> MeshCache = new();
+        private static readonly Dictionary<int, CachedEntry<RenderTextureInfo, RenderTextureSignature>> RenderTextureCache = new();
+        private static readonly Dictionary<int, CachedEntry<MaterialInfo, MaterialSignature>> MaterialCache = new();
+        private static readonly Dictionary<int, CachedEntry<ShaderInfo, ShaderSignature>> ShaderCache = new();
+
+        private static readonly HashSet<int> TextureSeenIds = new();
+        private static readonly HashSet<int> MeshSeenIds = new();
+        private static readonly HashSet<int> RenderTextureSeenIds = new();
+        private static readonly HashSet<int> MaterialSeenIds = new();
+        private static readonly HashSet<int> ShaderSeenIds = new();
+
+        private static readonly List<int> RemovalBuffer = new();
+
+        private static readonly List<TextureInfo> TextureInfoBuffer = new();
+        private static readonly List<MeshInfo> MeshInfoBuffer = new();
+        private static readonly List<RenderTextureInfo> RenderTextureInfoBuffer = new();
+        private static readonly List<MaterialInfo> MaterialInfoBuffer = new();
+        private static readonly List<ShaderInfo> ShaderInfoBuffer = new();
 
         public static IEnumerator PopulateFramePreview(TelemetrySnapshot snapshot, float framePreviewScale)
         {

@@ -10,6 +10,14 @@ const DEFAULT_CONFIG = {
     disableFramePreview: false,
     maxAssetsPerCategory: 200,
     autoManageSession: true,
+    assetCategoryVersion: 1,
+    assetCategories: {
+      includeTextures: true,
+      includeMeshes: true,
+      includeRenderTextures: true,
+      includeMaterials: true,
+      includeShaders: true,
+    },
   },
   history: {
     maxSessionFrames: 10000,
@@ -38,7 +46,10 @@ function ensureBoolean(value, fallback = false) {
 
 function mergeConfig(baseConfig, overrideConfig) {
   const merged = {
-    clientDefaults: { ...baseConfig.clientDefaults },
+    clientDefaults: {
+      ...baseConfig.clientDefaults,
+      assetCategories: { ...baseConfig.clientDefaults.assetCategories },
+    },
     history: { ...baseConfig.history },
   };
 
@@ -75,6 +86,50 @@ function mergeConfig(baseConfig, overrideConfig) {
         clientDefaults.autoManageSession,
         baseConfig.clientDefaults.autoManageSession
       );
+    }
+    if ('assetCategoryVersion' in clientDefaults) {
+      merged.clientDefaults.assetCategoryVersion = ensureNumber(clientDefaults.assetCategoryVersion, {
+        min: 0,
+        fallback: baseConfig.clientDefaults.assetCategoryVersion,
+        integer: true,
+      });
+    }
+    const assetCategories = clientDefaults.assetCategories;
+    if (assetCategories && typeof assetCategories === 'object') {
+      const baseCategories = baseConfig.clientDefaults.assetCategories ?? {};
+      const mergedCategories = { ...baseCategories };
+      if ('includeTextures' in assetCategories) {
+        mergedCategories.includeTextures = ensureBoolean(
+          assetCategories.includeTextures,
+          baseCategories.includeTextures ?? true
+        );
+      }
+      if ('includeMeshes' in assetCategories) {
+        mergedCategories.includeMeshes = ensureBoolean(
+          assetCategories.includeMeshes,
+          baseCategories.includeMeshes ?? true
+        );
+      }
+      if ('includeRenderTextures' in assetCategories) {
+        mergedCategories.includeRenderTextures = ensureBoolean(
+          assetCategories.includeRenderTextures,
+          baseCategories.includeRenderTextures ?? true
+        );
+      }
+      if ('includeMaterials' in assetCategories) {
+        mergedCategories.includeMaterials = ensureBoolean(
+          assetCategories.includeMaterials,
+          baseCategories.includeMaterials ?? true
+        );
+      }
+      if ('includeShaders' in assetCategories) {
+        mergedCategories.includeShaders = ensureBoolean(
+          assetCategories.includeShaders,
+          baseCategories.includeShaders ?? true
+        );
+      }
+
+      merged.clientDefaults.assetCategories = mergedCategories;
     }
   }
 
