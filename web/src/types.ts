@@ -156,12 +156,22 @@ export interface NetworkInfoResponse {
   addresses: NetworkInterfaceInfo[];
 }
 
+export interface AssetCategoryConfig {
+  includeTextures: boolean;
+  includeMeshes: boolean;
+  includeRenderTextures: boolean;
+  includeMaterials: boolean;
+  includeShaders: boolean;
+}
+
 export interface ClientDefaultsConfig {
   sampleIntervalSeconds: number;
   framePreviewScale: number;
   disableFramePreview: boolean;
   maxAssetsPerCategory: number;
   autoManageSession: boolean;
+  assetCategoryVersion: number;
+  assetCategories: AssetCategoryConfig;
 }
 
 export interface HistoryConfig {
