@@ -146,13 +146,21 @@ function normalizeSession(session: TelemetrySession, maxSessionFrames: number): 
 export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions) {
   const [sessions, setSessions] = useState<TelemetrySession[]>([]);
   const [connectionState, setConnectionState] = useState<'connecting' | 'connected' | 'disconnected' | 'error'>(
-    'connecting'
+    () => (serverBaseUrl ? 'connecting' : 'disconnected')
   );
   const [networkInfo, setNetworkInfo] = useState<NetworkInfoResponse | null>(null);
   const [serverConfig, setServerConfig] = useState<ServerConfig>(DEFAULT_SERVER_CONFIG);
   const [isConfigLoading, setIsConfigLoading] = useState(false);
 
   const maxSessionFrames = resolveFrameLimit(serverConfig?.history?.maxSessionFrames);
+
+  useEffect(() => {
+    if (!serverBaseUrl) {
+      setSessions([]);
+      setNetworkInfo(null);
+      setConnectionState('disconnected');
+    }
+  }, [serverBaseUrl]);
 
   const socket = useMemo<Socket | null>(() => {
     if (!serverBaseUrl) return null;
@@ -212,6 +220,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
     setConnectionState('connecting');
 
     async function bootstrapSessions() {
+      setSessions([]);
       try {
         const response = await fetch(`${serverBaseUrl}/sessions`);
         if (!response.ok) {
