@@ -89,15 +89,11 @@ export interface ShaderInfo {
   keywords: string[];
   memoryBytes?: number;
   totalVariantCount?: number;
-  compiledVariantCount?: number;
-  pendingVariantCount?: number;
 }
 
 export interface ShaderVariantStats {
   shaderCount: number;
   totalVariants: number;
-  compiledVariants: number;
-  pendingVariants: number;
 }
 
 export interface TelemetrySnapshot {
