@@ -45,6 +45,7 @@ namespace UnityProfileV2.Telemetry
         private Coroutine _initializationCoroutine;
         private bool _sessionManagedAutomatically;
         private TelemetrySnapshotOptions _snapshotOptions = TelemetrySnapshotOptions.Default;
+        private AssetTelemetryUtility.TelemetryCollectionState _collectionState = new();
 
         private static CoroutineRunner _coroutineRunner;
 
@@ -129,6 +130,7 @@ namespace UnityProfileV2.Telemetry
             _sessionManagedAutomatically = false;
             _snapshotSequence = 0;
             _serverEndpoint = ResolveServerEndpoint();
+            _collectionState = new AssetTelemetryUtility.TelemetryCollectionState();
 
             if (wasActive)
             {
@@ -609,7 +611,10 @@ namespace UnityProfileV2.Telemetry
 
         private IEnumerator SendSnapshot()
         {
-            var snapshotTask = AssetTelemetryUtility.CreateSnapshotAsync(_maxAssetsPerCategory, _snapshotOptions);
+            var snapshotTask = AssetTelemetryUtility.CreateSnapshotAsync(
+                _maxAssetsPerCategory,
+                _snapshotOptions,
+                _collectionState);
 
             while (!snapshotTask.IsCompleted)
             {
