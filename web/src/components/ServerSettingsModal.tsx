@@ -48,7 +48,7 @@ interface ServerSettingsFormValues {
 }
 
 const DEFAULT_FORM_VALUES: ServerSettingsFormValues = {
-  sampleIntervalSeconds: 1,
+  sampleIntervalSeconds: 0.01,
   framePreviewScale: 0.2,
   disableFramePreview: false,
   maxAssetsPerCategory: 200,

@@ -14,7 +14,7 @@ namespace UnityProfileV2.Telemetry
     public class AssetTelemetryReporter : MonoBehaviour
     {
         private const int DefaultServerPort = 48080;
-        private const float DefaultSampleIntervalSeconds = 1f;
+        private const float DefaultSampleIntervalSeconds = 0.01f;
         internal const string ServerEndpointPlayerPrefsKey = "UnityProfileV2.Telemetry.ServerEndpointOverride";
 
         [SerializeField]

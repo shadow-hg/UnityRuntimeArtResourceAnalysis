@@ -1,6 +1,6 @@
 {
   "clientDefaults": {
-    "sampleIntervalSeconds": 1,
+    "sampleIntervalSeconds": 0.01,
     "framePreviewScale": 0.08,
     "disableFramePreview": false,
     "maxAssetsPerCategory": 2000,
