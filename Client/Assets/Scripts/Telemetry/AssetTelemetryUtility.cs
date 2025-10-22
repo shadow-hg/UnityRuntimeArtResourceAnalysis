@@ -470,7 +470,6 @@ namespace UnityProfileV2.Telemetry
 
             return -1;
         }
-#endif
 
         private readonly struct CategoryDiff<TInfo>
             where TInfo : struct
