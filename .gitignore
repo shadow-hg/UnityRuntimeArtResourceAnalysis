@@ -8,5 +8,6 @@ server/node_modules/
 server/data/previews/
 server/data/telemetry-history.json
 server/data/telemetry-history.db*
+server/data/sessions/
 web/node_modules/
 web/dist/
