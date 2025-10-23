@@ -61,10 +61,14 @@ namespace UnityProfileV2.Telemetry
                 var timing = FrameTimingBuffer[0];
                 info.cpuFrameTimeMs = (float)timing.cpuFrameTime;
                 info.gpuFrameTimeMs = (float)timing.gpuFrameTime;
-                info.cpuMainThreadTimeMs = (float)timing.cpuMainThreadTime;
 #if UNITY_2020_2_OR_NEWER
+                info.cpuMainThreadTimeMs = (float)timing.cpuMainThreadTime;
                 info.cpuRenderThreadTimeMs = (float)timing.cpuRenderThreadTime;
+#elif UNITY_2017_2_OR_NEWER
+                info.cpuMainThreadTimeMs = (float)timing.cpuMainThreadFrameTime;
+                info.cpuRenderThreadTimeMs = (float)timing.cpuRenderThreadFrameTime;
 #else
+                info.cpuMainThreadTimeMs = 0f;
                 info.cpuRenderThreadTimeMs = 0f;
 #endif
             }
@@ -137,10 +141,12 @@ namespace UnityProfileV2.Telemetry
                 streamingStatuses = Array.Empty<StreamingStatus>()
             };
 
-            var asyncOperations = Resources.FindObjectsOfTypeAll<AsyncOperation>();
+            var asyncOperations = Resources.FindObjectsOfTypeAll(typeof(AsyncOperation));
             if (asyncOperations != null)
             {
-                stats.asyncQueueLength = asyncOperations.Count(op => op != null && !op.isDone);
+                stats.asyncQueueLength = asyncOperations
+                    .OfType<AsyncOperation>()
+                    .Count(op => op != null && !op.isDone);
             }
 
             if (state != null)
@@ -397,7 +403,12 @@ namespace UnityProfileV2.Telemetry
                 var status = new StreamingStatus
                 {
                     type = string.IsNullOrEmpty(player.name) ? "Video" : $"Video:{player.name}",
-                    droppedFrames = (int)player.droppedFrameCount,
+                    droppedFrames =
+#if UNITY_2018_2_OR_NEWER
+                        (int)player.droppedFrameCount,
+#else
+                        0,
+#endif
                     isStalled = player.isPrepared && player.isPlaying && player.frameRate > 0 && player.isPaused,
                 };
 
