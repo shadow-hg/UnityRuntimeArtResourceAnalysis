@@ -19,6 +19,7 @@ namespace UnityProfileV2.Telemetry
     {
         private const int MaxRecentIoEvents = 50;
         private static readonly FrameTiming[] FrameTimingBuffer = new FrameTiming[1];
+        private static bool s_loggedFrameTimingThreadWarning;
 #if UNITY_2017_2_OR_NEWER
         private static MemberInfo s_cpuMainThreadTimingMember;
         private static MemberInfo s_cpuRenderThreadTimingMember;
@@ -62,6 +63,17 @@ namespace UnityProfileV2.Telemetry
                 drawCalls = new DrawCallStats(),
                 bottleneckHints = Array.Empty<BottleneckHint>()
             };
+
+            if (!IsMainThread())
+            {
+                if (!s_loggedFrameTimingThreadWarning)
+                {
+                    Debug.LogWarning("Telemetry frame timing capture is only supported on the main thread. Skipping metrics collection.");
+                    s_loggedFrameTimingThreadWarning = true;
+                }
+
+                return info;
+            }
 
             FrameTimingManager.CaptureFrameTimings();
             if (FrameTimingManager.GetLatestTimings(1, FrameTimingBuffer) > 0)

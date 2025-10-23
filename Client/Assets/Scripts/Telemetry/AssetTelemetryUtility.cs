@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Experimental.Rendering;
@@ -46,6 +47,40 @@ namespace UnityProfileV2.Telemetry
 
     public static partial class AssetTelemetryUtility
     {
+        private static int s_mainThreadId = -1;
+
+        internal static void MarkMainThread()
+        {
+            if (SynchronizationContext.Current == null)
+            {
+                return;
+            }
+
+            var currentId = Thread.CurrentThread.ManagedThreadId;
+            if (s_mainThreadId == -1 || s_mainThreadId == currentId)
+            {
+                s_mainThreadId = currentId;
+            }
+        }
+
+        private static bool IsMainThread()
+        {
+            var currentId = Thread.CurrentThread.ManagedThreadId;
+
+            if (s_mainThreadId == -1)
+            {
+                if (SynchronizationContext.Current != null)
+                {
+                    s_mainThreadId = currentId;
+                    return true;
+                }
+
+                return false;
+            }
+
+            return currentId == s_mainThreadId;
+        }
+
         public sealed class TelemetryCollectionState
         {
             internal Dictionary<int, TextureInfo> Textures { get; } = new();

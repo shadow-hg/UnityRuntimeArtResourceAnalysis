@@ -377,6 +377,7 @@ namespace UnityProfileV2.Telemetry
 
         private void Awake()
         {
+            AssetTelemetryUtility.MarkMainThread();
             LoadServerEndpointOverrideFromPreferences();
             _serverEndpoint = ResolveServerEndpoint();
         }
