@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
 import type {
   NetworkInfoResponse,
@@ -224,6 +224,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
   const [isConfigLoading, setIsConfigLoading] = useState(false);
 
   const maxSessionFrames = resolveFrameLimit(serverConfig?.history?.maxSessionFrames);
+  const loadedSessionIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (!serverBaseUrl) {
@@ -282,6 +283,55 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
     return config;
   }, [fetchServerConfig, applyServerConfig]);
 
+  const loadSessionDetails = useCallback(
+    async (sessionId: string, options: { force?: boolean } = {}) => {
+      if (!serverBaseUrl || !sessionId) {
+        return null;
+      }
+
+      const shouldForce = Boolean(options.force);
+      if (!shouldForce && loadedSessionIdsRef.current.has(sessionId)) {
+        return null;
+      }
+
+      try {
+        const response = await fetch(`${serverBaseUrl}/sessions/${encodeURIComponent(sessionId)}`);
+        if (response.status === 404) {
+          loadedSessionIdsRef.current.delete(sessionId);
+          return null;
+        }
+        if (!response.ok) {
+          throw new Error(`Failed to fetch session ${sessionId}: ${response.statusText}`);
+        }
+        const payload = (await response.json()) as TelemetrySession;
+        const normalized = normalizeSession(payload, maxSessionFrames);
+        loadedSessionIdsRef.current.add(sessionId);
+        setSessions((prev) => {
+          let found = false;
+          const next = prev.map((session) => {
+            if (session.id !== normalized.id) {
+              return session;
+            }
+            found = true;
+            return {
+              ...session,
+              ...normalized,
+            };
+          });
+          if (!found) {
+            next.push(normalized);
+          }
+          return next;
+        });
+        return normalized;
+      } catch (error) {
+        console.error(error);
+        return null;
+      }
+    },
+    [serverBaseUrl, maxSessionFrames]
+  );
+
   useEffect(() => {
     refreshServerConfig();
   }, [refreshServerConfig]);
@@ -292,6 +342,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
 
     async function bootstrapSessions() {
       setSessions([]);
+      loadedSessionIdsRef.current.clear();
       try {
         const response = await fetch(`${serverBaseUrl}/sessions`);
         if (!response.ok) {
@@ -299,6 +350,10 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
         }
         const initialSessions: TelemetrySession[] = await response.json();
         setSessions(initialSessions.map((session) => normalizeSession(session, maxSessionFrames)));
+        if (initialSessions.length > 0) {
+          const newest = initialSessions[initialSessions.length - 1];
+          loadSessionDetails(newest.id).catch((error) => console.error(error));
+        }
         setConnectionState((state) => (state === 'connecting' ? 'connected' : state));
       } catch (error) {
         console.error(error);
@@ -307,7 +362,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
     }
 
     bootstrapSessions();
-  }, [serverBaseUrl, maxSessionFrames]);
+  }, [serverBaseUrl, maxSessionFrames, loadSessionDetails]);
 
   useEffect(() => {
     if (!serverBaseUrl) return;
@@ -415,6 +470,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
 
     function handleHistoryCleared() {
       setSessions([]);
+      loadedSessionIdsRef.current.clear();
     }
 
     function handleSessionDeleted(payload: { sessionId?: string } | undefined) {
@@ -423,6 +479,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
         return;
       }
       setSessions((prev) => prev.filter((session) => session.id !== sessionId));
+      loadedSessionIdsRef.current.delete(sessionId);
     }
 
     socket.on('connect', handleConnect);
@@ -486,6 +543,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
     }
 
     setSessions([]);
+    loadedSessionIdsRef.current.clear();
   }, [serverBaseUrl]);
 
   const deleteServerSession = useCallback(
@@ -507,6 +565,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
       }
 
       setSessions((prev) => prev.filter((session) => session.id !== sessionId));
+      loadedSessionIdsRef.current.delete(sessionId);
     },
     [serverBaseUrl]
   );
@@ -521,5 +580,6 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
     clearServerHistory,
     deleteServerSession,
     refreshServerConfig,
+    loadSessionDetails,
   };
 }
