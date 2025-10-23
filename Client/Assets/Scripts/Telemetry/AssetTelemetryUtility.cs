@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Reflection;
 using System.Threading;
@@ -2300,6 +2301,7 @@ namespace UnityProfileV2.Telemetry
         public int instanceId;
         public string name;
         public string path;
+        public string textureId;
         public int width;
         public int height;
         public TextureFormat format;
@@ -2325,11 +2327,20 @@ namespace UnityProfileV2.Telemetry
             var isRenderTexture = AssetTelemetryUtility.IsRenderTextureLike(texture);
             AssetTelemetryUtility.TryCaptureTexturePreview(texture, out var previewBase64);
 
+            var assetPath = AssetTelemetryUtility.GetAssetPath(texture);
+            var normalizedPath = string.IsNullOrEmpty(assetPath)
+                ? string.Empty
+                : assetPath.Replace('\\', '/');
+            var stableId = !string.IsNullOrEmpty(normalizedPath)
+                ? $"path:{normalizedPath.ToLowerInvariant()}"
+                : $"instance:{(texture != null ? texture.GetInstanceID().ToString(CultureInfo.InvariantCulture) : "0")}";
+
             return new TextureInfo
             {
                 instanceId = texture != null ? texture.GetInstanceID() : 0,
                 name = texture.name,
-                path = AssetTelemetryUtility.GetAssetPath(texture),
+                path = assetPath,
+                textureId = stableId,
                 width = texture.width,
                 height = texture.height,
                 wrapMode = texture.wrapMode,

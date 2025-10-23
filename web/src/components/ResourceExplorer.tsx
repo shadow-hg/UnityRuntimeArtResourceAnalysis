@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Card,
   Collapse,
@@ -30,6 +30,8 @@ import CollapsibleSection from './CollapsibleSection';
 interface ResourceExplorerProps {
   frame: TelemetrySnapshot | null;
   serverBaseUrl: string;
+  sessionId: string | null;
+  ensureTextures?: (sessionId: string, textureIds: string[]) => Promise<void>;
 }
 
 const unityWrapModeLabels: Record<number, string> = {
@@ -131,15 +133,62 @@ function formatFilterMode(value: string | number | null | undefined): string {
   return '未知';
 }
 
+function isTextureReference(texture: TextureInfo | null | undefined): boolean {
+  if (!texture) {
+    return false;
+  }
+  if (texture.__textureRef) {
+    return true;
+  }
+  if (!Number.isFinite(texture.EstimatedBytes ?? Number.NaN)) {
+    return true;
+  }
+  return false;
+}
+
+function getTextureDisplayName(texture: TextureInfo): string {
+  const name = typeof texture.name === 'string' ? texture.name.trim() : '';
+  if (name.length > 0) {
+    return name;
+  }
+  const textureId = typeof texture.textureId === 'string' ? texture.textureId.trim() : '';
+  if (textureId.length > 0) {
+    return textureId;
+  }
+  const path = typeof texture.path === 'string' ? texture.path.trim() : '';
+  if (path.length > 0) {
+    return path;
+  }
+  return '未命名纹理';
+}
+
+function getTextureEstimatedBytes(texture: TextureInfo): number {
+  const value = texture.EstimatedBytes;
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.max(0, value);
+  }
+  return 0;
+}
+
 function dedupeTextures(textures: TextureInfo[]): TextureInfo[] {
   const map = new Map<string, TextureInfo>();
   textures.forEach((texture) => {
+    if (!texture) {
+      return;
+    }
     const name = typeof texture.name === 'string' ? texture.name.trim() : '';
     const path = typeof texture.path === 'string' ? texture.path.trim() : '';
-    const key = name || path || `${texture.width}x${texture.height}`;
+    const textureId = typeof texture.textureId === 'string' ? texture.textureId.trim() : '';
+    const width = Number.isFinite(texture.width) ? Number(texture.width) : 0;
+    const height = Number.isFinite(texture.height) ? Number(texture.height) : 0;
+    const key = textureId || name || path || `${width}x${height}`;
     const existing = map.get(key);
-    if (!existing || existing.EstimatedBytes < texture.EstimatedBytes) {
-      map.set(key, texture);
+    const existingBytes = existing ? getTextureEstimatedBytes(existing) : -1;
+    const nextBytes = getTextureEstimatedBytes(texture);
+    if (!existing || existingBytes < nextBytes) {
+      const clone: TextureInfo = { ...texture };
+      delete clone.__textureRef;
+      map.set(key, clone);
     }
   });
   return Array.from(map.values());
@@ -247,13 +296,18 @@ function computeTextureDiagnostics(textures: TextureInfo[]): DiagnosticEntry[] {
     const width = Number(texture.width) || 0;
     const height = Number(texture.height) || 0;
     const mipCount = texture.mipCount ?? 0;
-    const ratio = texture.originalBytes > 0 ? texture.EstimatedBytes / texture.originalBytes : null;
-    const keyPrefix = `${texture.instanceId ?? texture.name ?? 'texture'}-${index}`;
+    const estimatedBytes = getTextureEstimatedBytes(texture);
+    const originalBytes = Number.isFinite(texture.originalBytes)
+      ? Math.max(0, Number(texture.originalBytes))
+      : 0;
+    const ratio = originalBytes > 0 ? estimatedBytes / originalBytes : null;
+    const keyPrefix = `${texture.instanceId ?? texture.textureId ?? texture.name ?? 'texture'}-${index}`;
+    const displayName = getTextureDisplayName(texture);
 
     if ((!isPowerOfTwo(width) || !isPowerOfTwo(height)) && Math.max(width, height) >= 512) {
       entries.push({
         key: `${keyPrefix}-npot`,
-        name: texture.name || '未命名纹理',
+        name: displayName,
         severity: 'warning',
         message: `尺寸 ${width} × ${height} 非二次幂，可能导致额外内存与采样成本`,
       });
@@ -262,23 +316,23 @@ function computeTextureDiagnostics(textures: TextureInfo[]): DiagnosticEntry[] {
     if (Math.max(width, height) >= 1024 && (mipCount ?? 0) <= 1) {
       entries.push({
         key: `${keyPrefix}-mip`,
-        name: texture.name || '未命名纹理',
+        name: displayName,
         severity: 'critical',
         message: `高分辨率纹理缺少 MipMap（当前 ${mipCount}），建议开启以降低跳变`,
       });
     } else if (Math.max(width, height) >= 512 && (mipCount ?? 0) <= 1) {
       entries.push({
         key: `${keyPrefix}-mip-warn`,
-        name: texture.name || '未命名纹理',
+        name: displayName,
         severity: 'warning',
         message: `较大纹理未启用 MipMap（当前 ${mipCount}），可能带来远景闪烁`,
       });
     }
 
-    if (ratio != null && ratio >= 0.8 && texture.originalBytes > 0) {
+    if (ratio != null && ratio >= 0.8 && originalBytes > 0) {
       entries.push({
         key: `${keyPrefix}-compression`,
-        name: texture.name || '未命名纹理',
+        name: displayName,
         severity: 'info',
         message: `压缩后仍保留 ${formatPercentage(ratio)} 原始大小，考虑换用更高压缩格式`,
       });
@@ -618,7 +672,8 @@ function TextureNameCell({ texture, serverBaseUrl }: { texture: TextureInfo; ser
     [texture, serverBaseUrl]
   );
   const hasPreview = Boolean(previewSrc);
-  const placeholderLabel = (texture.name || 'TX').slice(0, 2).toUpperCase();
+  const displayName = getTextureDisplayName(texture);
+  const placeholderLabel = displayName.slice(0, 2).toUpperCase();
 
   return (
     <Space align="start">
@@ -628,7 +683,7 @@ function TextureNameCell({ texture, serverBaseUrl }: { texture: TextureInfo; ser
           width={56}
           height={56}
           style={{ borderRadius: 8, objectFit: 'cover' }}
-          alt={texture.name}
+          alt={displayName}
           preview={{ mask: '预览' }}
         />
       ) : (
@@ -649,7 +704,7 @@ function TextureNameCell({ texture, serverBaseUrl }: { texture: TextureInfo; ser
           {placeholderLabel}
         </div>
       )}
-      <Typography.Text strong>{texture.name}</Typography.Text>
+      <Typography.Text strong>{displayName}</Typography.Text>
     </Space>
   );
 }
@@ -709,9 +764,11 @@ function RenderTextureNameCell({
 
 function TextureDetails({ texture }: { texture: TextureInfo }) {
   const compressionFormat = texture.compressionFormat ?? texture.formatName ?? texture.format ?? '未知';
-  const compressionRatio = texture.originalBytes > 0
-    ? formatPercentage(texture.EstimatedBytes / texture.originalBytes)
-    : '—';
+  const estimatedBytes = getTextureEstimatedBytes(texture);
+  const originalBytes = Number.isFinite(texture.originalBytes)
+    ? Math.max(0, Number(texture.originalBytes))
+    : 0;
+  const compressionRatio = originalBytes > 0 ? formatPercentage(estimatedBytes / originalBytes) : '—';
   const wrapLabel = formatWrapMode(texture.wrapMode);
   const filterLabel = formatFilterMode(texture.filterMode);
 
@@ -722,9 +779,9 @@ function TextureDetails({ texture }: { texture: TextureInfo }) {
       </Typography.Text>
       <Space wrap size={[8, 6]}>
         <Tag color="blue">
-          原始大小 {texture.originalBytes != null ? formatBytes(texture.originalBytes) : '未知'}
+          原始大小 {originalBytes > 0 ? formatBytes(originalBytes) : '未知'}
         </Tag>
-        <Tag color="green">压缩后 {formatBytes(texture.EstimatedBytes)}</Tag>
+        <Tag color="green">压缩后 {formatBytes(estimatedBytes)}</Tag>
         <Tag color="purple">压缩率 {compressionRatio}</Tag>
         <Tag color="magenta">Mip 数 {texture.mipCount ?? 0}</Tag>
       </Space>
@@ -878,19 +935,80 @@ function ShaderDetails({ shader }: { shader: ShaderInfo }) {
   );
 }
 
-export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplorerProps) {
+export default function ResourceExplorer({
+  frame,
+  serverBaseUrl,
+  sessionId,
+  ensureTextures,
+}: ResourceExplorerProps) {
   const [searchTerm, setSearchTerm] = useState('');
+  const [isTextureLoading, setIsTextureLoading] = useState(false);
+  const [activeResourceSections, setActiveResourceSections] = useState<string[]>([
+    'textures',
+    'renderTextures',
+    'materials',
+  ]);
+
+  useEffect(() => {
+    if (!frame || !sessionId || !ensureTextures) {
+      setIsTextureLoading(false);
+      return;
+    }
+    if (!activeResourceSections.includes('textures')) {
+      setIsTextureLoading(false);
+      return;
+    }
+    const textures = Array.isArray(frame.textures) ? frame.textures : [];
+    const pendingIds = textures
+      .filter((texture) => isTextureReference(texture))
+      .map((texture) => texture?.textureId)
+      .filter((id): id is string => typeof id === 'string' && id.trim().length > 0);
+    if (pendingIds.length === 0) {
+      setIsTextureLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setIsTextureLoading(true);
+    ensureTextures(sessionId, pendingIds)
+      .catch((error) => {
+        console.error('Failed to load texture metadata', error);
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsTextureLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [frame?.frameNumber, frame?.textures, sessionId, ensureTextures, activeResourceSections]);
+
+  const hydratedTextures = useMemo(
+    () =>
+      (Array.isArray(frame?.textures) ? frame.textures : []).filter(
+        (texture): texture is TextureInfo => Boolean(texture) && !isTextureReference(texture)
+      ),
+    [frame?.textures]
+  );
+
+  const hasTextureReferences = useMemo(
+    () => (Array.isArray(frame?.textures) ? frame.textures.some((texture) => isTextureReference(texture)) : false),
+    [frame?.textures]
+  );
 
   const normalizedSearch = searchTerm.trim().toLowerCase();
 
   const filteredTextures = useMemo(() => {
-    if (!frame) return [];
-    const subset = (frame.textures ?? [])
+    const subset = hydratedTextures
       .filter((texture) => !isRenderTextureLike(texture))
-      .filter((texture) => `${texture.name} ${texture.path}`.toLowerCase().includes(normalizedSearch));
-    const unique = dedupeTextures(subset);
-    return unique;
-  }, [frame, normalizedSearch]);
+      .filter((texture) => {
+        const haystack = `${texture.name ?? ''} ${texture.path ?? ''}`.toLowerCase();
+        return haystack.includes(normalizedSearch);
+      });
+    return dedupeTextures(subset);
+  }, [hydratedTextures, normalizedSearch]);
 
   const filteredRenderTextures = useMemo(() => {
     if (!frame) return [];
@@ -927,10 +1045,9 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
   const shaderVariantStats = useMemo(() => resolveShaderVariantStats(frame), [frame]);
 
   const allTextures = useMemo(() => {
-    if (!frame) return [];
-    const subset = (frame.textures ?? []).filter((texture) => !isRenderTextureLike(texture));
+    const subset = hydratedTextures.filter((texture) => !isRenderTextureLike(texture));
     return dedupeTextures(subset);
-  }, [frame]);
+  }, [hydratedTextures]);
 
   const allRenderTextures = useMemo(() => frame?.renderTextures ?? [], [frame]);
   const allMaterials = useMemo(() => frame?.materials ?? [], [frame]);
@@ -954,15 +1071,16 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
   );
 
   const topTextureHotspots = useMemo<HotspotEntry[]>(() => {
-    return [...allTextures]
-      .filter((texture) => Number.isFinite(texture.EstimatedBytes) && texture.EstimatedBytes > 0)
-      .sort((a, b) => b.EstimatedBytes - a.EstimatedBytes)
+    return allTextures
+      .map((texture) => ({ texture, bytes: getTextureEstimatedBytes(texture) }))
+      .filter((entry) => entry.bytes > 0)
+      .sort((a, b) => b.bytes - a.bytes)
       .slice(0, 5)
-      .map((texture) => ({
-        key: `${texture.instanceId ?? texture.name}-${texture.width}-${texture.height}`,
-        name: texture.name || '未命名纹理',
-        description: `${texture.width} × ${texture.height}`,
-        bytes: texture.EstimatedBytes,
+      .map(({ texture, bytes }) => ({
+        key: `${texture.instanceId ?? texture.textureId ?? texture.name}-${texture.width ?? 0}-${texture.height ?? 0}`,
+        name: getTextureDisplayName(texture),
+        description: `${texture.width ?? 0} × ${texture.height ?? 0}`,
+        bytes,
       }));
   }, [allTextures]);
 
@@ -1010,10 +1128,10 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
       computeLifecycleEntries(
         allTextures,
         textureOrderMap,
-        (texture) => texture.name || '未命名纹理',
-        (texture) => texture.EstimatedBytes,
+        (texture) => getTextureDisplayName(texture),
+        (texture) => getTextureEstimatedBytes(texture),
         {
-          getDescription: (texture) => `${texture.width} × ${texture.height}`,
+          getDescription: (texture) => `${texture.width ?? 0} × ${texture.height ?? 0}`,
         }
       ),
     [allTextures, textureOrderMap]
@@ -1079,7 +1197,7 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
 
     const topTexture = topTextureHotspots[0];
     if (allTextures.length > 0) {
-      const totalBytes = sumBy(allTextures, (texture) => texture.EstimatedBytes ?? 0);
+      const totalBytes = sumBy(allTextures, (texture) => getTextureEstimatedBytes(texture));
       const highlight = topTexture
         ? topTexture.description
           ? `${topTexture.name} · ${topTexture.description}`
@@ -1223,15 +1341,14 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
       title: '纹理',
       key: 'texture',
       render: (_, record) => <TextureNameCell texture={record} serverBaseUrl={serverBaseUrl} />,
-      sorter: (a, b) => a.name.localeCompare(b.name),
+      sorter: (a, b) => getTextureDisplayName(a).localeCompare(getTextureDisplayName(b)),
       width: 360,
     },
     {
       title: '压缩大小',
-      dataIndex: 'EstimatedBytes',
       key: 'estimatedBytes',
-      render: (value: number) => formatBytes(value),
-      sorter: (a, b) => a.EstimatedBytes - b.EstimatedBytes,
+      render: (_: number, record) => formatBytes(getTextureEstimatedBytes(record)),
+      sorter: (a, b) => getTextureEstimatedBytes(a) - getTextureEstimatedBytes(b),
       defaultSortOrder: 'descend',
     },
     {
@@ -1244,8 +1361,8 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
     {
       title: '分辨率',
       key: 'resolution',
-      render: (_, record) => `${record.width} × ${record.height}`,
-      sorter: (a, b) => a.width * a.height - b.width * b.height,
+      render: (_, record) => `${record.width ?? 0} × ${record.height ?? 0}`,
+      sorter: (a, b) => (a.width ?? 0) * (a.height ?? 0) - (b.width ?? 0) * (b.height ?? 0),
     },
     {
       title: '压缩格式',
@@ -1410,13 +1527,17 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
     );
   }
 
-  const textureTotal = formatBytes(frame.totalTextureBytes ?? filteredTextures.reduce((sum, texture) => sum + texture.EstimatedBytes, 0));
+  const textureTotal = formatBytes(
+    frame.totalTextureBytes ?? sumBy(allTextures, (texture) => getTextureEstimatedBytes(texture))
+  );
   const meshTotal = formatBytes(frame.totalMeshBytes);
   const renderTextureTotal = formatBytes(frame.totalRenderTextureBytes ?? (frame.renderTextures ?? []).reduce((sum, item) => sum + (item?.EstimatedBytes ?? 0), 0));
   const materialTotal = formatBytes(
     frame.totalMaterialBytes ?? (frame.materials ?? []).reduce((sum, material) => sum + (material.memoryBytes ?? 0), 0)
   );
-  const filteredTextureTotal = formatBytes(filteredTextures.reduce((sum, texture) => sum + texture.EstimatedBytes, 0));
+  const filteredTextureTotal = formatBytes(
+    sumBy(filteredTextures, (texture) => getTextureEstimatedBytes(texture))
+  );
   const filteredRenderTextureTotal = formatBytes(filteredRenderTextures.reduce((sum, rt) => sum + rt.EstimatedBytes, 0));
   const filteredMaterialTotal = formatBytes(
     filteredMaterials.reduce((sum, material) => sum + (material.memoryBytes ?? 0), 0)
@@ -1524,24 +1645,38 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
         ) : null}
         <Collapse
           bordered={false}
-          defaultActiveKey={['textures', 'renderTextures', 'materials']}
+          activeKey={activeResourceSections}
+          onChange={(keys) =>
+            setActiveResourceSections(Array.isArray(keys) ? keys.map((key) => String(key)) : [String(keys)])
+          }
           items={[
             {
               key: 'textures',
               label: `纹理 (${filteredTextures.length})`,
               extra: <Typography.Text type="secondary">当前列表大小 {filteredTextureTotal}</Typography.Text>,
               children: (
-                <Table
-                  rowKey={(record) => `${record.name}-${record.width}-${record.height}-${record.format}`}
-                  dataSource={filteredTextures}
-                  columns={textureColumns}
-                  pagination={{ pageSize: 8, hideOnSinglePage: true }}
-                  size="small"
-                  expandable={{
-                    expandedRowRender: (record) => <TextureDetails texture={record} />,
-                    columnWidth: 48,
-                  }}
-                />
+                <>
+                  {hasTextureReferences ? (
+                    <Typography.Text type="secondary" style={{ marginBottom: 8, display: 'block' }}>
+                      纹理详情按需加载中…
+                    </Typography.Text>
+                  ) : null}
+                  <Table
+                    rowKey={(record, index) =>
+                      record.textureId ??
+                      `${getTextureDisplayName(record)}-${record.width ?? 0}-${record.height ?? 0}-${index}`
+                    }
+                    dataSource={filteredTextures}
+                    columns={textureColumns}
+                    pagination={{ pageSize: 8, hideOnSinglePage: true }}
+                    size="small"
+                    loading={isTextureLoading}
+                    expandable={{
+                      expandedRowRender: (record) => <TextureDetails texture={record} />,
+                      columnWidth: 48,
+                    }}
+                  />
+                </>
               ),
             },
             {

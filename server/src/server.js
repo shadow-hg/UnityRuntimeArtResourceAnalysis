@@ -209,6 +209,30 @@ function normalizeInstanceId(value) {
   return Number.isInteger(rounded) ? rounded : null;
 }
 
+function normalizeTextureId(texture) {
+  if (!texture || typeof texture !== 'object') {
+    return null;
+  }
+
+  const fromPayload = typeof texture.textureId === 'string' ? texture.textureId.trim() : '';
+  if (fromPayload.length > 0) {
+    return fromPayload;
+  }
+
+  const pathValue = typeof texture.path === 'string' ? texture.path.trim() : '';
+  if (pathValue.length > 0) {
+    return `path:${pathValue.toLowerCase()}`;
+  }
+
+  const instanceId = normalizeInstanceId(texture.instanceId);
+  if (instanceId != null) {
+    return `instance:${instanceId}`;
+  }
+
+  const fingerprint = `${texture.name ?? ''}|${texture.width ?? 0}|${texture.height ?? 0}|${texture.formatName ?? texture.format ?? ''}|${texture.EstimatedBytes ?? texture.estimatedBytes ?? 0}`;
+  return `hash:${crypto.createHash('sha1').update(fingerprint).digest('hex')}`;
+}
+
 function resolveOrder(order, updates = [], previous = []) {
   const resolved = [];
   const seen = new Set();
@@ -457,6 +481,11 @@ async function persistTexturePreview(sessionId, texture) {
   const { previewBase64, ...rest } = texture;
   const broadcastTexture = { ...texture };
   const storedTexture = { ...rest };
+  const textureId = normalizeTextureId(texture);
+  if (textureId) {
+    storedTexture.textureId = textureId;
+    broadcastTexture.textureId = textureId;
+  }
 
   const payload = extractBase64Payload(previewBase64 ?? '');
   if (!payload) {
@@ -469,8 +498,10 @@ async function persistTexturePreview(sessionId, texture) {
       return { stored: storedTexture, broadcast: broadcastTexture };
     }
 
-    const identifier = `${texture.name ?? 'unknown'}|${texture.width ?? 0}|${texture.height ?? 0}|${texture.formatName ?? texture.format ?? ''}`;
-    const previewId = crypto.createHash('md5').update(identifier).digest('hex');
+    const identifierSeed = textureId
+      ? `${textureId}|${texture.width ?? 0}|${texture.height ?? 0}|${texture.formatName ?? texture.format ?? ''}`
+      : `${texture.name ?? 'unknown'}|${texture.width ?? 0}|${texture.height ?? 0}|${texture.formatName ?? texture.format ?? ''}`;
+    const previewId = crypto.createHash('md5').update(identifierSeed).digest('hex');
     const previewUrl = `/sessions/${sessionId}/textures/${previewId}/preview`;
 
     const saved = await historyStore.savePreview(sessionId, {
@@ -550,7 +581,9 @@ async function prepareFramePayload(sessionId, payload) {
       expandedFrame.textures.map((texture) => persistTexturePreview(sessionId, texture))
     );
     storedFrame.textures = textures.map((result) => result.stored);
-    broadcastFrame.textures = textures.map((result) => result.broadcast);
+    const textureReferences = await historyStore.ensureSessionTextures(sessionId, storedFrame.textures);
+    storedFrame.textures = textureReferences;
+    broadcastFrame.textures = textureReferences.map((texture) => ({ ...texture }));
   }
 
   if (Array.isArray(expandedFrame.renderTextures) && expandedFrame.renderTextures.length > 0) {
@@ -702,11 +735,57 @@ app.put('/config', async (req, res) => {
 });
 
 app.get('/sessions/:sessionId', async (req, res) => {
-  const session = await historyStore.getSession(req.params.sessionId);
+  const { sessionId } = req.params;
+  const hydrateParam = req.query.hydrateTextures ?? req.query.includeTextures;
+  const hydrateTextures =
+    hydrateParam === undefined ? true : !['0', 'false', 'no'].includes(String(hydrateParam).toLowerCase());
+  const session = await historyStore.getSession(sessionId, { hydrateTextures });
   if (!session) {
     return res.status(404).json({ message: 'Session not found' });
   }
   res.json(session);
+});
+
+function parseTextureIds(queryValue) {
+  if (!queryValue) {
+    return [];
+  }
+  const raw = Array.isArray(queryValue) ? queryValue : [queryValue];
+  const ids = [];
+  raw.forEach((value) => {
+    if (typeof value !== 'string') {
+      return;
+    }
+    value
+      .split(',')
+      .forEach((part) => {
+        try {
+          const decoded = decodeURIComponent(part.trim());
+          if (decoded && typeof decoded === 'string') {
+            ids.push(decoded);
+          }
+        } catch {
+          // Ignore malformed encodings
+        }
+      });
+  });
+  return Array.from(new Set(ids)).filter((id) => id.length > 0);
+}
+
+app.get('/sessions/:sessionId/textures', async (req, res) => {
+  const { sessionId } = req.params;
+  const ids = parseTextureIds(req.query.ids);
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.json({ textures: [] });
+  }
+
+  try {
+    const textures = await historyStore.getSessionTextures(sessionId, ids);
+    res.json({ textures });
+  } catch (err) {
+    console.error(`Failed to load textures for session ${sessionId}`, err);
+    res.status(500).json({ message: 'Unable to load textures' });
+  }
 });
 
 app.delete('/sessions/:sessionId', async (req, res) => {

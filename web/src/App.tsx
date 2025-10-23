@@ -708,7 +708,12 @@ function AppShell({
               <AssetIoPanel frame={selectedFrame} />
               <EnvironmentPanel frame={selectedFrame} />
             </Flex>
-            <ResourceExplorer frame={selectedFrame} serverBaseUrl={serverBaseUrl} />
+            <ResourceExplorer
+              frame={selectedFrame}
+              serverBaseUrl={serverBaseUrl}
+              sessionId={selectedSession?.id ?? null}
+              ensureTextures={ensureSessionTextures}
+            />
           </Flex>
         </Content>
       </Layout>
@@ -733,6 +738,7 @@ export default function App() {
     deleteServerSession,
     refreshServerConfig,
     loadSessionDetails,
+    ensureSessionTextures,
   } = useTelemetryStream({ serverBaseUrl });
   const [isDarkMode, setIsDarkMode] = usePreferredDarkMode();
   const algorithm = isDarkMode ? theme.darkAlgorithm : theme.defaultAlgorithm;

@@ -12,6 +12,7 @@ const SESSION_DB_SIZE_LIMIT_BYTES = 800 * 1024 * 1024;
 const SESSION_DB_PART_PADDING = 4;
 const DEFAULT_MAX_SESSION_FRAMES = 10000;
 const SCHEMA_VERSION = 1;
+const TEXTURE_REF_FLAG = '__textureRef';
 
 const PRAGMA_SETTINGS = [
   { statement: 'journal_mode = WAL' },
@@ -57,6 +58,30 @@ function serializeJson(value) {
     return null;
   }
   return JSON.stringify(value);
+}
+
+function getTextureIdentifier(texture) {
+  if (!texture || typeof texture !== 'object') {
+    return null;
+  }
+
+  const fromPayload = typeof texture.textureId === 'string' ? texture.textureId.trim() : '';
+  if (fromPayload.length > 0) {
+    return fromPayload;
+  }
+
+  const pathValue = typeof texture.path === 'string' ? texture.path.trim() : '';
+  if (pathValue.length > 0) {
+    return `path:${pathValue.toLowerCase()}`;
+  }
+
+  const instanceId = normalizeInstanceId(texture.instanceId);
+  if (instanceId != null) {
+    return `instance:${instanceId}`;
+  }
+
+  const fingerprint = `${texture.name ?? ''}|${texture.width ?? 0}|${texture.height ?? 0}|${texture.formatName ?? texture.format ?? ''}|${texture.EstimatedBytes ?? texture.estimatedBytes ?? 0}`;
+  return `hash:${crypto.createHash('sha1').update(fingerprint).digest('hex')}`;
 }
 
 function normalizeSessionRow(row, { frames = [], includeFrames = true } = {}) {
@@ -146,6 +171,7 @@ export class HistoryStore {
     this.operationsSinceOptimize = 0;
     this.sessionStores = new Map();
     this.sessionPartsCache = new Map();
+    this.sessionTextureCache = new Map();
   }
 
   getConfigOptions() {
@@ -313,6 +339,7 @@ export class HistoryStore {
       }
     }
     await this.clearSessionParts(sessionId);
+    this.clearSessionTextureCache(sessionId);
   }
 
   async removeAllSessionDatabases() {
@@ -325,6 +352,7 @@ export class HistoryStore {
     }
     this.sessionStores.clear();
     this.sessionPartsCache.clear();
+    this.sessionTextureCache.clear();
     try {
       await fs.rm(SESSION_DB_DIR, { recursive: true, force: true });
     } catch (err) {
@@ -368,6 +396,15 @@ export class HistoryStore {
 
         CREATE INDEX IF NOT EXISTS idx_frames_frame_index ON frames(frameIndex ASC);
 
+        CREATE TABLE IF NOT EXISTS textures (
+          textureId TEXT PRIMARY KEY,
+          payload TEXT NOT NULL,
+          createdAt TEXT NOT NULL DEFAULT (datetime('now')),
+          updatedAt TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_textures_updated_at ON textures(updatedAt);
+
         CREATE TABLE IF NOT EXISTS previews (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           previewId TEXT NOT NULL UNIQUE,
@@ -397,6 +434,19 @@ export class HistoryStore {
       selectLastFrame: db.prepare(
         `SELECT frameIndex, payload FROM frames ORDER BY frameIndex DESC LIMIT 1`
       ),
+      upsertTexture: db.prepare(`
+        INSERT INTO textures (textureId, payload, createdAt, updatedAt)
+        VALUES (@textureId, @payload, datetime('now'), datetime('now'))
+        ON CONFLICT(textureId) DO UPDATE SET
+          payload = excluded.payload,
+          updatedAt = datetime('now')
+      `),
+      selectTexture: db.prepare(`SELECT textureId, payload FROM textures WHERE textureId = ?`),
+      selectTexturesByIdSet: db.prepare(`
+        SELECT textureId, payload
+        FROM textures
+        WHERE textureId IN (SELECT value FROM json_each(?))
+      `),
       insertPreview: db.prepare(`
         INSERT INTO previews (previewId, kind, mimeType, frameIndex, data, createdAt, updatedAt)
         VALUES (@previewId, @kind, @mimeType, @frameIndex, @data, datetime('now'), datetime('now'))
@@ -423,6 +473,20 @@ export class HistoryStore {
       path: dbPath,
       statements,
     };
+  }
+
+  getSessionTextureCache(sessionId) {
+    if (!this.sessionTextureCache.has(sessionId)) {
+      this.sessionTextureCache.set(sessionId, new Map());
+    }
+    return this.sessionTextureCache.get(sessionId);
+  }
+
+  clearSessionTextureCache(sessionId) {
+    if (sessionId == null) {
+      return;
+    }
+    this.sessionTextureCache.delete(sessionId);
   }
 
   async ensureSessionStore(sessionId) {
@@ -471,6 +535,7 @@ export class HistoryStore {
       console.warn(`Failed to close session database for ${sessionId}`, err);
     }
     this.sessionStores.delete(sessionId);
+    this.clearSessionTextureCache(sessionId);
   }
 
   async getSessionStoreParts(sessionId) {
@@ -485,11 +550,16 @@ export class HistoryStore {
     return parts;
   }
 
-  async getSessionFramesFromPart(sessionId, part, store) {
+  async getSessionFramesFromPart(sessionId, part, store, options = {}) {
+    const hydrateTextures = options.hydrateTextures !== false;
     const useStore = store && store.part === part ? store : null;
     if (useStore) {
       const rows = useStore.statements.selectFrames.all();
-      return rows.map((row) => parseFrameRow(row));
+      const frames = rows.map((row) => parseFrameRow(row));
+      if (hydrateTextures) {
+        await this.hydrateFrames(sessionId, frames);
+      }
+      return frames;
     }
 
     let tempStore;
@@ -501,7 +571,11 @@ export class HistoryStore {
     }
     try {
       const rows = tempStore.statements.selectFrames.all();
-      return rows.map((row) => parseFrameRow(row));
+      const frames = rows.map((row) => parseFrameRow(row));
+      if (hydrateTextures) {
+        await this.hydrateFrames(sessionId, frames);
+      }
+      return frames;
     } finally {
       try {
         tempStore.db.close();
@@ -542,17 +616,328 @@ export class HistoryStore {
     }
   }
 
+  async getTexturePayload(sessionId, textureId) {
+    if (!textureId) {
+      return null;
+    }
+
+    await this.init();
+
+    const cache = this.getSessionTextureCache(sessionId);
+    const cached = cache.get(textureId);
+    if (cached && typeof cached.payload === 'string') {
+      return cached.payload;
+    }
+
+    const activeStore = this.sessionStores.get(sessionId) ?? null;
+
+    const readFromStore = (targetStore) => {
+      if (!targetStore) {
+        return null;
+      }
+      try {
+        const row = targetStore.statements.selectTexture.get(textureId);
+        if (row && typeof row.payload === 'string') {
+          const parsed = parseJson(row.payload, null);
+          cache.set(textureId, { payload: row.payload, data: parsed ?? null });
+          return row.payload;
+        }
+      } catch (err) {
+        console.warn(`Failed to load texture ${textureId} for session ${sessionId}`, err);
+      }
+      return null;
+    };
+
+    const fromActive = readFromStore(activeStore);
+    if (fromActive) {
+      return fromActive;
+    }
+
+    const parts = await this.getSessionStoreParts(sessionId);
+    for (const part of parts) {
+      if (activeStore && activeStore.part === part) {
+        continue;
+      }
+
+      let tempStore;
+      try {
+        tempStore = this.createSessionDb(sessionId, part, { readOnly: true });
+        const payload = readFromStore(tempStore);
+        if (payload) {
+          return payload;
+        }
+      } catch (err) {
+        if (err && err.code !== 'SQLITE_CANTOPEN') {
+          console.warn(`Failed to inspect texture ${textureId} for session ${sessionId} part ${part}`, err);
+        }
+      } finally {
+        if (tempStore) {
+          try {
+            tempStore.db.close();
+          } catch (closeErr) {
+            console.warn(`Failed to close texture reader for session ${sessionId}`, closeErr);
+          }
+        }
+      }
+    }
+
+    return null;
+  }
+
+  async loadTexturesByIds(sessionId, textureIds = []) {
+    if (!Array.isArray(textureIds) || textureIds.length === 0) {
+      return new Map();
+    }
+
+    await this.init();
+
+    const cache = this.getSessionTextureCache(sessionId);
+    const result = new Map();
+    const pending = [];
+
+    textureIds.forEach((id) => {
+      if (typeof id !== 'string' || id.length === 0 || result.has(id)) {
+        return;
+      }
+      const cached = cache.get(id);
+      if (cached && cached.data) {
+        result.set(id, cached.data);
+        return;
+      }
+      if (cached && typeof cached.payload === 'string') {
+        const parsed = parseJson(cached.payload, null);
+        if (parsed) {
+          cache.set(id, { payload: cached.payload, data: parsed });
+          result.set(id, parsed);
+          return;
+        }
+      }
+      pending.push(id);
+    });
+
+    const fetchFromStore = (targetStore, ids) => {
+      if (!targetStore || !Array.isArray(ids) || ids.length === 0) {
+        return;
+      }
+      ids.forEach((textureId) => {
+        if (result.has(textureId)) {
+          return;
+        }
+        try {
+          const row = targetStore.statements.selectTexture.get(textureId);
+          if (row && typeof row.payload === 'string') {
+            const parsed = parseJson(row.payload, null);
+            if (parsed) {
+              cache.set(textureId, { payload: row.payload, data: parsed });
+              result.set(textureId, parsed);
+            }
+          }
+        } catch (err) {
+          console.warn(`Failed to load texture ${textureId} for session ${sessionId}`, err);
+        }
+      });
+    };
+
+    const activeStore = this.sessionStores.get(sessionId) ?? null;
+    if (activeStore) {
+      fetchFromStore(activeStore, pending);
+    }
+
+    const parts = await this.getSessionStoreParts(sessionId);
+    for (const part of parts) {
+      if (activeStore && activeStore.part === part) {
+        continue;
+      }
+      const remaining = pending.filter((id) => !result.has(id));
+      if (remaining.length === 0) {
+        break;
+      }
+
+      let tempStore;
+      try {
+        tempStore = this.createSessionDb(sessionId, part, { readOnly: true });
+        fetchFromStore(tempStore, remaining);
+      } catch (err) {
+        if (err && err.code !== 'SQLITE_CANTOPEN') {
+          console.warn(`Failed to inspect textures for session ${sessionId} part ${part}`, err);
+        }
+      } finally {
+        if (tempStore) {
+          try {
+            tempStore.db.close();
+          } catch (closeErr) {
+            console.warn(`Failed to close texture lookup store for session ${sessionId}`, closeErr);
+          }
+        }
+      }
+    }
+
+    return result;
+  }
+
+  async getSessionTextures(sessionId, textureIds = []) {
+    if (!Array.isArray(textureIds) || textureIds.length === 0) {
+      return [];
+    }
+
+    const map = await this.loadTexturesByIds(sessionId, textureIds);
+    const results = [];
+    textureIds.forEach((id) => {
+      if (typeof id !== 'string' || id.length === 0) {
+        return;
+      }
+      const entry = map.get(id);
+      if (entry) {
+        const payload = { ...entry };
+        payload.textureId = payload.textureId ?? id;
+        results.push(payload);
+      }
+    });
+    return results;
+  }
+
+  async ensureSessionTextures(sessionId, textures = []) {
+    if (!Array.isArray(textures) || textures.length === 0) {
+      return [];
+    }
+
+    await this.init();
+
+    const cache = this.getSessionTextureCache(sessionId);
+    const uniquePayloads = new Map();
+    const references = [];
+
+    textures.forEach((texture) => {
+      if (!texture || typeof texture !== 'object') {
+        references.push(texture);
+        return;
+      }
+
+      const textureId = getTextureIdentifier(texture);
+      if (!textureId) {
+        references.push({ ...texture });
+        return;
+      }
+
+      const instanceId = Number.isFinite(texture.instanceId) ? Math.round(texture.instanceId) : null;
+      const basePayload = { ...texture, textureId };
+      if ('instanceId' in basePayload) {
+        delete basePayload.instanceId;
+      }
+
+      const payload = serializeJson(basePayload) ?? 'null';
+
+      references.push({
+        [TEXTURE_REF_FLAG]: true,
+        textureId,
+        instanceId,
+      });
+
+      uniquePayloads.set(textureId, { payload, data: basePayload });
+    });
+
+    const toInsert = [];
+
+    for (const [textureId, entry] of uniquePayloads.entries()) {
+      const cached = cache.get(textureId);
+      if (cached && cached.payload === entry.payload) {
+        continue;
+      }
+      const existingPayload = cached?.payload ?? (await this.getTexturePayload(sessionId, textureId));
+      if (existingPayload === entry.payload) {
+        cache.set(textureId, { payload: entry.payload, data: entry.data });
+        continue;
+      }
+      toInsert.push({ textureId, payload: entry.payload, data: entry.data });
+    }
+
+    if (toInsert.length > 0) {
+      const totalSize = toInsert.reduce(
+        (total, item) => total + Buffer.byteLength(item.payload ?? '', 'utf8'),
+        0
+      );
+      const store = await this.prepareSessionStoreForInsert(sessionId, totalSize);
+      toInsert.forEach((entry) => {
+        store.statements.upsertTexture.run({ textureId: entry.textureId, payload: entry.payload });
+        cache.set(entry.textureId, { payload: entry.payload, data: entry.data });
+      });
+      await this.ensurePostInsertCapacity(sessionId, store);
+      this.trackWriteOperation();
+    }
+
+    return references;
+  }
+
+  async hydrateFrames(sessionId, frames = []) {
+    if (!Array.isArray(frames) || frames.length === 0) {
+      return frames;
+    }
+
+    const references = [];
+
+    frames.forEach((frame) => {
+      if (!frame || !Array.isArray(frame.textures)) {
+        return;
+      }
+      frame.textures.forEach((texture, index) => {
+        if (
+          texture &&
+          typeof texture === 'object' &&
+          texture[TEXTURE_REF_FLAG] &&
+          typeof texture.textureId === 'string' &&
+          texture.textureId.length > 0
+        ) {
+          references.push({ frame, index, ref: texture });
+        }
+      });
+    });
+
+    if (references.length === 0) {
+      return frames;
+    }
+
+    const uniqueIds = Array.from(
+      new Set(references.map((entry) => entry.ref.textureId).filter((id) => typeof id === 'string' && id.length > 0))
+    );
+
+    if (uniqueIds.length === 0) {
+      return frames;
+    }
+
+    const texturesMap = await this.loadTexturesByIds(sessionId, uniqueIds);
+
+    references.forEach(({ frame, index, ref }) => {
+      const baseData = texturesMap.get(ref.textureId);
+      if (baseData) {
+        const hydrated = { ...baseData };
+        if (ref.instanceId != null) {
+          hydrated.instanceId = ref.instanceId;
+        }
+        hydrated.textureId = hydrated.textureId ?? ref.textureId;
+        delete hydrated[TEXTURE_REF_FLAG];
+        frame.textures[index] = hydrated;
+      } else {
+        frame.textures[index] = {
+          textureId: ref.textureId,
+          instanceId: ref.instanceId ?? null,
+        };
+      }
+    });
+
+    return frames;
+  }
+
   getSessionRow(sessionId) {
     return this.statements.selectSession.get(sessionId) ?? null;
   }
 
-  async getSessionFrames(sessionId) {
+  async getSessionFrames(sessionId, options = {}) {
     await this.init();
     const store = this.sessionStores.get(sessionId) ?? null;
     const parts = await this.getSessionStoreParts(sessionId);
     const frames = [];
     for (const part of parts) {
-      const partFrames = await this.getSessionFramesFromPart(sessionId, part, store);
+      const partFrames = await this.getSessionFramesFromPart(sessionId, part, store, options);
       frames.push(...partFrames);
     }
     return frames;
@@ -698,14 +1083,14 @@ export class HistoryStore {
     this.trackWriteOperation();
   }
 
-  async buildSessionFromRow(row, { includeFrames = true } = {}) {
+  async buildSessionFromRow(row, { includeFrames = true, hydrateTextures = true } = {}) {
     if (!row) {
       return null;
     }
     if (!includeFrames) {
       return normalizeSessionRow(row, { includeFrames: false });
     }
-    const frames = await this.getSessionFrames(row.id);
+    const frames = await this.getSessionFrames(row.id, { hydrateTextures });
     return normalizeSessionRow(row, { frames });
   }
 
@@ -827,7 +1212,9 @@ export class HistoryStore {
       if (!row) {
         return null;
       }
-      return parseFrameRow(row);
+      const frame = parseFrameRow(row);
+      await this.hydrateFrames(sessionId, [frame]);
+      return frame;
     } finally {
       if (!activeStore || activeStore.part !== lastPart) {
         try {
@@ -839,13 +1226,13 @@ export class HistoryStore {
     }
   }
 
-  async getSession(sessionId) {
+  async getSession(sessionId, options = {}) {
     await this.init();
     const sessionRow = this.getSessionRow(sessionId);
     if (!sessionRow) {
       return null;
     }
-    return this.buildSessionFromRow(sessionRow);
+    return this.buildSessionFromRow(sessionRow, options);
   }
 
   async applyConfig(config) {
@@ -1003,6 +1390,8 @@ export class HistoryStore {
       trimmedFrameCount: updatedTrimmed,
     });
 
+    await this.hydrateFrames(sessionId, removedFrames);
+
     return {
       removedFrames,
       removedFrameCount: actualRemoved,
@@ -1041,6 +1430,7 @@ export class HistoryStore {
     }
     this.sessionStores.clear();
     this.sessionPartsCache.clear();
+    this.sessionTextureCache.clear();
     if (!this.db) {
       return;
     }
