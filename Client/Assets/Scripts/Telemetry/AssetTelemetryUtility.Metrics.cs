@@ -165,12 +165,18 @@ namespace UnityProfileV2.Telemetry
                 return stats;
             }
 
-            var asyncOperations = Resources.FindObjectsOfTypeAll(typeof(AsyncOperation));
-            if (asyncOperations != null)
+            // AsyncOperation does not derive from UnityEngine.Object on runtime platforms, so
+            // calling Resources.FindObjectsOfTypeAll with it would trigger an error. Guard the
+            // call so we only attempt it when Unity supports the lookup.
+            if (typeof(UnityEngine.Object).IsAssignableFrom(typeof(AsyncOperation)))
             {
-                stats.asyncQueueLength = asyncOperations
-                    .OfType<AsyncOperation>()
-                    .Count(op => op != null && !op.isDone);
+                var asyncOperations = Resources.FindObjectsOfTypeAll(typeof(AsyncOperation));
+                if (asyncOperations != null)
+                {
+                    stats.asyncQueueLength = asyncOperations
+                        .OfType<AsyncOperation>()
+                        .Count(op => op != null && !op.isDone);
+                }
             }
 
             if (state != null)
