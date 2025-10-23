@@ -17,6 +17,7 @@ import {
 import {
   BulbFilled,
   BulbOutlined,
+  DownloadOutlined,
   InfoCircleOutlined,
   LinkOutlined,
   MenuFoldOutlined,
@@ -35,6 +36,7 @@ import SystemStatsPanel from './components/SystemStatsPanel';
 import AssetIoPanel from './components/AssetIoPanel';
 import EnvironmentPanel from './components/EnvironmentPanel';
 import { formatBytes, formatFps } from './utils/format';
+import { buildGlobalReport } from './utils/report';
 
 const { Header, Sider, Content } = Layout;
 
@@ -150,6 +152,7 @@ interface AppShellProps {
   onChangeServerIp: (value: string) => void;
   onChangeServerPort: (value: string) => void;
   onToggleConnection: () => void;
+  onExportGlobalReport: () => void;
 }
 
 function AppShell({
@@ -167,6 +170,7 @@ function AppShell({
   onChangeServerIp,
   onChangeServerPort,
   onToggleConnection,
+  onExportGlobalReport,
 }: AppShellProps) {
   const sortedSessions = useMemo(
     () => [...sessions].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
@@ -403,6 +407,11 @@ function AppShell({
                 {isConnectionActive ? '断开' : '连接'}
               </Button>
             </Flex>
+            <Tooltip title="导出当前所有会话的全局报告">
+              <Button icon={<DownloadOutlined />} onClick={onExportGlobalReport}>
+                导出报告
+              </Button>
+            </Tooltip>
             {!isAutoFollowLatest && frames.length > 0 ? (
               <Tooltip title="回到实时最新帧">
                 <Button icon={<ReloadOutlined />} onClick={resumeLive} type="primary" ghost>
@@ -553,6 +562,27 @@ export default function App() {
   const [isClearingHistory, setIsClearingHistory] = useState(false);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
 
+  const handleExportGlobalReport = useCallback(() => {
+    if (typeof window === 'undefined') {
+      messageApi.error('当前环境不支持导出');
+      return;
+    }
+
+    const report = buildGlobalReport({ sessions, serverConfig, networkInfo });
+    const serialized = JSON.stringify(report, null, 2);
+    const blob = new Blob([serialized], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `unity-profile-report-${timestamp}.json`;
+    anchor.click();
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+    }, 1000);
+    messageApi.success('全局报告已导出');
+  }, [sessions, serverConfig, networkInfo, messageApi]);
+
   const handleServerIpChange = useCallback((value: string) => {
     setServerIp(value);
   }, []);
@@ -695,6 +725,7 @@ export default function App() {
         onChangeServerIp={handleServerIpChange}
         onChangeServerPort={handleServerPortChange}
         onToggleConnection={handleToggleConnection}
+        onExportGlobalReport={handleExportGlobalReport}
       />
       <ServerSettingsModal
         open={isSettingsOpen}
