@@ -471,14 +471,19 @@ async function persistTexturePreview(sessionId, texture) {
 
     const identifier = `${texture.name ?? 'unknown'}|${texture.width ?? 0}|${texture.height ?? 0}|${texture.formatName ?? texture.format ?? ''}`;
     const previewId = crypto.createHash('md5').update(identifier).digest('hex');
-    const sessionDir = path.join(PREVIEW_ROOT, sessionId);
-    await fs.mkdir(sessionDir, { recursive: true });
-    const filePath = path.join(sessionDir, `${previewId}.png`);
-    await fs.writeFile(filePath, buffer);
-
     const previewUrl = `/sessions/${sessionId}/textures/${previewId}/preview`;
-    storedTexture.previewUrl = previewUrl;
-    broadcastTexture.previewUrl = previewUrl;
+
+    const saved = await historyStore.savePreview(sessionId, {
+      previewId,
+      kind: 'texture',
+      mimeType: 'image/png',
+      data: buffer,
+    });
+
+    if (saved) {
+      storedTexture.previewUrl = previewUrl;
+      broadcastTexture.previewUrl = previewUrl;
+    }
   } catch (err) {
     console.warn('Failed to persist texture preview', err);
   }
@@ -510,14 +515,20 @@ async function persistFramePreview(sessionId, frameNumber, framePreview) {
 
     const identifier = `${frameNumber ?? 'unknown'}|${storedPreview.width ?? 0}|${storedPreview.height ?? 0}|${buffer.length}`;
     const previewId = crypto.createHash('md5').update(identifier).digest('hex');
-    const sessionDir = path.join(PREVIEW_ROOT, sessionId, FRAME_PREVIEW_DIR);
-    await fs.mkdir(sessionDir, { recursive: true });
-    const filePath = path.join(sessionDir, `${previewId}.png`);
-    await fs.writeFile(filePath, buffer);
-
     const previewUrl = `/sessions/${sessionId}/frames/${previewId}/preview`;
-    storedPreview.previewUrl = previewUrl;
-    broadcastPreview.previewUrl = previewUrl;
+
+    const saved = await historyStore.savePreview(sessionId, {
+      previewId,
+      kind: 'frame',
+      mimeType: 'image/png',
+      frameIndex: typeof frameNumber === 'number' ? frameNumber : null,
+      data: buffer,
+    });
+
+    if (saved) {
+      storedPreview.previewUrl = previewUrl;
+      broadcastPreview.previewUrl = previewUrl;
+    }
   } catch (err) {
     console.warn('Failed to persist frame preview', err);
   }
@@ -563,10 +574,12 @@ async function prepareFramePayload(sessionId, payload) {
   return { storedFrame, broadcastFrame };
 }
 
-async function removeFramePreviewFiles(sessionId, frames = []) {
+async function removeFramePreviews(sessionId, frames = []) {
   if (!Array.isArray(frames) || frames.length === 0) {
     return;
   }
+
+  const previewIds = new Set();
 
   await Promise.all(
     frames.map(async (frame) => {
@@ -581,14 +594,50 @@ async function removeFramePreviewFiles(sessionId, frames = []) {
       }
 
       const previewId = match[1];
+      previewIds.add(previewId);
+
+      // Remove any legacy file-based previews for backward compatibility.
       const filePath = path.join(PREVIEW_ROOT, sessionId, FRAME_PREVIEW_DIR, `${previewId}.png`);
       try {
         await fs.rm(filePath, { force: true });
       } catch (err) {
-        console.warn('Failed to remove frame preview', previewUrl, err);
+        if (err && err.code !== 'ENOENT') {
+          console.warn('Failed to remove frame preview file', previewUrl, err);
+        }
       }
     })
   );
+
+  if (previewIds.size > 0) {
+    await historyStore.deletePreviews(sessionId, Array.from(previewIds));
+  }
+}
+
+async function respondWithStoredPreview(res, { sessionId, previewId, fallbackPath = null }) {
+  try {
+    const stored = await historyStore.getPreview(sessionId, previewId);
+    if (stored && stored.data) {
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      res.setHeader('Content-Type', stored.mimeType ?? 'image/png');
+      return res.send(stored.data);
+    }
+  } catch (err) {
+    console.error(`Failed to read preview ${previewId} for session ${sessionId}`, err);
+  }
+
+  if (fallbackPath) {
+    try {
+      await fs.access(fallbackPath);
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      return res.sendFile(fallbackPath);
+    } catch (err) {
+      if (err && err.code !== 'ENOENT') {
+        console.warn('Failed to serve legacy preview file', fallbackPath, err);
+      }
+    }
+  }
+
+  return res.status(404).json({ message: 'Preview not found' });
 }
 
 app.post('/sessions', async (req, res) => {
@@ -699,15 +748,8 @@ app.get('/sessions/:sessionId/textures/:previewId/preview', async (req, res) => 
     return res.status(400).json({ message: 'Preview id is required' });
   }
 
-  const filePath = path.join(PREVIEW_ROOT, sessionId, `${previewId}.png`);
-
-  try {
-    await fs.access(filePath);
-    res.setHeader('Cache-Control', 'public, max-age=86400');
-    return res.sendFile(filePath);
-  } catch (err) {
-    return res.status(404).json({ message: 'Preview not found' });
-  }
+  const fallbackPath = path.join(PREVIEW_ROOT, sessionId, `${previewId}.png`);
+  return respondWithStoredPreview(res, { sessionId, previewId, fallbackPath });
 });
 
 app.get('/sessions/:sessionId/frames/:previewId/preview', async (req, res) => {
@@ -716,15 +758,8 @@ app.get('/sessions/:sessionId/frames/:previewId/preview', async (req, res) => {
     return res.status(400).json({ message: 'Preview id is required' });
   }
 
-  const filePath = path.join(PREVIEW_ROOT, sessionId, FRAME_PREVIEW_DIR, `${previewId}.png`);
-
-  try {
-    await fs.access(filePath);
-    res.setHeader('Cache-Control', 'public, max-age=86400');
-    return res.sendFile(filePath);
-  } catch (err) {
-    return res.status(404).json({ message: 'Preview not found' });
-  }
+  const fallbackPath = path.join(PREVIEW_ROOT, sessionId, FRAME_PREVIEW_DIR, `${previewId}.png`);
+  return respondWithStoredPreview(res, { sessionId, previewId, fallbackPath });
 });
 
 app.post('/sessions/:sessionId/frames', async (req, res) => {
@@ -735,7 +770,7 @@ app.post('/sessions/:sessionId/frames', async (req, res) => {
       sessionId,
       storedFrame
     );
-    await removeFramePreviewFiles(sessionId, removedFrames);
+    await removeFramePreviews(sessionId, removedFrames);
     res.status(204).end();
     io.emit('session:frame', {
       sessionId,

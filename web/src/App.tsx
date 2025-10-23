@@ -235,6 +235,7 @@ interface AppShellProps {
   onChangeServerPort: (value: string) => void;
   onToggleConnection: () => void;
   onExportGlobalReport: () => void;
+  onLoadSessionDetails: (sessionId: string) => void;
 }
 
 function AppShell({
@@ -253,6 +254,7 @@ function AppShell({
   onChangeServerPort,
   onToggleConnection,
   onExportGlobalReport,
+  onLoadSessionDetails,
 }: AppShellProps) {
   const serverDisplayUrl = useMemo(
     () => (serverBaseUrl ? deriveDisplayServerUrl(networkInfo, serverBaseUrl) : '未连接'),
@@ -412,10 +414,17 @@ function AppShell({
     if (!selectedSessionId || !visibleSessions.some((session) => session.id === selectedSessionId)) {
       const newest = visibleSessions[0];
       setSelectedSessionId(newest.id);
-      setSelectedFrame(newest.frames[newest.frames.length - 1] ?? null);
+      const newestFrames = Array.isArray(newest.frames) ? newest.frames : [];
+      setSelectedFrame(newestFrames[newestFrames.length - 1] ?? null);
       setIsAutoFollowLatest(true);
     }
   }, [visibleSessions, selectedSessionId]);
+
+  useEffect(() => {
+    if (selectedSessionId) {
+      onLoadSessionDetails(selectedSessionId);
+    }
+  }, [selectedSessionId, onLoadSessionDetails]);
 
   const selectedSession = useMemo<TelemetrySession | null>(() => {
     if (!selectedSessionId) return visibleSessions[0] ?? null;
@@ -722,6 +731,7 @@ export default function App() {
     clearServerHistory,
     deleteServerSession,
     refreshServerConfig,
+    loadSessionDetails,
   } = useTelemetryStream({ serverBaseUrl });
   const [isDarkMode, setIsDarkMode] = usePreferredDarkMode();
   const algorithm = isDarkMode ? theme.darkAlgorithm : theme.defaultAlgorithm;
@@ -730,6 +740,14 @@ export default function App() {
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [isClearingHistory, setIsClearingHistory] = useState(false);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
+
+  const handleLoadSessionDetails = useCallback(
+    (sessionId: string) => {
+      if (!sessionId) return;
+      loadSessionDetails(sessionId);
+    },
+    [loadSessionDetails]
+  );
 
   const handleExportGlobalReport = useCallback(() => {
     if (typeof window === 'undefined') {
@@ -895,6 +913,7 @@ export default function App() {
         onChangeServerPort={handleServerPortChange}
         onToggleConnection={handleToggleConnection}
         onExportGlobalReport={handleExportGlobalReport}
+        onLoadSessionDetails={handleLoadSessionDetails}
       />
       <ServerSettingsModal
         open={isSettingsOpen}

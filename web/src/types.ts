@@ -265,7 +265,7 @@ export interface TelemetrySession {
   closedAt?: string;
   client: Record<string, unknown>;
   clientIp?: string | null;
-  frames: TelemetrySnapshot[];
+  frames?: TelemetrySnapshot[];
   trimmedFrameCount?: number;
   totalFrameCount?: number;
 }
