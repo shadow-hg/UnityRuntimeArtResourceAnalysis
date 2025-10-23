@@ -220,7 +220,12 @@ export interface EnvironmentInfo {
   sceneName?: string;
   playerPosition?: PositionInfo | null;
   cameraHeight?: number;
-  extra?: Record<string, unknown>;
+  extra?: Record<string, unknown> | EnvironmentExtraEntry[] | null;
+}
+
+export interface EnvironmentExtraEntry {
+  key: string;
+  value?: unknown;
 }
 
 export interface TelemetrySnapshot {
@@ -292,6 +297,13 @@ export interface AssetCategoryConfig {
   includeShaders: boolean;
 }
 
+export interface TelemetrySectionConfig {
+  includeFrameInsights: boolean;
+  includeSystemStats: boolean;
+  includeAssetIo: boolean;
+  includeEnvironment: boolean;
+}
+
 export interface ClientDefaultsConfig {
   sampleIntervalSeconds: number;
   framePreviewScale: number;
@@ -300,6 +312,7 @@ export interface ClientDefaultsConfig {
   autoManageSession: boolean;
   assetCategoryVersion: number;
   assetCategories: AssetCategoryConfig;
+  telemetrySections: TelemetrySectionConfig;
 }
 
 export interface HistoryConfig {

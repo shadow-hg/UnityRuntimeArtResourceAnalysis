@@ -26,6 +26,12 @@ const DEFAULT_SERVER_CONFIG: ServerConfig = {
       includeMaterials: true,
       includeShaders: true,
     },
+    telemetrySections: {
+      includeFrameInsights: true,
+      includeSystemStats: true,
+      includeAssetIo: true,
+      includeEnvironment: true,
+    },
   },
   history: {
     maxSessionFrames: 10000,
@@ -80,6 +86,7 @@ function sanitizeServerConfig(rawConfig: Partial<ServerConfig> | null | undefine
     clientDefaults: {
       ...DEFAULT_SERVER_CONFIG.clientDefaults,
       assetCategories: { ...DEFAULT_SERVER_CONFIG.clientDefaults.assetCategories },
+      telemetrySections: { ...DEFAULT_SERVER_CONFIG.clientDefaults.telemetrySections },
     },
     history: { ...DEFAULT_SERVER_CONFIG.history },
   };
@@ -134,6 +141,28 @@ function sanitizeServerConfig(rawConfig: Partial<ServerConfig> | null | undefine
         includeShaders: ensureBoolean(
           assetCategories.includeShaders,
           base.clientDefaults.assetCategories.includeShaders
+        ),
+      };
+    }
+
+    const telemetrySections = clientDefaults.telemetrySections;
+    if (telemetrySections && typeof telemetrySections === 'object') {
+      base.clientDefaults.telemetrySections = {
+        includeFrameInsights: ensureBoolean(
+          telemetrySections.includeFrameInsights,
+          base.clientDefaults.telemetrySections.includeFrameInsights
+        ),
+        includeSystemStats: ensureBoolean(
+          telemetrySections.includeSystemStats,
+          base.clientDefaults.telemetrySections.includeSystemStats
+        ),
+        includeAssetIo: ensureBoolean(
+          telemetrySections.includeAssetIo,
+          base.clientDefaults.telemetrySections.includeAssetIo
+        ),
+        includeEnvironment: ensureBoolean(
+          telemetrySections.includeEnvironment,
+          base.clientDefaults.telemetrySections.includeEnvironment
         ),
       };
     }

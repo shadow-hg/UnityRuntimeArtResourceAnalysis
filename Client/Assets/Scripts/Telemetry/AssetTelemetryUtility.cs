@@ -6,6 +6,7 @@ using System.Reflection;
 using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Experimental.Rendering;
+using UnityEngine.Profiling;
 using UnityEngine.Rendering;
 using UnityEngine.SceneManagement;
 #if UNITY_EDITOR
@@ -22,6 +23,10 @@ namespace UnityProfileV2.Telemetry
         public bool includeRenderTextures;
         public bool includeMaterials;
         public bool includeShaders;
+        public bool includeFrameInsights;
+        public bool includeSystemStats;
+        public bool includeAssetIo;
+        public bool includeEnvironment;
         public bool hasExplicitSelection;
 
         public static TelemetrySnapshotOptions Default => new TelemetrySnapshotOptions
@@ -31,11 +36,15 @@ namespace UnityProfileV2.Telemetry
             includeRenderTextures = true,
             includeMaterials = true,
             includeShaders = true,
+            includeFrameInsights = true,
+            includeSystemStats = true,
+            includeAssetIo = true,
+            includeEnvironment = true,
             hasExplicitSelection = true
         };
     }
 
-    public static class AssetTelemetryUtility
+    public static partial class AssetTelemetryUtility
     {
         public sealed class TelemetryCollectionState
         {
@@ -44,6 +53,9 @@ namespace UnityProfileV2.Telemetry
             internal Dictionary<int, RenderTextureInfo> RenderTextures { get; } = new();
             internal Dictionary<int, MaterialInfo> Materials { get; } = new();
             internal Dictionary<int, ShaderInfo> Shaders { get; } = new();
+            internal Dictionary<string, ResourceTracker> ResourceTrackers { get; } = new();
+            internal Queue<AssetLoadSample> RecentLoads { get; } = new();
+            internal List<ResourceUnloadEvent> RecentUnloads { get; } = new();
             internal bool HasBaseline { get; set; }
 
             public void Reset()
@@ -53,6 +65,13 @@ namespace UnityProfileV2.Telemetry
                 RenderTextures.Clear();
                 Materials.Clear();
                 Shaders.Clear();
+                foreach (var tracker in ResourceTrackers.Values)
+                {
+                    tracker.Reset();
+                }
+                ResourceTrackers.Clear();
+                RecentLoads.Clear();
+                RecentUnloads.Clear();
                 HasBaseline = false;
             }
         }
@@ -102,6 +121,10 @@ namespace UnityProfileV2.Telemetry
                 includeRenderTextures = options.includeRenderTextures,
                 includeMaterials = options.includeMaterials,
                 includeShaders = options.includeShaders,
+                includeFrameInsights = options.includeFrameInsights,
+                includeSystemStats = options.includeSystemStats,
+                includeAssetIo = options.includeAssetIo,
+                includeEnvironment = options.includeEnvironment,
                 hasExplicitSelection = options.hasExplicitSelection
             };
         }
@@ -422,6 +445,29 @@ namespace UnityProfileV2.Telemetry
                 shaderOrder = shaderDiff.Order,
                 shaderVariantStats = shaderVariantStats
             };
+
+            FrameTimingInfo frameTiming = null;
+            if (options.includeFrameInsights)
+            {
+                frameTiming = CaptureFrameTimingInfo();
+                snapshot.frameTiming = frameTiming;
+            }
+
+            if (options.includeSystemStats)
+            {
+                snapshot.memoryStats = CaptureMemoryStats(snapshotData);
+                snapshot.threadStats = CaptureThreadStats(frameTiming);
+            }
+
+            if (options.includeAssetIo)
+            {
+                snapshot.assetIo = CaptureAssetIoStats(state, snapshotData);
+            }
+
+            if (options.includeEnvironment)
+            {
+                snapshot.environment = CaptureEnvironmentInfo();
+            }
 
             if (state != null)
             {
@@ -1998,6 +2044,11 @@ namespace UnityProfileV2.Telemetry
         public int[] shaderOrder = Array.Empty<int>();
         public ShaderInfo[] shaders = Array.Empty<ShaderInfo>();
         public ShaderVariantStats shaderVariantStats;
+        public FrameTimingInfo frameTiming;
+        public MemoryStats memoryStats;
+        public ThreadStats threadStats;
+        public AssetIoStats assetIo;
+        public EnvironmentInfo environment;
         public FramePreviewInfo framePreview;
     }
 
@@ -2010,6 +2061,166 @@ namespace UnityProfileV2.Telemetry
         public int height;
         public string captureTimestampUtc;
         public string orientation;
+    }
+
+    [Serializable]
+    public class PipelineStageTiming
+    {
+        public string stage;
+        public float timeMs;
+        public float contributionPercent;
+    }
+
+    [Serializable]
+    public class DrawCallStats
+    {
+        public long drawCalls;
+        public long setPassCalls;
+        public long shadowDrawCalls;
+        public long transparentDrawCalls;
+        public long instancedBatches;
+        public long dynamicBatches;
+    }
+
+    [Serializable]
+    public class BottleneckHint
+    {
+        public string type;
+        public string message;
+        public string severity;
+        public string source;
+    }
+
+    [Serializable]
+    public class FrameTimingInfo
+    {
+        public float cpuFrameTimeMs;
+        public float gpuFrameTimeMs;
+        public float cpuMainThreadTimeMs;
+        public float cpuRenderThreadTimeMs;
+        public PipelineStageTiming[] pipelineStages;
+        public DrawCallStats drawCalls;
+        public BottleneckHint[] bottleneckHints;
+    }
+
+    [Serializable]
+    public class GarbageCollectionStats
+    {
+        public int totalCollections;
+        public float lastCollectionDurationMs;
+        public float recentCollectionDurationMs;
+        public long managedHeapSizeBytes;
+    }
+
+    [Serializable]
+    public class MemoryStats
+    {
+        public long unityHeapBytes;
+        public long nativeMemoryBytes;
+        public long gpuMemoryBytes;
+        public long texturePoolBytes;
+        public long meshPoolBytes;
+        public long otherMemoryBytes;
+        public GarbageCollectionStats gc;
+    }
+
+    [Serializable]
+    public class ThreadUtilizationSample
+    {
+        public string threadName;
+        public float utilizationPercent;
+        public float frameTimeMs;
+    }
+
+    [Serializable]
+    public class ThreadStats
+    {
+        public float mainThreadPercent;
+        public float renderThreadPercent;
+        public float jobWorkerPercent;
+        public ThreadUtilizationSample[] utilization;
+    }
+
+    [Serializable]
+    public class AssetLoadSample
+    {
+        public string name;
+        public float durationMs;
+        public string status;
+        public long sizeBytes;
+        public string type;
+        public string timestampUtc;
+    }
+
+    [Serializable]
+    public class ResourceInstanceStats
+    {
+        public string resourceType;
+        public int activeCount;
+        public int peakCount;
+    }
+
+    [Serializable]
+    public class ResourceUnloadEvent
+    {
+        public string resourceType;
+        public string name;
+        public string timestampUtc;
+    }
+
+    [Serializable]
+    public class StreamingStatus
+    {
+        public string type;
+        public float bufferedSeconds;
+        public int droppedFrames;
+        public bool isStalled;
+    }
+
+    [Serializable]
+    public class AssetIoStats
+    {
+        public float assetBundleAverageLoadMs;
+        public float addressableAverageLoadMs;
+        public int asyncQueueLength;
+        public float loadFailureRate;
+        public AssetLoadSample[] recentLoads;
+        public ResourceInstanceStats[] resourceInstances;
+        public ResourceUnloadEvent[] unloadEvents;
+        public StreamingStatus[] streamingStatuses;
+    }
+
+    [Serializable]
+    public class PositionInfo
+    {
+        public float x;
+        public float y;
+        public float z;
+    }
+
+    [Serializable]
+    public class EnvironmentExtraEntry
+    {
+        public string key;
+        public string value;
+    }
+
+    [Serializable]
+    public class EnvironmentInfo
+    {
+        public string gpuModel;
+        public string gpuDriverVersion;
+        public string cpuModel;
+        public int cpuCoreCount;
+        public string qualitySetting;
+        public string screenResolution;
+        public int screenRefreshRate;
+        public string platform;
+        public string sceneId;
+        public string sceneName;
+        public PositionInfo playerPosition;
+        public float cameraHeight;
+        public EnvironmentExtraEntry[] extra;
     }
 
     [Serializable]

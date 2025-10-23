@@ -20,6 +20,12 @@ const DEFAULT_CONFIG = {
       includeMaterials: true,
       includeShaders: true,
     },
+    telemetrySections: {
+      includeFrameInsights: true,
+      includeSystemStats: true,
+      includeAssetIo: true,
+      includeEnvironment: true,
+    },
   },
   history: {
     maxSessionFrames: 10000,
@@ -51,6 +57,7 @@ function mergeConfig(baseConfig, overrideConfig) {
     clientDefaults: {
       ...baseConfig.clientDefaults,
       assetCategories: { ...baseConfig.clientDefaults.assetCategories },
+      telemetrySections: { ...baseConfig.clientDefaults.telemetrySections },
     },
     history: { ...baseConfig.history },
   };
@@ -132,6 +139,38 @@ function mergeConfig(baseConfig, overrideConfig) {
       }
 
       merged.clientDefaults.assetCategories = mergedCategories;
+    }
+
+    const telemetrySections = clientDefaults.telemetrySections;
+    if (telemetrySections && typeof telemetrySections === 'object') {
+      const baseSections = baseConfig.clientDefaults.telemetrySections ?? {};
+      const mergedSections = { ...baseSections };
+      if ('includeFrameInsights' in telemetrySections) {
+        mergedSections.includeFrameInsights = ensureBoolean(
+          telemetrySections.includeFrameInsights,
+          baseSections.includeFrameInsights ?? true
+        );
+      }
+      if ('includeSystemStats' in telemetrySections) {
+        mergedSections.includeSystemStats = ensureBoolean(
+          telemetrySections.includeSystemStats,
+          baseSections.includeSystemStats ?? true
+        );
+      }
+      if ('includeAssetIo' in telemetrySections) {
+        mergedSections.includeAssetIo = ensureBoolean(
+          telemetrySections.includeAssetIo,
+          baseSections.includeAssetIo ?? true
+        );
+      }
+      if ('includeEnvironment' in telemetrySections) {
+        mergedSections.includeEnvironment = ensureBoolean(
+          telemetrySections.includeEnvironment,
+          baseSections.includeEnvironment ?? true
+        );
+      }
+
+      merged.clientDefaults.telemetrySections = mergedSections;
     }
   }
 

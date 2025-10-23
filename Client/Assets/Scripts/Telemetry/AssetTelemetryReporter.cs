@@ -679,22 +679,23 @@ namespace UnityProfileV2.Telemetry
             _autoManageSession = payload.autoManageSession;
             _framePreviewDisabled = payload.disableFramePreview;
 
+            var nextOptions = TelemetrySnapshotOptions.Default;
             if (payload.assetCategoryVersion > 0)
             {
-                _snapshotOptions = new TelemetrySnapshotOptions
-                {
-                    includeTextures = payload.assetCategories.includeTextures,
-                    includeMeshes = payload.assetCategories.includeMeshes,
-                    includeRenderTextures = payload.assetCategories.includeRenderTextures,
-                    includeMaterials = payload.assetCategories.includeMaterials,
-                    includeShaders = payload.assetCategories.includeShaders,
-                    hasExplicitSelection = true
-                };
+                nextOptions.includeTextures = payload.assetCategories.includeTextures;
+                nextOptions.includeMeshes = payload.assetCategories.includeMeshes;
+                nextOptions.includeRenderTextures = payload.assetCategories.includeRenderTextures;
+                nextOptions.includeMaterials = payload.assetCategories.includeMaterials;
+                nextOptions.includeShaders = payload.assetCategories.includeShaders;
+                nextOptions.hasExplicitSelection = true;
             }
-            else
-            {
-                _snapshotOptions = TelemetrySnapshotOptions.Default;
-            }
+
+            nextOptions.includeFrameInsights = payload.telemetrySections.includeFrameInsights;
+            nextOptions.includeSystemStats = payload.telemetrySections.includeSystemStats;
+            nextOptions.includeAssetIo = payload.telemetrySections.includeAssetIo;
+            nextOptions.includeEnvironment = payload.telemetrySections.includeEnvironment;
+
+            _snapshotOptions = nextOptions;
 
             _lastAppliedClientDefaults = payload;
         }
@@ -733,10 +734,11 @@ namespace UnityProfileV2.Telemetry
 
             if (a.assetCategoryVersion <= 0 && b.assetCategoryVersion <= 0)
             {
-                return true;
+                return AreTelemetrySectionsEqual(a.telemetrySections, b.telemetrySections);
             }
 
-            return AreAssetCategoriesEqual(a.assetCategories, b.assetCategories);
+            return AreAssetCategoriesEqual(a.assetCategories, b.assetCategories) &&
+                   AreTelemetrySectionsEqual(a.telemetrySections, b.telemetrySections);
         }
 
         private static bool AreAssetCategoriesEqual(AssetCategoryPayload a, AssetCategoryPayload b)
@@ -745,7 +747,15 @@ namespace UnityProfileV2.Telemetry
                    a.includeMeshes == b.includeMeshes &&
                    a.includeRenderTextures == b.includeRenderTextures &&
                    a.includeMaterials == b.includeMaterials &&
-                   a.includeShaders == b.includeShaders;
+                    a.includeShaders == b.includeShaders;
+        }
+
+        private static bool AreTelemetrySectionsEqual(TelemetrySectionPayload a, TelemetrySectionPayload b)
+        {
+            return a.includeFrameInsights == b.includeFrameInsights &&
+                   a.includeSystemStats == b.includeSystemStats &&
+                   a.includeAssetIo == b.includeAssetIo &&
+                   a.includeEnvironment == b.includeEnvironment;
         }
 
         private IEnumerator EndSessionCoroutine(string sessionId)
@@ -881,6 +891,7 @@ namespace UnityProfileV2.Telemetry
             public bool autoManageSession;
             public int assetCategoryVersion;
             public AssetCategoryPayload assetCategories;
+            public TelemetrySectionPayload telemetrySections;
         }
 
         [Serializable]
@@ -898,6 +909,15 @@ namespace UnityProfileV2.Telemetry
             public bool includeRenderTextures;
             public bool includeMaterials;
             public bool includeShaders;
+        }
+
+        [Serializable]
+        private struct TelemetrySectionPayload
+        {
+            public bool includeFrameInsights;
+            public bool includeSystemStats;
+            public bool includeAssetIo;
+            public bool includeEnvironment;
         }
 
         private static CoroutineRunner EnsureCoroutineRunner()
