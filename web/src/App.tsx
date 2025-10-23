@@ -33,6 +33,8 @@ import type {
   TelemetrySnapshot,
   SessionSortOrder,
   SessionStatusFilter,
+  SessionGrouping,
+  SessionGroupingItem,
 } from './types';
 import SessionSidebar from './components/SessionSidebar';
 import ResourceExplorer from './components/ResourceExplorer';
@@ -44,12 +46,13 @@ import AssetIoPanel from './components/AssetIoPanel';
 import EnvironmentPanel from './components/EnvironmentPanel';
 import { formatBytes, formatFps } from './utils/format';
 import { buildGlobalReport } from './utils/report';
+import { resolveSessionIp, UNKNOWN_IP_LABEL } from './utils/session';
+import { SESSION_GROUPING_DISPLAY_META } from './utils/sessionGrouping';
 
 const { Header, Sider, Content } = Layout;
 
 const DEFAULT_SERVER_PORT = 48080;
 const DEFAULT_SERVER_IP = '0.0.0.0';
-const UNKNOWN_IP_LABEL = '未知 IP';
 
 function stripTrailingSlash(value: string): string {
   if (value.endsWith('/')) {
@@ -108,21 +111,6 @@ function deriveDisplayServerUrl(networkInfo: NetworkInfoResponse | null, fallbac
   return sanitizeLoopbackUrl(fallbackUrl);
 }
 
-function resolveSessionIp(session: TelemetrySession): string {
-  const raw = typeof session.clientIp === 'string' ? session.clientIp.trim() : '';
-  if (raw && raw.toLowerCase() !== 'unknown') {
-    return raw;
-  }
-
-  const fallbackSource = session.client?.['remoteAddress'];
-  const fallback = typeof fallbackSource === 'string' ? fallbackSource.trim() : '';
-  if (fallback) {
-    return fallback;
-  }
-
-  return UNKNOWN_IP_LABEL;
-}
-
 function resolveTotalFrameCount(session: TelemetrySession): number {
   const trimmed = typeof session.trimmedFrameCount === 'number' && Number.isFinite(session.trimmedFrameCount)
     ? session.trimmedFrameCount
@@ -138,6 +126,76 @@ function resolveTotalFrameCount(session: TelemetrySession): number {
 function resolveSessionTimestamp(session: TelemetrySession): number {
   const timestamp = new Date(session.createdAt).getTime();
   return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+const UNKNOWN_GROUP_VALUE = '__UNKNOWN__';
+
+function normalizeCandidate(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function getSessionGroupingValue(session: TelemetrySession, grouping: SessionGrouping): string {
+  switch (grouping) {
+    case 'ip': {
+      const ip = resolveSessionIp(session);
+      return !ip || ip === UNKNOWN_IP_LABEL ? UNKNOWN_GROUP_VALUE : ip;
+    }
+    case 'account': {
+      const account = normalizeCandidate(session.client?.['accountName']);
+      if (account) return account;
+      const userName = normalizeCandidate(session.client?.['userName']);
+      return userName || UNKNOWN_GROUP_VALUE;
+    }
+    case 'device': {
+      const device = normalizeCandidate(session.client?.['deviceName']);
+      return device || UNKNOWN_GROUP_VALUE;
+    }
+    case 'product': {
+      const product = normalizeCandidate(session.client?.['productName']);
+      return product || UNKNOWN_GROUP_VALUE;
+    }
+    case 'platform': {
+      const platform = normalizeCandidate(session.client?.['platform']);
+      return platform || UNKNOWN_GROUP_VALUE;
+    }
+    default:
+      return UNKNOWN_GROUP_VALUE;
+  }
+}
+
+function getSessionGroupingLabel(value: string, grouping: SessionGrouping): string {
+  if (value === UNKNOWN_GROUP_VALUE) {
+    return SESSION_GROUPING_DISPLAY_META[grouping].unknownLabel;
+  }
+  return value;
+}
+
+function matchesSessionSearch(session: TelemetrySession, query: string): boolean {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) {
+    return true;
+  }
+
+  const client = session.client ?? {};
+  const fields: (string | undefined | null)[] = [
+    session.id,
+    session.clientIp,
+    resolveSessionIp(session),
+    normalizeCandidate(client['accountName'] as string | undefined),
+    normalizeCandidate(client['userName'] as string | undefined),
+    normalizeCandidate(client['productName'] as string | undefined),
+    normalizeCandidate(client['deviceName'] as string | undefined),
+    normalizeCandidate(client['platform'] as string | undefined),
+    normalizeCandidate(client['version'] as string | undefined),
+    normalizeCandidate(client['remoteAddress'] as string | undefined),
+  ];
+
+  return fields.some((raw) => {
+    if (typeof raw !== 'string') {
+      return false;
+    }
+    return raw.toLowerCase().includes(normalized);
+  });
 }
 
 const connectionBadgeMeta: Record<
@@ -203,7 +261,9 @@ function AppShell({
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [selectedFrame, setSelectedFrame] = useState<TelemetrySnapshot | null>(null);
   const [isAutoFollowLatest, setIsAutoFollowLatest] = useState(true);
-  const [selectedClientIp, setSelectedClientIp] = useState<string | null>(null);
+  const [sessionGrouping, setSessionGrouping] = useState<SessionGrouping>('ip');
+  const [selectedGroupingValue, setSelectedGroupingValue] = useState<string | null>(null);
+  const [sessionSearchValue, setSessionSearchValue] = useState('');
   const [sessionSortOrder, setSessionSortOrder] = useState<SessionSortOrder>('newest');
   const [sessionStatusFilter, setSessionStatusFilter] = useState<SessionStatusFilter>('all');
   const [samplingIntervalMs, setSamplingIntervalMs] = useState<number>(
@@ -219,13 +279,64 @@ function AppShell({
     });
   }, [serverConfig]);
 
+  const normalizedSearchValue = sessionSearchValue.trim();
+
+  const searchFilteredSessions = useMemo(() => {
+    if (!normalizedSearchValue) {
+      return sessions;
+    }
+    return sessions.filter((session) => matchesSessionSearch(session, normalizedSearchValue));
+  }, [sessions, normalizedSearchValue]);
+
+  const groupingOptions = useMemo<SessionGroupingItem[]>(() => {
+    const map = new Map<string, SessionGroupingItem>();
+    searchFilteredSessions.forEach((session) => {
+      const value = getSessionGroupingValue(session, sessionGrouping);
+      const entry = map.get(value) ?? {
+        value,
+        label: getSessionGroupingLabel(value, sessionGrouping),
+        sessionCount: 0,
+        activeSessionCount: 0,
+      };
+      entry.sessionCount += 1;
+      if (!session.closedAt) {
+        entry.activeSessionCount += 1;
+      }
+      map.set(value, entry);
+    });
+    return Array.from(map.values()).sort((a, b) => {
+      if (b.activeSessionCount !== a.activeSessionCount) {
+        return b.activeSessionCount - a.activeSessionCount;
+      }
+      if (b.sessionCount !== a.sessionCount) {
+        return b.sessionCount - a.sessionCount;
+      }
+      return a.label.localeCompare(b.label);
+    });
+  }, [searchFilteredSessions, sessionGrouping]);
+
+  const groupingMeta = SESSION_GROUPING_DISPLAY_META[sessionGrouping];
+  const selectedGroupingLabel = useMemo(() => {
+    if (!selectedGroupingValue) {
+      return groupingMeta.allLabel;
+    }
+    const match = groupingOptions.find((item) => item.value === selectedGroupingValue);
+    return match?.label ?? groupingMeta.allLabel;
+  }, [groupingMeta.allLabel, groupingOptions, selectedGroupingValue]);
+
+  const groupingFilteredSessions = useMemo(() => {
+    if (!selectedGroupingValue) {
+      return searchFilteredSessions;
+    }
+    return searchFilteredSessions.filter(
+      (session) => getSessionGroupingValue(session, sessionGrouping) === selectedGroupingValue
+    );
+  }, [searchFilteredSessions, selectedGroupingValue, sessionGrouping]);
+
   const statusCounts = useMemo<Record<SessionStatusFilter, number>>(() => {
-    const basePool = selectedClientIp
-      ? sessions.filter((session) => resolveSessionIp(session) === selectedClientIp)
-      : sessions;
     let active = 0;
     let closed = 0;
-    basePool.forEach((session) => {
+    groupingFilteredSessions.forEach((session) => {
       if (session.closedAt) {
         closed += 1;
       } else {
@@ -233,57 +344,25 @@ function AppShell({
       }
     });
     return {
-      all: basePool.length,
+      all: groupingFilteredSessions.length,
       active,
       closed,
     };
-  }, [sessions, selectedClientIp]);
+  }, [groupingFilteredSessions]);
 
   const statusFilteredSessions = useMemo(() => {
     switch (sessionStatusFilter) {
       case 'active':
-        return sessions.filter((session) => !session.closedAt);
+        return groupingFilteredSessions.filter((session) => !session.closedAt);
       case 'closed':
-        return sessions.filter((session) => Boolean(session.closedAt));
+        return groupingFilteredSessions.filter((session) => Boolean(session.closedAt));
       default:
-        return sessions;
+        return groupingFilteredSessions;
     }
-  }, [sessions, sessionStatusFilter]);
-
-  const clientIpOptions = useMemo(
-    () => {
-      const map = new Map<string, { ip: string; sessionCount: number; activeSessionCount: number }>();
-      statusFilteredSessions.forEach((session) => {
-        const ip = resolveSessionIp(session);
-        const existing = map.get(ip) ?? { ip, sessionCount: 0, activeSessionCount: 0 };
-        existing.sessionCount += 1;
-        if (!session.closedAt) {
-          existing.activeSessionCount += 1;
-        }
-        map.set(ip, existing);
-      });
-      return Array.from(map.values()).sort((a, b) => {
-        if (b.activeSessionCount !== a.activeSessionCount) {
-          return b.activeSessionCount - a.activeSessionCount;
-        }
-        if (b.sessionCount !== a.sessionCount) {
-          return b.sessionCount - a.sessionCount;
-        }
-        return a.ip.localeCompare(b.ip);
-      });
-    },
-    [statusFilteredSessions]
-  );
-
-  const sessionsForDisplay = useMemo(() => {
-    if (!selectedClientIp) {
-      return statusFilteredSessions;
-    }
-    return statusFilteredSessions.filter((session) => resolveSessionIp(session) === selectedClientIp);
-  }, [statusFilteredSessions, selectedClientIp]);
+  }, [groupingFilteredSessions, sessionStatusFilter]);
 
   const visibleSessions = useMemo(() => {
-    const list = [...sessionsForDisplay];
+    const list = [...statusFilteredSessions];
     list.sort((a, b) => {
       switch (sessionSortOrder) {
         case 'oldest':
@@ -308,20 +387,20 @@ function AppShell({
       }
     });
     return list;
-  }, [sessionsForDisplay, sessionSortOrder]);
+  }, [statusFilteredSessions, sessionSortOrder]);
 
   useEffect(() => {
-    if (clientIpOptions.length === 0) {
-      if (selectedClientIp !== null) {
-        setSelectedClientIp(null);
-      }
+    if (selectedGroupingValue === null) {
       return;
     }
-
-    if (selectedClientIp && !clientIpOptions.some((option) => option.ip === selectedClientIp)) {
-      setSelectedClientIp(clientIpOptions[0]?.ip ?? null);
+    if (!groupingOptions.some((option) => option.value === selectedGroupingValue)) {
+      setSelectedGroupingValue(null);
     }
-  }, [clientIpOptions, selectedClientIp]);
+  }, [groupingOptions, selectedGroupingValue]);
+
+  useEffect(() => {
+    setSelectedGroupingValue(null);
+  }, [sessionGrouping]);
 
   useEffect(() => {
     if (visibleSessions.length === 0) {
@@ -455,11 +534,11 @@ function AppShell({
                 <Typography.Text type="secondary">{headerSubtitle}</Typography.Text>
               </Space>
               <Space size={8} align="center">
-                <Typography.Text type="secondary">当前客户端：</Typography.Text>
-                {selectedClientIp ? (
-                  <Tag color="processing">{selectedClientIp}</Tag>
+                <Typography.Text type="secondary">当前{groupingMeta.label}：</Typography.Text>
+                {selectedGroupingValue ? (
+                  <Tag color="processing">{selectedGroupingLabel}</Tag>
                 ) : (
-                  <Typography.Text type="secondary">全部客户端</Typography.Text>
+                  <Typography.Text type="secondary">{groupingMeta.allLabel}</Typography.Text>
                 )}
               </Space>
             </Flex>
@@ -586,14 +665,18 @@ function AppShell({
                 sessions={visibleSessions}
                 selectedSessionId={selectedSession?.id ?? null}
                 onSelectSession={handleSessionChange}
-                clientIps={clientIpOptions}
-                selectedClientIp={selectedClientIp}
-                onSelectClientIp={setSelectedClientIp}
+                groupingKey={sessionGrouping}
+                onChangeGroupingKey={setSessionGrouping}
+                groupingItems={groupingOptions}
+                selectedGroupingValue={selectedGroupingValue}
+                onSelectGroupingValue={setSelectedGroupingValue}
                 sortOrder={sessionSortOrder}
                 onChangeSortOrder={(order) => setSessionSortOrder(order)}
                 statusFilter={sessionStatusFilter}
                 onChangeStatusFilter={(filter) => setSessionStatusFilter(filter)}
                 statusCounts={statusCounts}
+                searchValue={sessionSearchValue}
+                onSearchChange={setSessionSearchValue}
               />
             </div>
           </div>

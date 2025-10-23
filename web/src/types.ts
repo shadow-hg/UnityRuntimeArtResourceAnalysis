@@ -327,3 +327,12 @@ export interface ServerConfig {
 export type SessionSortOrder = 'newest' | 'oldest' | 'frames-desc' | 'frames-asc';
 
 export type SessionStatusFilter = 'all' | 'active' | 'closed';
+
+export type SessionGrouping = 'ip' | 'account' | 'device' | 'product' | 'platform';
+
+export interface SessionGroupingItem {
+  value: string;
+  label: string;
+  sessionCount: number;
+  activeSessionCount: number;
+}
