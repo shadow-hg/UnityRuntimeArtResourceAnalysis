@@ -5,6 +5,8 @@ import {
   Empty,
   Image,
   Input,
+  List,
+  Progress,
   Space,
   Table,
   Tag,
@@ -139,6 +141,449 @@ function dedupeTextures(textures: TextureInfo[]): TextureInfo[] {
     }
   });
   return Array.from(map.values());
+}
+
+function normalizeInstanceId(value: unknown): number | null {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+  const rounded = Math.round(parsed);
+  return Number.isInteger(rounded) ? rounded : null;
+}
+
+function buildOrderIndexMap<T extends { instanceId?: number | null | undefined }>(
+  order: number[] | undefined,
+  items: T[] = []
+): Map<number, number> {
+  const map = new Map<number, number>();
+  if (Array.isArray(order)) {
+    order.forEach((value, index) => {
+      const id = normalizeInstanceId(value);
+      if (id != null && !map.has(id)) {
+        map.set(id, index);
+      }
+    });
+  }
+
+  let offset = map.size;
+  items.forEach((item) => {
+    const id = normalizeInstanceId(item?.instanceId);
+    if (id != null && !map.has(id)) {
+      map.set(id, offset);
+      offset += 1;
+    }
+  });
+
+  return map;
+}
+
+interface HotspotEntry {
+  key: string;
+  name: string;
+  bytes: number;
+  description?: string;
+}
+
+interface LifecycleEntry extends HotspotEntry {
+  agePercent: number;
+  orderIndex?: number | null;
+  totalOrder?: number;
+}
+
+interface ResourceSummaryItem {
+  key: string;
+  title: string;
+  count: number;
+  totalBytes: number;
+  averageBytes: number;
+  highlight?: string;
+}
+
+type DiagnosticSeverity = 'info' | 'warning' | 'critical';
+
+interface DiagnosticEntry {
+  key: string;
+  name: string;
+  message: string;
+  severity: DiagnosticSeverity;
+}
+
+const severityTagColor: Record<DiagnosticSeverity, string> = {
+  info: 'processing',
+  warning: 'warning',
+  critical: 'error',
+};
+
+function isPowerOfTwo(value: number | null | undefined): boolean {
+  if (!Number.isFinite(value) || !value) {
+    return false;
+  }
+  const numeric = Math.floor(value);
+  return numeric > 0 && (numeric & (numeric - 1)) === 0;
+}
+
+function computeTextureDiagnostics(textures: TextureInfo[]): DiagnosticEntry[] {
+  const entries: DiagnosticEntry[] = [];
+  textures.forEach((texture, index) => {
+    const width = Number(texture.width) || 0;
+    const height = Number(texture.height) || 0;
+    const mipCount = texture.mipCount ?? 0;
+    const ratio = texture.originalBytes > 0 ? texture.EstimatedBytes / texture.originalBytes : null;
+    const keyPrefix = `${texture.instanceId ?? texture.name ?? 'texture'}-${index}`;
+
+    if ((!isPowerOfTwo(width) || !isPowerOfTwo(height)) && Math.max(width, height) >= 512) {
+      entries.push({
+        key: `${keyPrefix}-npot`,
+        name: texture.name || '未命名纹理',
+        severity: 'warning',
+        message: `尺寸 ${width} × ${height} 非二次幂，可能导致额外内存与采样成本`,
+      });
+    }
+
+    if (Math.max(width, height) >= 1024 && (mipCount ?? 0) <= 1) {
+      entries.push({
+        key: `${keyPrefix}-mip`,
+        name: texture.name || '未命名纹理',
+        severity: 'critical',
+        message: `高分辨率纹理缺少 MipMap（当前 ${mipCount}），建议开启以降低跳变`,
+      });
+    } else if (Math.max(width, height) >= 512 && (mipCount ?? 0) <= 1) {
+      entries.push({
+        key: `${keyPrefix}-mip-warn`,
+        name: texture.name || '未命名纹理',
+        severity: 'warning',
+        message: `较大纹理未启用 MipMap（当前 ${mipCount}），可能带来远景闪烁`,
+      });
+    }
+
+    if (ratio != null && ratio >= 0.8 && texture.originalBytes > 0) {
+      entries.push({
+        key: `${keyPrefix}-compression`,
+        name: texture.name || '未命名纹理',
+        severity: 'info',
+        message: `压缩后仍保留 ${formatPercentage(ratio)} 原始大小，考虑换用更高压缩格式`,
+      });
+    }
+  });
+  return entries;
+}
+
+function computeRenderTextureDiagnostics(renderTextures: RenderTextureInfo[]): DiagnosticEntry[] {
+  const entries: DiagnosticEntry[] = [];
+  renderTextures.forEach((rt, index) => {
+    const width = Number(rt.width) || 0;
+    const height = Number(rt.height) || 0;
+    const aa = Number(rt.antiAliasing) || 1;
+    const resolution = width * height;
+    const keyPrefix = `${rt.instanceId ?? rt.name ?? 'renderTexture'}-${index}`;
+
+    if (!rt.useMipMap && Math.max(width, height) >= 1024) {
+      entries.push({
+        key: `${keyPrefix}-mip`,
+        name: rt.name || '未命名 RenderTexture',
+        severity: 'warning',
+        message: `分辨率 ${width} × ${height} 未启用 MipMap，可能导致模糊采样`,
+      });
+    }
+
+    if (resolution >= 2_000_000 && aa > 1) {
+      entries.push({
+        key: `${keyPrefix}-aa`,
+        name: rt.name || '未命名 RenderTexture',
+        severity: resolution >= 4_000_000 ? 'critical' : 'warning',
+        message: `高分辨率 (${width} × ${height}) 仍启用 ${aa}× MSAA，注意 GPU 帧耗`,
+      });
+    }
+  });
+  return entries;
+}
+
+function computeMaterialDiagnostics(materials: MaterialInfo[]): DiagnosticEntry[] {
+  const entries: DiagnosticEntry[] = [];
+  materials.forEach((material, index) => {
+    const keyPrefix = `${material.instanceId ?? material.name ?? 'material'}-${index}`;
+    const keywordCount = material.keywords?.length ?? 0;
+    if (!material.shaderName) {
+      entries.push({
+        key: `${keyPrefix}-shader`,
+        name: material.name || '未命名材质',
+        severity: 'critical',
+        message: '未绑定有效 Shader，渲染时会退化为默认材质',
+      });
+    }
+    if (keywordCount >= 12) {
+      entries.push({
+        key: `${keyPrefix}-keywords`,
+        name: material.name || '未命名材质',
+        severity: keywordCount >= 18 ? 'critical' : 'warning',
+        message: `启用 ${keywordCount} 个关键字，可能导致 Shader 变体爆炸`,
+      });
+    }
+    const textureSlots = material.textures?.length ?? 0;
+    if (textureSlots === 0) {
+      entries.push({
+        key: `${keyPrefix}-textures`,
+        name: material.name || '未命名材质',
+        severity: 'info',
+        message: '材质未绑定任何纹理资源，确认是否符合预期',
+      });
+    }
+  });
+  return entries;
+}
+
+function computeMeshDiagnostics(meshes: MeshInfo[]): DiagnosticEntry[] {
+  const entries: DiagnosticEntry[] = [];
+  meshes.forEach((mesh, index) => {
+    const keyPrefix = `${mesh.instanceId ?? mesh.name ?? 'mesh'}-${index}`;
+    const vertices = Number(mesh.vertexCount) || 0;
+    const subMeshes = Number(mesh.subMeshCount) || 0;
+
+    if (vertices >= 500_000) {
+      entries.push({
+        key: `${keyPrefix}-vertices-critical`,
+        name: mesh.name || '未命名网格',
+        severity: 'critical',
+        message: `顶点数 ${formatInteger(vertices)} 极高，建议拆分或降模`,
+      });
+    } else if (vertices >= 200_000) {
+      entries.push({
+        key: `${keyPrefix}-vertices`,
+        name: mesh.name || '未命名网格',
+        severity: 'warning',
+        message: `顶点数 ${formatInteger(vertices)} 偏高，注意 GPU 负载`,
+      });
+    }
+
+    if (subMeshes >= 10) {
+      entries.push({
+        key: `${keyPrefix}-submesh`,
+        name: mesh.name || '未命名网格',
+        severity: 'info',
+        message: `包含 ${subMeshes} 个子网格，注意 DrawCall 与材质拆分`,
+      });
+    }
+  });
+  return entries;
+}
+
+function sumBy<T>(items: T[], getValue: (item: T) => number): number {
+  return items.reduce((total, item) => {
+    const value = getValue(item);
+    if (!Number.isFinite(value)) {
+      return total;
+    }
+    return total + Math.max(0, value);
+  }, 0);
+}
+
+function HotspotList({ title, items }: { title: string; items: HotspotEntry[] }) {
+  return (
+    <Card
+      size="small"
+      type="inner"
+      title={title}
+      style={{ flex: 1, minWidth: 260 }}
+      bodyStyle={{ paddingTop: 12, paddingBottom: 0 }}
+    >
+      <List
+        size="small"
+        dataSource={items}
+        locale={{ emptyText: '暂无数据' }}
+        renderItem={(item, index) => (
+          <List.Item style={{ paddingInline: 0 }}>
+            <Space align="start" style={{ width: '100%', justifyContent: 'space-between' }}>
+              <Space align="start">
+                <Tag color="processing">{index + 1}</Tag>
+                <Space direction="vertical" size={2}>
+                  <Typography.Text strong>{item.name}</Typography.Text>
+                  {item.description ? (
+                    <Typography.Text type="secondary">{item.description}</Typography.Text>
+                  ) : null}
+                </Space>
+              </Space>
+              <Typography.Text>{formatBytes(item.bytes)}</Typography.Text>
+            </Space>
+          </List.Item>
+        )}
+      />
+    </Card>
+  );
+}
+
+function computeLifecycleEntries<T extends { instanceId?: number | null | undefined }>(
+  items: T[],
+  orderMap: Map<number, number>,
+  getName: (item: T) => string,
+  getBytes: (item: T) => number,
+  options: { getDescription?: (item: T) => string | undefined; limit?: number } = {}
+): LifecycleEntry[] {
+  const { getDescription, limit = 5 } = options;
+  if (!items.length) {
+    return [];
+  }
+
+  const orderValues = Array.from(orderMap.values());
+  let maxKnownIndex = orderValues.length ? Math.max(...orderValues) : -1;
+  if (maxKnownIndex < items.length - 1) {
+    maxKnownIndex = items.length - 1;
+  }
+  const denominator = Math.max(maxKnownIndex, 1);
+  const totalOrder = Math.max(maxKnownIndex, 0) + 1;
+
+  return items
+    .map((item, index) => {
+      const id = normalizeInstanceId(item?.instanceId);
+      let orderIndex: number;
+      if (id != null && orderMap.has(id)) {
+        orderIndex = orderMap.get(id)!;
+      } else if (orderValues.length > 0) {
+        orderIndex = maxKnownIndex + 1 + index;
+      } else {
+        orderIndex = index;
+      }
+      const clampedOrderIndex = Math.min(orderIndex, denominator);
+      const agePercent = denominator > 0 ? 1 - clampedOrderIndex / denominator : 1;
+      const bytes = getBytes(item);
+      return {
+        key: `${normalizeInstanceId(item?.instanceId) ?? getName(item)}-${index}`,
+        name: getName(item),
+        description: getDescription ? getDescription(item) : undefined,
+        bytes,
+        agePercent,
+        orderIndex,
+        totalOrder,
+      } satisfies LifecycleEntry;
+    })
+    .filter((entry) => Number.isFinite(entry.bytes) && entry.bytes > 0)
+    .sort((a, b) => {
+      if (b.agePercent !== a.agePercent) {
+        return b.agePercent - a.agePercent;
+      }
+      return b.bytes - a.bytes;
+    })
+    .slice(0, limit);
+}
+
+function LifecycleList({ title, items }: { title: string; items: LifecycleEntry[] }) {
+  return (
+    <Card
+      size="small"
+      type="inner"
+      title={title}
+      style={{ flex: 1, minWidth: 260 }}
+      bodyStyle={{ paddingTop: 12, paddingBottom: 0 }}
+    >
+      <List
+        size="small"
+        dataSource={items}
+        locale={{ emptyText: '暂无数据' }}
+        renderItem={(item, index) => {
+          const percent = Math.round(Math.max(0, Math.min(1, item.agePercent)) * 100);
+          const orderLabel =
+            item.orderIndex != null && Number.isFinite(item.orderIndex)
+              ? `加载序号 #${(item.orderIndex ?? 0) + 1}${
+                  item.totalOrder && Number.isFinite(item.totalOrder)
+                    ? ` / ${item.totalOrder}`
+                    : ''
+                }`
+              : undefined;
+          return (
+            <List.Item style={{ paddingInline: 0 }}>
+              <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                <Space align="start" style={{ width: '100%', justifyContent: 'space-between' }}>
+                  <Space align="start">
+                    <Tag color="blue">{index + 1}</Tag>
+                    <Space direction="vertical" size={2}>
+                      <Typography.Text strong>{item.name}</Typography.Text>
+                      <Typography.Text type="secondary">
+                        内存 {formatBytes(item.bytes)}
+                        {orderLabel ? ` · ${orderLabel}` : ''}
+                        {item.description ? ` · ${item.description}` : ''}
+                      </Typography.Text>
+                    </Space>
+                  </Space>
+                  <Typography.Text type="secondary">生命周期 {percent}%</Typography.Text>
+                </Space>
+                <Progress percent={percent} size="small" showInfo={false} strokeColor="#52c41a" />
+              </Space>
+            </List.Item>
+          );
+        }}
+      />
+    </Card>
+  );
+}
+
+function ResourceSummaryCard({ item }: { item: ResourceSummaryItem }) {
+  const hasAverage = Number.isFinite(item.averageBytes) && item.averageBytes > 0;
+  return (
+    <Card
+      size="small"
+      type="inner"
+      style={{ flex: 1, minWidth: 220 }}
+      bodyStyle={{ paddingTop: 12, paddingBottom: 12 }}
+    >
+      <Space direction="vertical" size={4} style={{ width: '100%' }}>
+        <Typography.Text strong>{item.title}</Typography.Text>
+        <Typography.Text type="secondary">
+          资源数 {formatInteger(item.count)} · 总内存 {formatBytes(item.totalBytes)}
+        </Typography.Text>
+        {hasAverage ? (
+          <Typography.Text type="secondary">
+            平均内存 {formatBytes(item.averageBytes)}
+          </Typography.Text>
+        ) : null}
+        {item.highlight ? (
+          <Typography.Text type="secondary">最大资源：{item.highlight}</Typography.Text>
+        ) : null}
+      </Space>
+    </Card>
+  );
+}
+
+function ResourceDiagnosticList({
+  title,
+  items,
+}: {
+  title: string;
+  items: DiagnosticEntry[];
+}) {
+  return (
+    <Card
+      size="small"
+      type="inner"
+      title={title}
+      style={{ flex: 1, minWidth: 280 }}
+      bodyStyle={{ paddingTop: 12, paddingBottom: 0 }}
+    >
+      <List
+        size="small"
+        dataSource={items}
+        locale={{ emptyText: '暂无异常' }}
+        renderItem={(item) => (
+          <List.Item style={{ paddingInline: 0 }}>
+            <Space align="start" style={{ width: '100%', justifyContent: 'space-between' }}>
+              <Space align="start">
+                <Tag color={severityTagColor[item.severity] || 'default'}>
+                  {item.severity === 'critical'
+                    ? '高'
+                    : item.severity === 'warning'
+                    ? '警'
+                    : '提示'}
+                </Tag>
+                <Space direction="vertical" size={2}>
+                  <Typography.Text strong>{item.name}</Typography.Text>
+                  <Typography.Text type="secondary">{item.message}</Typography.Text>
+                </Space>
+              </Space>
+            </Space>
+          </List.Item>
+        )}
+      />
+    </Card>
+  );
 }
 
 function TextureNameCell({ texture, serverBaseUrl }: { texture: TextureInfo; serverBaseUrl: string }) {
@@ -455,6 +900,262 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
 
   const shaderVariantStats = useMemo(() => resolveShaderVariantStats(frame), [frame]);
 
+  const allTextures = useMemo(() => {
+    if (!frame) return [];
+    const subset = (frame.textures ?? []).filter((texture) => !isRenderTextureLike(texture));
+    return dedupeTextures(subset);
+  }, [frame]);
+
+  const allRenderTextures = useMemo(() => frame?.renderTextures ?? [], [frame]);
+  const allMaterials = useMemo(() => frame?.materials ?? [], [frame]);
+  const allMeshes = useMemo(() => frame?.meshes ?? [], [frame]);
+
+  const textureOrderMap = useMemo(
+    () => buildOrderIndexMap(frame?.textureOrder, allTextures),
+    [frame?.textureOrder, allTextures]
+  );
+  const renderTextureOrderMap = useMemo(
+    () => buildOrderIndexMap(frame?.renderTextureOrder, allRenderTextures),
+    [frame?.renderTextureOrder, allRenderTextures]
+  );
+  const materialOrderMap = useMemo(
+    () => buildOrderIndexMap(frame?.materialOrder, allMaterials),
+    [frame?.materialOrder, allMaterials]
+  );
+  const meshOrderMap = useMemo(
+    () => buildOrderIndexMap(frame?.meshOrder, allMeshes),
+    [frame?.meshOrder, allMeshes]
+  );
+
+  const topTextureHotspots = useMemo<HotspotEntry[]>(() => {
+    return [...allTextures]
+      .filter((texture) => Number.isFinite(texture.EstimatedBytes) && texture.EstimatedBytes > 0)
+      .sort((a, b) => b.EstimatedBytes - a.EstimatedBytes)
+      .slice(0, 5)
+      .map((texture) => ({
+        key: `${texture.instanceId ?? texture.name}-${texture.width}-${texture.height}`,
+        name: texture.name || '未命名纹理',
+        description: `${texture.width} × ${texture.height}`,
+        bytes: texture.EstimatedBytes,
+      }));
+  }, [allTextures]);
+
+  const topRenderTextureHotspots = useMemo<HotspotEntry[]>(() => {
+    return [...allRenderTextures]
+      .filter((rt) => Number.isFinite(rt.EstimatedBytes) && rt.EstimatedBytes > 0)
+      .sort((a, b) => b.EstimatedBytes - a.EstimatedBytes)
+      .slice(0, 5)
+      .map((rt) => ({
+        key: `${rt.instanceId ?? rt.name}-${rt.width}-${rt.height}-${rt.format}`,
+        name: rt.name || '未命名 RenderTexture',
+        description: `${rt.width} × ${rt.height} · ${rt.format}`,
+        bytes: rt.EstimatedBytes,
+      }));
+  }, [allRenderTextures]);
+
+  const topMaterialHotspots = useMemo<HotspotEntry[]>(() => {
+    return [...allMaterials]
+      .filter((material) => Number.isFinite(material.memoryBytes) && (material.memoryBytes ?? 0) > 0)
+      .sort((a, b) => (b.memoryBytes ?? 0) - (a.memoryBytes ?? 0))
+      .slice(0, 5)
+      .map((material) => ({
+        key: `${material.instanceId ?? material.name}-${material.shaderName ?? 'shader'}`,
+        name: material.name || '未命名材质',
+        description: material.shaderName ? `Shader ${material.shaderName}` : undefined,
+        bytes: material.memoryBytes ?? 0,
+      }));
+  }, [allMaterials]);
+
+  const topMeshHotspots = useMemo<HotspotEntry[]>(() => {
+    return [...allMeshes]
+      .filter((mesh) => Number.isFinite(mesh.EstimatedBytes) && mesh.EstimatedBytes > 0)
+      .sort((a, b) => b.EstimatedBytes - a.EstimatedBytes)
+      .slice(0, 5)
+      .map((mesh) => ({
+        key: `${mesh.instanceId ?? mesh.name}-${mesh.vertexCount}-${mesh.subMeshCount}`,
+        name: mesh.name || '未命名网格',
+        description: `${formatInteger(mesh.vertexCount)} 顶点 · 子网格 ${mesh.subMeshCount}`,
+        bytes: mesh.EstimatedBytes,
+      }));
+  }, [allMeshes]);
+
+  const lifecycleTextures = useMemo(
+    () =>
+      computeLifecycleEntries(
+        allTextures,
+        textureOrderMap,
+        (texture) => texture.name || '未命名纹理',
+        (texture) => texture.EstimatedBytes,
+        {
+          getDescription: (texture) => `${texture.width} × ${texture.height}`,
+        }
+      ),
+    [allTextures, textureOrderMap]
+  );
+
+  const lifecycleRenderTextures = useMemo(
+    () =>
+      computeLifecycleEntries(
+        allRenderTextures,
+        renderTextureOrderMap,
+        (rt) => rt.name || '未命名 RenderTexture',
+        (rt) => rt.EstimatedBytes,
+        {
+          getDescription: (rt) => `${rt.width} × ${rt.height} · ${rt.format}`,
+        }
+      ),
+    [allRenderTextures, renderTextureOrderMap]
+  );
+
+  const lifecycleMaterials = useMemo(
+    () =>
+      computeLifecycleEntries(
+        allMaterials,
+        materialOrderMap,
+        (material) => material.name || '未命名材质',
+        (material) => material.memoryBytes ?? 0,
+        {
+          getDescription: (material) =>
+            material.shaderName ? `Shader ${material.shaderName}` : undefined,
+        }
+      ),
+    [allMaterials, materialOrderMap]
+  );
+
+  const lifecycleMeshes = useMemo(
+    () =>
+      computeLifecycleEntries(
+        allMeshes,
+        meshOrderMap,
+        (mesh) => mesh.name || '未命名网格',
+        (mesh) => mesh.EstimatedBytes,
+        {
+          getDescription: (mesh) => `${formatInteger(mesh.vertexCount)} 顶点`,
+        }
+      ),
+    [allMeshes, meshOrderMap]
+  );
+
+  const hasHotspotData =
+    topTextureHotspots.length > 0 ||
+    topRenderTextureHotspots.length > 0 ||
+    topMaterialHotspots.length > 0 ||
+    topMeshHotspots.length > 0;
+
+  const hasLifecycleInsights =
+    lifecycleTextures.length > 0 ||
+    lifecycleRenderTextures.length > 0 ||
+    lifecycleMaterials.length > 0 ||
+    lifecycleMeshes.length > 0;
+
+  const resourceSummaryItems = useMemo<ResourceSummaryItem[]>(() => {
+    const summaries: ResourceSummaryItem[] = [];
+
+    const topTexture = topTextureHotspots[0];
+    if (allTextures.length > 0) {
+      const totalBytes = sumBy(allTextures, (texture) => texture.EstimatedBytes ?? 0);
+      const highlight = topTexture
+        ? topTexture.description
+          ? `${topTexture.name} · ${topTexture.description}`
+          : topTexture.name
+        : undefined;
+      summaries.push({
+        key: 'textures',
+        title: '纹理资源',
+        count: allTextures.length,
+        totalBytes,
+        averageBytes: allTextures.length > 0 ? totalBytes / allTextures.length : 0,
+        highlight,
+      });
+    }
+
+    const topRenderTexture = topRenderTextureHotspots[0];
+    if (allRenderTextures.length > 0) {
+      const totalBytes = sumBy(allRenderTextures, (rt) => rt.EstimatedBytes ?? 0);
+      const highlight = topRenderTexture
+        ? topRenderTexture.description
+          ? `${topRenderTexture.name} · ${topRenderTexture.description}`
+          : topRenderTexture.name
+        : undefined;
+      summaries.push({
+        key: 'renderTextures',
+        title: 'RenderTexture',
+        count: allRenderTextures.length,
+        totalBytes,
+        averageBytes: allRenderTextures.length > 0 ? totalBytes / allRenderTextures.length : 0,
+        highlight,
+      });
+    }
+
+    const topMaterial = topMaterialHotspots[0];
+    if (allMaterials.length > 0) {
+      const totalBytes = sumBy(allMaterials, (material) => material.memoryBytes ?? 0);
+      const highlight = topMaterial
+        ? topMaterial.description
+          ? `${topMaterial.name} · ${topMaterial.description}`
+          : topMaterial.name
+        : undefined;
+      summaries.push({
+        key: 'materials',
+        title: '材质资源',
+        count: allMaterials.length,
+        totalBytes,
+        averageBytes: allMaterials.length > 0 ? totalBytes / allMaterials.length : 0,
+        highlight,
+      });
+    }
+
+    const topMesh = topMeshHotspots[0];
+    if (allMeshes.length > 0) {
+      const totalBytes = sumBy(allMeshes, (mesh) => mesh.EstimatedBytes ?? mesh.assetBytes ?? 0);
+      const highlight = topMesh
+        ? topMesh.description
+          ? `${topMesh.name} · ${topMesh.description}`
+          : topMesh.name
+        : undefined;
+      summaries.push({
+        key: 'meshes',
+        title: '网格资源',
+        count: allMeshes.length,
+        totalBytes,
+        averageBytes: allMeshes.length > 0 ? totalBytes / allMeshes.length : 0,
+        highlight,
+      });
+    }
+
+    return summaries;
+  }, [
+    allMaterials,
+    allMeshes,
+    allRenderTextures,
+    allTextures,
+    topMaterialHotspots,
+    topMeshHotspots,
+    topRenderTextureHotspots,
+    topTextureHotspots,
+  ]);
+
+  const textureDiagnostics = useMemo(
+    () => computeTextureDiagnostics(allTextures),
+    [allTextures]
+  );
+  const renderTextureDiagnostics = useMemo(
+    () => computeRenderTextureDiagnostics(allRenderTextures),
+    [allRenderTextures]
+  );
+  const materialDiagnostics = useMemo(
+    () => computeMaterialDiagnostics(allMaterials),
+    [allMaterials]
+  );
+  const meshDiagnostics = useMemo(() => computeMeshDiagnostics(allMeshes), [allMeshes]);
+
+  const hasSummaryData = resourceSummaryItems.length > 0;
+  const hasDiagnostics =
+    textureDiagnostics.length > 0 ||
+    renderTextureDiagnostics.length > 0 ||
+    materialDiagnostics.length > 0 ||
+    meshDiagnostics.length > 0;
+
   const textureColumns: ColumnsType<TextureInfo> = [
     {
       title: '纹理',
@@ -695,6 +1396,84 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
             style={{ maxWidth: 320 }}
           />
         </Space>
+        {hasSummaryData ? (
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            <Typography.Title level={5} style={{ margin: 0 }}>
+              资源类型概览
+            </Typography.Title>
+            <Space wrap size={16} style={{ width: '100%' }}>
+              {resourceSummaryItems.map((item) => (
+                <ResourceSummaryCard key={item.key} item={item} />
+              ))}
+            </Space>
+          </Space>
+        ) : null}
+        {hasDiagnostics ? (
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            <Typography.Title level={5} style={{ margin: 0 }}>
+              资源健康诊断
+            </Typography.Title>
+            <Typography.Text type="secondary">
+              自动巡检纹理、RenderTexture、材质与网格的潜在风险，辅助内容优化。
+            </Typography.Text>
+            <Space wrap size={16} style={{ width: '100%' }}>
+              {textureDiagnostics.length ? (
+                <ResourceDiagnosticList title="纹理质量提醒" items={textureDiagnostics} />
+              ) : null}
+              {renderTextureDiagnostics.length ? (
+                <ResourceDiagnosticList title="RenderTexture 诊断" items={renderTextureDiagnostics} />
+              ) : null}
+              {materialDiagnostics.length ? (
+                <ResourceDiagnosticList title="材质配置诊断" items={materialDiagnostics} />
+              ) : null}
+              {meshDiagnostics.length ? (
+                <ResourceDiagnosticList title="网格复杂度提醒" items={meshDiagnostics} />
+              ) : null}
+            </Space>
+          </Space>
+        ) : null}
+        {hasHotspotData ? (
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            <Typography.Title level={5} style={{ margin: 0 }}>
+              资源热点榜单
+            </Typography.Title>
+            <Space wrap size={16} style={{ width: '100%' }}>
+              {topTextureHotspots.length ? (
+                <HotspotList title="纹理内存 Top 5" items={topTextureHotspots} />
+              ) : null}
+              {topRenderTextureHotspots.length ? (
+                <HotspotList title="RenderTexture Top 5" items={topRenderTextureHotspots} />
+              ) : null}
+              {topMaterialHotspots.length ? (
+                <HotspotList title="材质内存 Top 5" items={topMaterialHotspots} />
+              ) : null}
+              {topMeshHotspots.length ? (
+                <HotspotList title="网格内存 Top 5" items={topMeshHotspots} />
+              ) : null}
+            </Space>
+          </Space>
+        ) : null}
+        {hasLifecycleInsights ? (
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            <Typography.Title level={5} style={{ margin: 0 }}>
+              生命周期洞察
+            </Typography.Title>
+            <Space wrap size={16} style={{ width: '100%' }}>
+              {lifecycleTextures.length ? (
+                <LifecycleList title="长驻纹理" items={lifecycleTextures} />
+              ) : null}
+              {lifecycleRenderTextures.length ? (
+                <LifecycleList title="长驻 RenderTexture" items={lifecycleRenderTextures} />
+              ) : null}
+              {lifecycleMaterials.length ? (
+                <LifecycleList title="长驻材质" items={lifecycleMaterials} />
+              ) : null}
+              {lifecycleMeshes.length ? (
+                <LifecycleList title="长驻网格" items={lifecycleMeshes} />
+              ) : null}
+            </Space>
+          </Space>
+        ) : null}
         <Collapse
           bordered={false}
           defaultActiveKey={['textures', 'renderTextures', 'materials']}
