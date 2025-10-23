@@ -1,21 +1,32 @@
 import { useMemo } from 'react';
-import { Avatar, Badge, Empty, List, Segmented, Select, Space, Tag, Typography } from 'antd';
-import type { TelemetrySession, SessionSortOrder, SessionStatusFilter } from '../types';
+import { Avatar, Badge, Empty, Input, List, Segmented, Select, Space, Tag, Typography } from 'antd';
+import type {
+  TelemetrySession,
+  SessionSortOrder,
+  SessionStatusFilter,
+  SessionGrouping,
+  SessionGroupingItem,
+} from '../types';
 import { resolveSessionIp } from '../utils/session';
 import dayjs from 'dayjs';
+import { SESSION_GROUPING_DISPLAY_META, SESSION_GROUPING_OPTIONS } from '../utils/sessionGrouping';
 
 interface SessionSidebarProps {
   sessions: TelemetrySession[];
   selectedSessionId: string | null;
   onSelectSession: (sessionId: string) => void;
-  clientIps: { ip: string; sessionCount: number; activeSessionCount: number }[];
-  selectedClientIp: string | null;
-  onSelectClientIp: (ip: string | null) => void;
+  groupingKey: SessionGrouping;
+  onChangeGroupingKey: (group: SessionGrouping) => void;
+  groupingItems: SessionGroupingItem[];
+  selectedGroupingValue: string | null;
+  onSelectGroupingValue: (value: string | null) => void;
   sortOrder: SessionSortOrder;
   onChangeSortOrder: (order: SessionSortOrder) => void;
   statusFilter: SessionStatusFilter;
   onChangeStatusFilter: (filter: SessionStatusFilter) => void;
   statusCounts: Record<SessionStatusFilter, number>;
+  searchValue: string;
+  onSearchChange: (value: string) => void;
 }
 
 const { CheckableTag } = Tag;
@@ -101,15 +112,27 @@ export default function SessionSidebar({
   sessions,
   selectedSessionId,
   onSelectSession,
-  clientIps,
-  selectedClientIp,
-  onSelectClientIp,
+  groupingKey,
+  onChangeGroupingKey,
+  groupingItems,
+  selectedGroupingValue,
+  onSelectGroupingValue,
   sortOrder,
   onChangeSortOrder,
   statusFilter,
   onChangeStatusFilter,
   statusCounts,
+  searchValue,
+  onSearchChange,
 }: SessionSidebarProps) {
+  const groupingMeta = SESSION_GROUPING_DISPLAY_META[groupingKey];
+  const selectedGroupingLabel = useMemo(() => {
+    if (!selectedGroupingValue) {
+      return groupingMeta.allLabel;
+    }
+    const match = groupingItems.find((item) => item.value === selectedGroupingValue);
+    return match?.label ?? groupingMeta.allLabel;
+  }, [groupingItems, groupingMeta.allLabel, selectedGroupingValue]);
   const statusSegmentOptions = useMemo(
     () => [
       { label: `全部 (${statusCounts.all})`, value: 'all' as const },
@@ -118,8 +141,8 @@ export default function SessionSidebar({
     ],
     [statusCounts]
   );
-  const emptyDescription = selectedClientIp
-    ? `IP ${selectedClientIp} 暂无${statusFilterLabels[statusFilter]}`
+  const emptyDescription = selectedGroupingValue
+    ? `${selectedGroupingLabel} 暂无${statusFilterLabels[statusFilter]}`
     : `暂无${statusFilterLabels[statusFilter]}`;
 
   return (
@@ -146,10 +169,29 @@ export default function SessionSidebar({
             />
           </Space>
           <Space direction="vertical" size={4} style={{ width: '100%' }}>
-            <Typography.Text type="secondary">游戏客户端 IP</Typography.Text>
+            <Typography.Text type="secondary">历史记录分组</Typography.Text>
+            <Select<SessionGrouping>
+              value={groupingKey}
+              options={SESSION_GROUPING_OPTIONS}
+              onChange={(value) => onChangeGroupingKey(value)}
+              size="small"
+              style={{ width: '100%' }}
+            />
+          </Space>
+          <Space direction="vertical" size={4} style={{ width: '100%' }}>
+            <Typography.Text type="secondary">当前{groupingMeta.label}</Typography.Text>
             <Typography.Text style={{ fontSize: 16, fontWeight: 600 }}>
-              {selectedClientIp ?? '全部客户端'}
+              {selectedGroupingLabel}
             </Typography.Text>
+          </Space>
+          <Space direction="vertical" size={4} style={{ width: '100%' }}>
+            <Typography.Text type="secondary">搜索历史会话</Typography.Text>
+            <Input
+              allowClear
+              placeholder="按 IP、设备、账号、产品等搜索"
+              value={searchValue}
+              onChange={(event) => onSearchChange(event.target.value)}
+            />
           </Space>
         </Space>
         <div
@@ -164,12 +206,12 @@ export default function SessionSidebar({
         >
           <CheckableTag
             key="__all__"
-            checked={selectedClientIp === null}
+            checked={selectedGroupingValue === null}
             onChange={(checked) => {
               if (checked) {
-                onSelectClientIp(null);
-              } else if (selectedClientIp === null) {
-                onSelectClientIp(null);
+                onSelectGroupingValue(null);
+              } else if (selectedGroupingValue === null) {
+                onSelectGroupingValue(null);
               }
             }}
             style={{
@@ -182,16 +224,16 @@ export default function SessionSidebar({
               whiteSpace: 'nowrap',
             }}
           >
-            全部客户端
+            {groupingMeta.allLabel}
           </CheckableTag>
-          {clientIps.length === 0 ? (
-            <Typography.Text type="secondary">暂无客户端连接</Typography.Text>
+          {groupingItems.length === 0 ? (
+            <Typography.Text type="secondary">暂无分组数据</Typography.Text>
           ) : (
-            clientIps.map((item) => (
+            groupingItems.map((item) => (
               <CheckableTag
-                key={item.ip}
-                checked={selectedClientIp === item.ip}
-                onChange={(checked) => onSelectClientIp(checked ? item.ip : null)}
+                key={item.value}
+                checked={selectedGroupingValue === item.value}
+                onChange={(checked) => onSelectGroupingValue(checked ? item.value : null)}
                 style={{
                   borderRadius: 999,
                   padding: '2px 12px',
@@ -211,9 +253,9 @@ export default function SessionSidebar({
                     overflow: 'visible',
                     wordBreak: 'break-all',
                   }}
-                  title={item.ip}
+                  title={item.label}
                 >
-                  {item.ip}
+                  {item.label}
                 </span>
                 <span style={{ color: 'rgba(0, 0, 0, 0.45)', fontSize: 12, flexShrink: 0 }}>({item.sessionCount})</span>
                 {item.activeSessionCount > 0 ? (
