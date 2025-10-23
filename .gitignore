@@ -7,5 +7,6 @@ Client/Builds/
 server/node_modules/
 server/data/previews/
 server/data/telemetry-history.json
+server/data/telemetry-history.db*
 web/node_modules/
 web/dist/
