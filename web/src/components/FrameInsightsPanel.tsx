@@ -1,7 +1,8 @@
-import { Card, Empty, Flex, Space, Tag, Typography, theme } from 'antd';
+import { Empty, Flex, Space, Tag, Typography, theme } from 'antd';
 import { useMemo } from 'react';
 import type { BottleneckHint, PipelineStageTiming, TelemetrySnapshot } from '../types';
 import { formatInteger, formatMilliseconds, formatPercentage } from '../utils/format';
+import CollapsibleCard from './CollapsibleCard';
 
 interface FrameInsightsPanelProps {
   frame: TelemetrySnapshot | null;
@@ -105,7 +106,7 @@ export default function FrameInsightsPanel({ frame }: FrameInsightsPanelProps) {
     hints.length > 0;
 
   return (
-    <Card
+    <CollapsibleCard
       title={<Typography.Text strong>帧执行明细</Typography.Text>}
       style={{ flex: 1, minWidth: 320 }}
       bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 16 }}
@@ -217,6 +218,6 @@ export default function FrameInsightsPanel({ frame }: FrameInsightsPanelProps) {
           ) : null}
         </Space>
       )}
-    </Card>
+    </CollapsibleCard>
   );
 }

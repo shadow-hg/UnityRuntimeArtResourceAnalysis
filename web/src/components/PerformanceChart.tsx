@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, type CSSProperties } from 'react';
-import { Card, Empty, Image, InputNumber, Space, Tooltip, Typography, theme } from 'antd';
+import { Empty, Image, InputNumber, Space, Tooltip, Typography, theme } from 'antd';
 import ReactEChartsCore from 'echarts-for-react/lib/core';
 import type { EChartsOption } from 'echarts';
 import * as echarts from 'echarts/core';
@@ -18,6 +18,7 @@ import { CanvasRenderer } from 'echarts/renderers';
 import type { TelemetrySnapshot } from '../types';
 import { formatFps } from '../utils/format';
 import { resolvePreviewSource } from '../utils/preview';
+import CollapsibleCard from './CollapsibleCard';
 
 echarts.use([
   GridComponent,
@@ -1097,7 +1098,7 @@ export default function PerformanceChart({
     frames.length === 0 ? undefined : { display: 'flex', flexDirection: 'column', gap: 16 };
 
   return (
-    <Card
+    <CollapsibleCard
       title={
         <Typography.Text strong>
           性能趋势 · {frames.length} 帧 · 最新帧 #{latestFrameNumberForTitle}
@@ -1251,6 +1252,6 @@ export default function PerformanceChart({
           />
         </>
       )}
-    </Card>
+    </CollapsibleCard>
   );
 }

@@ -24,6 +24,7 @@ import type {
 } from '../types';
 import { formatBytes, formatFps, formatInteger, formatPercentage } from '../utils/format';
 import { resolvePreviewSource } from '../utils/preview';
+import CollapsibleCard from './CollapsibleCard';
 
 interface ResourceExplorerProps {
   frame: TelemetrySnapshot | null;
@@ -214,6 +215,22 @@ const severityTagColor: Record<DiagnosticSeverity, string> = {
   warning: 'warning',
   critical: 'error',
 };
+
+const severityDisplayLabel: Record<DiagnosticSeverity, string> = {
+  info: '提示',
+  warning: '警告',
+  critical: '高风险',
+};
+
+function resolveHighestSeverity(entries: DiagnosticEntry[]): DiagnosticSeverity {
+  if (entries.some((entry) => entry.severity === 'critical')) {
+    return 'critical';
+  }
+  if (entries.some((entry) => entry.severity === 'warning')) {
+    return 'warning';
+  }
+  return 'info';
+}
 
 function isPowerOfTwo(value: number | null | undefined): boolean {
   if (!Number.isFinite(value) || !value) {
@@ -543,13 +560,44 @@ function ResourceSummaryCard({ item }: { item: ResourceSummaryItem }) {
   );
 }
 
-function ResourceDiagnosticList({
-  title,
-  items,
-}: {
+interface ResourceDiagnosticListProps {
   title: string;
   items: DiagnosticEntry[];
-}) {
+  variant?: 'card' | 'plain';
+}
+
+function ResourceDiagnosticList({ title, items, variant = 'card' }: ResourceDiagnosticListProps) {
+  const content = (
+    <List
+      size="small"
+      dataSource={items}
+      locale={{ emptyText: '暂无异常' }}
+      renderItem={(item) => (
+        <List.Item style={{ paddingInline: 0 }}>
+          <Space align="start" style={{ width: '100%', justifyContent: 'space-between' }}>
+            <Space align="start">
+              <Tag color={severityTagColor[item.severity] || 'default'}>
+                {item.severity === 'critical'
+                  ? '高'
+                  : item.severity === 'warning'
+                  ? '警'
+                  : '提示'}
+              </Tag>
+              <Space direction="vertical" size={2}>
+                <Typography.Text strong>{item.name}</Typography.Text>
+                <Typography.Text type="secondary">{item.message}</Typography.Text>
+              </Space>
+            </Space>
+          </Space>
+        </List.Item>
+      )}
+    />
+  );
+
+  if (variant === 'plain') {
+    return content;
+  }
+
   return (
     <Card
       size="small"
@@ -558,30 +606,7 @@ function ResourceDiagnosticList({
       style={{ flex: 1, minWidth: 280 }}
       bodyStyle={{ paddingTop: 12, paddingBottom: 0 }}
     >
-      <List
-        size="small"
-        dataSource={items}
-        locale={{ emptyText: '暂无异常' }}
-        renderItem={(item) => (
-          <List.Item style={{ paddingInline: 0 }}>
-            <Space align="start" style={{ width: '100%', justifyContent: 'space-between' }}>
-              <Space align="start">
-                <Tag color={severityTagColor[item.severity] || 'default'}>
-                  {item.severity === 'critical'
-                    ? '高'
-                    : item.severity === 'warning'
-                    ? '警'
-                    : '提示'}
-                </Tag>
-                <Space direction="vertical" size={2}>
-                  <Typography.Text strong>{item.name}</Typography.Text>
-                  <Typography.Text type="secondary">{item.message}</Typography.Text>
-                </Space>
-              </Space>
-            </Space>
-          </List.Item>
-        )}
-      />
+      {content}
     </Card>
   );
 }
@@ -1156,6 +1181,42 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
     materialDiagnostics.length > 0 ||
     meshDiagnostics.length > 0;
 
+  const diagnosticSections = useMemo(
+    () =>
+      [
+        { key: 'textures', title: '纹理质量提醒', items: textureDiagnostics },
+        { key: 'renderTextures', title: 'RenderTexture 诊断', items: renderTextureDiagnostics },
+        { key: 'materials', title: '材质配置诊断', items: materialDiagnostics },
+        { key: 'meshes', title: '网格复杂度提醒', items: meshDiagnostics },
+      ].filter((section) => section.items.length > 0),
+    [textureDiagnostics, renderTextureDiagnostics, materialDiagnostics, meshDiagnostics]
+  );
+
+  const diagnosticCollapseItems = useMemo(
+    () =>
+      diagnosticSections.map((section) => {
+        const highestSeverity = resolveHighestSeverity(section.items);
+        const badgeLabel = `共 ${section.items.length} 条 · ${severityDisplayLabel[highestSeverity]}`;
+        return {
+          key: section.key,
+          label: (
+            <Space size={8} wrap align="center">
+              <Typography.Text>{section.title}</Typography.Text>
+              <Tag color={severityTagColor[highestSeverity]}>{badgeLabel}</Tag>
+            </Space>
+          ),
+          children: (
+            <ResourceDiagnosticList
+              title={section.title}
+              items={section.items}
+              variant="plain"
+            />
+          ),
+        };
+      }),
+    [diagnosticSections]
+  );
+
   const textureColumns: ColumnsType<TextureInfo> = [
     {
       title: '纹理',
@@ -1365,7 +1426,7 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
   const shaderKeywordTotal = filteredShaders.reduce((acc, shader) => acc + shader.keywords.length, 0);
 
   return (
-    <Card
+    <CollapsibleCard
       title={
         <Space direction="vertical" size={0}>
           <Typography.Text strong>{`第 ${frame.frameNumber} 帧资源详情`}</Typography.Text>
@@ -1416,20 +1477,12 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
             <Typography.Text type="secondary">
               自动巡检纹理、RenderTexture、材质与网格的潜在风险，辅助内容优化。
             </Typography.Text>
-            <Space wrap size={16} style={{ width: '100%' }}>
-              {textureDiagnostics.length ? (
-                <ResourceDiagnosticList title="纹理质量提醒" items={textureDiagnostics} />
-              ) : null}
-              {renderTextureDiagnostics.length ? (
-                <ResourceDiagnosticList title="RenderTexture 诊断" items={renderTextureDiagnostics} />
-              ) : null}
-              {materialDiagnostics.length ? (
-                <ResourceDiagnosticList title="材质配置诊断" items={materialDiagnostics} />
-              ) : null}
-              {meshDiagnostics.length ? (
-                <ResourceDiagnosticList title="网格复杂度提醒" items={meshDiagnostics} />
-              ) : null}
-            </Space>
+            <Collapse
+              bordered={false}
+              style={{ width: '100%' }}
+              items={diagnosticCollapseItems}
+              defaultActiveKey={diagnosticCollapseItems.map((item) => item.key)}
+            />
           </Space>
         ) : null}
         {hasHotspotData ? (
@@ -1577,7 +1630,7 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
           ]}
         />
       </Space>
-    </Card>
+    </CollapsibleCard>
   );
 }
 

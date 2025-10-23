@@ -1,7 +1,8 @@
-import { Card, Empty, Space, Tag, Typography } from 'antd';
+import { Empty, Space, Tag, Typography } from 'antd';
 import { useMemo } from 'react';
 import type { AssetLoadSample, ResourceInstanceStats, TelemetrySnapshot } from '../types';
 import { formatBytes, formatInteger, formatMilliseconds, formatPercentage } from '../utils/format';
+import CollapsibleCard from './CollapsibleCard';
 
 interface AssetIoPanelProps {
   frame: TelemetrySnapshot | null;
@@ -72,7 +73,7 @@ export default function AssetIoPanel({ frame }: AssetIoPanelProps) {
     hasPrimaryMetrics || recentLoads.length > 0 || resourceInstances.length > 0 || streamingStatuses.length > 0 || unloadEvents.length > 0;
 
   return (
-    <Card
+    <CollapsibleCard
       title={<Typography.Text strong>资产生命周期与 IO</Typography.Text>}
       style={{ flex: 1, minWidth: 320 }}
       bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 16 }}
@@ -216,6 +217,6 @@ export default function AssetIoPanel({ frame }: AssetIoPanelProps) {
           ) : null}
         </Space>
       )}
-    </Card>
+    </CollapsibleCard>
   );
 }
