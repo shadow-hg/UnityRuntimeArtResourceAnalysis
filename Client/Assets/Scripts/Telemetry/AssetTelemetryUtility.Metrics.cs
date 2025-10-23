@@ -19,6 +19,9 @@ namespace UnityProfileV2.Telemetry
         private const int MaxRecentIoEvents = 50;
         private static readonly FrameTiming[] FrameTimingBuffer = new FrameTiming[1];
         private static readonly List<StageRecorder> StageRecorders = new();
+#if UNITY_2017_1_OR_NEWER && UNITY_2018_2_OR_NEWER
+        private static readonly Func<VideoPlayer, int> s_getDroppedFrameCount = CreateDroppedFrameCountAccessor();
+#endif
         private static readonly StageRecorderDefinition[] StageDefinitions =
         {
             new StageRecorderDefinition("脚本更新", new[] { "BehaviourUpdate", "PlayerLoop/Update/ScriptRunBehaviourUpdate" }),
@@ -61,7 +64,7 @@ namespace UnityProfileV2.Telemetry
                 var timing = FrameTimingBuffer[0];
                 info.cpuFrameTimeMs = (float)timing.cpuFrameTime;
                 info.gpuFrameTimeMs = (float)timing.gpuFrameTime;
-#if UNITY_2020_2_OR_NEWER
+#if UNITY_2022_2_OR_NEWER
                 info.cpuMainThreadTimeMs = (float)timing.cpuMainThreadTime;
                 info.cpuRenderThreadTimeMs = (float)timing.cpuRenderThreadTime;
 #elif UNITY_2017_2_OR_NEWER
@@ -304,7 +307,7 @@ namespace UnityProfileV2.Telemetry
             var total = 0f;
             foreach (var stage in StageRecorders)
             {
-                if (stage.Recorder == null || !stage.Recorder.valid)
+                if (stage.Recorder == null || !stage.Recorder.isValid)
                 {
                     continue;
                 }
@@ -405,7 +408,7 @@ namespace UnityProfileV2.Telemetry
                     type = string.IsNullOrEmpty(player.name) ? "Video" : $"Video:{player.name}",
                     droppedFrames =
 #if UNITY_2018_2_OR_NEWER
-                        (int)player.droppedFrameCount,
+                        GetDroppedFrameCount(player),
 #else
                         0,
 #endif
@@ -424,6 +427,87 @@ namespace UnityProfileV2.Telemetry
             return statuses.ToArray();
         }
 
+#if UNITY_2017_1_OR_NEWER && UNITY_2018_2_OR_NEWER
+        private static Func<VideoPlayer, int> CreateDroppedFrameCountAccessor()
+        {
+            var property = typeof(VideoPlayer).GetProperty("droppedFrameCount");
+            if (property == null)
+            {
+                return _ => 0;
+            }
+
+            return player =>
+            {
+                if (player == null)
+                {
+                    return 0;
+                }
+
+                try
+                {
+                    var value = property.GetValue(player, null);
+                    return ConvertDroppedFrameValue(value);
+                }
+                catch
+                {
+                    return 0;
+                }
+            };
+        }
+
+        private static int GetDroppedFrameCount(VideoPlayer player)
+        {
+            try
+            {
+                return s_getDroppedFrameCount(player);
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        private static int ConvertDroppedFrameValue(object value)
+        {
+            if (value == null)
+            {
+                return 0;
+            }
+
+            try
+            {
+                return Convert.ToInt32(value);
+            }
+            catch
+            {
+                switch (value)
+                {
+                    case ulong ulongValue:
+                        return ulongValue >= int.MaxValue ? int.MaxValue : (int)ulongValue;
+                    case long longValue when longValue > int.MaxValue:
+                        return int.MaxValue;
+                    case long longValue when longValue < int.MinValue:
+                        return int.MinValue;
+                    case long longValue:
+                        return (int)longValue;
+                    case uint uintValue:
+                        return uintValue >= int.MaxValue ? int.MaxValue : (int)uintValue;
+                    case ushort ushortValue:
+                        return ushortValue;
+                    case byte byteValue:
+                        return byteValue;
+                }
+            }
+
+            if (int.TryParse(value.ToString(), out var parsed))
+            {
+                return parsed;
+            }
+
+            return 0;
+        }
+#endif
+
         private static void InitializeStageRecorders()
         {
             StageRecorders.Clear();
@@ -441,7 +525,7 @@ namespace UnityProfileV2.Telemetry
                         recorder = null;
                     }
 
-                    if (recorder != null && recorder.valid)
+                    if (recorder != null && recorder.isValid)
                     {
                         recorder.enabled = true;
                         StageRecorders.Add(new StageRecorder { Label = definition.Label, Recorder = recorder });
