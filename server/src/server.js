@@ -782,6 +782,11 @@ function closeServer(callback) {
       if (err) {
         console.error('Failed to close server gracefully', err);
       }
+      try {
+        historyStore.close();
+      } catch (dbErr) {
+        console.warn('Failed to close history store', dbErr);
+      }
       callback();
     });
   });
