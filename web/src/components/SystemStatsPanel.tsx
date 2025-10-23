@@ -1,7 +1,8 @@
-import { Card, Empty, Flex, Space, Typography } from 'antd';
+import { Empty, Flex, Space, Typography } from 'antd';
 import { useMemo } from 'react';
 import type { TelemetrySnapshot, ThreadUtilizationSample } from '../types';
 import { formatBytes, formatInteger, formatMilliseconds, formatPercentage } from '../utils/format';
+import CollapsibleCard from './CollapsibleCard';
 
 interface SystemStatsPanelProps {
   frame: TelemetrySnapshot | null;
@@ -91,7 +92,7 @@ export default function SystemStatsPanel({ frame }: SystemStatsPanelProps) {
   const hasAnyData = hasMemoryData || hasGcData || hasThreadData;
 
   return (
-    <Card
+    <CollapsibleCard
       title={<Typography.Text strong>系统与资源占用</Typography.Text>}
       style={{ flex: 1, minWidth: 320 }}
       bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 16 }}
@@ -192,6 +193,6 @@ export default function SystemStatsPanel({ frame }: SystemStatsPanelProps) {
           ) : null}
         </Space>
       )}
-    </Card>
+    </CollapsibleCard>
   );
 }

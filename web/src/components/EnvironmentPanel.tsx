@@ -1,6 +1,7 @@
-import { Card, Empty, Space, Typography } from 'antd';
+import { Empty, Space, Typography } from 'antd';
 import type { EnvironmentInfo, TelemetrySnapshot } from '../types';
 import { formatInteger } from '../utils/format';
+import CollapsibleCard from './CollapsibleCard';
 
 interface EnvironmentPanelProps {
   frame: TelemetrySnapshot | null;
@@ -54,7 +55,7 @@ export default function EnvironmentPanel({ frame }: EnvironmentPanelProps) {
   );
 
   return (
-    <Card
+    <CollapsibleCard
       title={<Typography.Text strong>运行环境指标</Typography.Text>}
       style={{ flex: 1, minWidth: 320 }}
       bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 16 }}
@@ -124,6 +125,6 @@ export default function EnvironmentPanel({ frame }: EnvironmentPanelProps) {
           ) : null}
         </Space>
       )}
-    </Card>
+    </CollapsibleCard>
   );
 }
