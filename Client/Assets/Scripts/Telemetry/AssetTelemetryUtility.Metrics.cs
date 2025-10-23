@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using UnityEngine;
 using UnityEngine.Profiling;
 using UnityEngine.Rendering;
@@ -18,6 +19,10 @@ namespace UnityProfileV2.Telemetry
     {
         private const int MaxRecentIoEvents = 50;
         private static readonly FrameTiming[] FrameTimingBuffer = new FrameTiming[1];
+#if UNITY_2017_2_OR_NEWER
+        private static MemberInfo s_cpuMainThreadTimingMember;
+        private static MemberInfo s_cpuRenderThreadTimingMember;
+#endif
         private static readonly List<StageRecorder> StageRecorders = new();
 #if UNITY_2017_1_OR_NEWER && UNITY_2018_2_OR_NEWER
         private static readonly Func<VideoPlayer, int> s_getDroppedFrameCount = CreateDroppedFrameCountAccessor();
@@ -64,12 +69,11 @@ namespace UnityProfileV2.Telemetry
                 var timing = FrameTimingBuffer[0];
                 info.cpuFrameTimeMs = (float)timing.cpuFrameTime;
                 info.gpuFrameTimeMs = (float)timing.gpuFrameTime;
-#if UNITY_2022_2_OR_NEWER
-                info.cpuMainThreadTimeMs = (float)timing.cpuMainThreadTime;
-                info.cpuRenderThreadTimeMs = (float)timing.cpuRenderThreadTime;
-#elif UNITY_2017_2_OR_NEWER
-                info.cpuMainThreadTimeMs = (float)timing.cpuMainThreadFrameTime;
-                info.cpuRenderThreadTimeMs = (float)timing.cpuRenderThreadFrameTime;
+#if UNITY_2017_2_OR_NEWER
+                info.cpuMainThreadTimeMs = (float)GetFrameTimingValue(timing, ref s_cpuMainThreadTimingMember,
+                    "cpuMainThreadTime", "cpuMainThreadFrameTime");
+                info.cpuRenderThreadTimeMs = (float)GetFrameTimingValue(timing, ref s_cpuRenderThreadTimingMember,
+                    "cpuRenderThreadTime", "cpuRenderThreadFrameTime");
 #else
                 info.cpuMainThreadTimeMs = 0f;
                 info.cpuRenderThreadTimeMs = 0f;
@@ -210,6 +214,58 @@ namespace UnityProfileV2.Telemetry
 
             return stats;
         }
+
+#if UNITY_2017_2_OR_NEWER
+        private static double GetFrameTimingValue(FrameTiming timing, ref MemberInfo cachedMember, params string[] memberNames)
+        {
+            if (cachedMember == null)
+            {
+                cachedMember = ResolveFrameTimingMember(memberNames);
+            }
+
+            try
+            {
+                if (cachedMember is FieldInfo field)
+                {
+                    object boxed = timing;
+                    return Convert.ToDouble(field.GetValue(boxed));
+                }
+
+                if (cachedMember is PropertyInfo property)
+                {
+                    object boxed = timing;
+                    return Convert.ToDouble(property.GetValue(boxed, null));
+                }
+            }
+            catch
+            {
+                cachedMember = null;
+            }
+
+            return 0d;
+        }
+
+        private static MemberInfo ResolveFrameTimingMember(string[] memberNames)
+        {
+            var type = typeof(FrameTiming);
+            foreach (var memberName in memberNames)
+            {
+                var field = type.GetField(memberName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (field != null)
+                {
+                    return field;
+                }
+
+                var property = type.GetProperty(memberName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (property != null)
+                {
+                    return property;
+                }
+            }
+
+            return null;
+        }
+#endif
 
         private static EnvironmentInfo CaptureEnvironmentInfo()
         {
