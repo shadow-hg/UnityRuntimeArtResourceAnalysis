@@ -59,6 +59,7 @@ export default function EnvironmentPanel({ frame }: EnvironmentPanelProps) {
       title={<Typography.Text strong>运行环境指标</Typography.Text>}
       style={{ flex: 1, minWidth: 320 }}
       bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 16 }}
+      collapseMode="compact"
     >
       {!hasAnyData ? (
         <Empty description="暂无环境信息" image={Empty.PRESENTED_IMAGE_SIMPLE} />

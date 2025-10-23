@@ -25,6 +25,7 @@ import type {
 import { formatBytes, formatFps, formatInteger, formatPercentage } from '../utils/format';
 import { resolvePreviewSource } from '../utils/preview';
 import CollapsibleCard from './CollapsibleCard';
+import CollapsibleSection from './CollapsibleSection';
 
 interface ResourceExplorerProps {
   frame: TelemetrySnapshot | null;
@@ -1486,10 +1487,7 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
           </Space>
         ) : null}
         {hasHotspotData ? (
-          <Space direction="vertical" size={12} style={{ width: '100%' }}>
-            <Typography.Title level={5} style={{ margin: 0 }}>
-              资源热点榜单
-            </Typography.Title>
+          <CollapsibleSection title="资源热点榜单" contentStyle={{ width: '100%' }}>
             <Space wrap size={16} style={{ width: '100%' }}>
               {topTextureHotspots.length ? (
                 <HotspotList title="纹理内存 Top 5" items={topTextureHotspots} />
@@ -1504,13 +1502,10 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
                 <HotspotList title="网格内存 Top 5" items={topMeshHotspots} />
               ) : null}
             </Space>
-          </Space>
+          </CollapsibleSection>
         ) : null}
         {hasLifecycleInsights ? (
-          <Space direction="vertical" size={12} style={{ width: '100%' }}>
-            <Typography.Title level={5} style={{ margin: 0 }}>
-              生命周期洞察
-            </Typography.Title>
+          <CollapsibleSection title="生命周期洞察" contentStyle={{ width: '100%' }}>
             <Space wrap size={16} style={{ width: '100%' }}>
               {lifecycleTextures.length ? (
                 <LifecycleList title="长驻纹理" items={lifecycleTextures} />
@@ -1525,7 +1520,7 @@ export default function ResourceExplorer({ frame, serverBaseUrl }: ResourceExplo
                 <LifecycleList title="长驻网格" items={lifecycleMeshes} />
               ) : null}
             </Space>
-          </Space>
+          </CollapsibleSection>
         ) : null}
         <Collapse
           bordered={false}
