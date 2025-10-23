@@ -222,6 +222,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
   const [networkInfo, setNetworkInfo] = useState<NetworkInfoResponse | null>(null);
   const [serverConfig, setServerConfig] = useState<ServerConfig>(DEFAULT_SERVER_CONFIG);
   const [isConfigLoading, setIsConfigLoading] = useState(false);
+  const [isSessionsLoading, setIsSessionsLoading] = useState(false);
 
   const maxSessionFrames = resolveFrameLimit(serverConfig?.history?.maxSessionFrames);
   const loadedSessionIdsRef = useRef<Set<string>>(new Set());
@@ -231,6 +232,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
       setSessions([]);
       setNetworkInfo(null);
       setConnectionState('disconnected');
+      setIsSessionsLoading(false);
     }
   }, [serverBaseUrl]);
 
@@ -340,8 +342,13 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
     if (!serverBaseUrl) return;
     setConnectionState('connecting');
 
+    let cancelled = false;
+
     async function bootstrapSessions() {
-      setSessions([]);
+      if (!cancelled) {
+        setSessions([]);
+        setIsSessionsLoading(true);
+      }
       loadedSessionIdsRef.current.clear();
       try {
         const response = await fetch(`${serverBaseUrl}/sessions`);
@@ -349,19 +356,33 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
           throw new Error(`Failed to fetch sessions: ${response.statusText}`);
         }
         const initialSessions: TelemetrySession[] = await response.json();
-        setSessions(initialSessions.map((session) => normalizeSession(session, maxSessionFrames)));
+        if (!cancelled) {
+          setSessions(initialSessions.map((session) => normalizeSession(session, maxSessionFrames)));
+        }
         if (initialSessions.length > 0) {
           const newest = initialSessions[initialSessions.length - 1];
           loadSessionDetails(newest.id).catch((error) => console.error(error));
         }
-        setConnectionState((state) => (state === 'connecting' ? 'connected' : state));
+        if (!cancelled) {
+          setConnectionState((state) => (state === 'connecting' ? 'connected' : state));
+        }
       } catch (error) {
         console.error(error);
-        setConnectionState('error');
+        if (!cancelled) {
+          setConnectionState('error');
+        }
+      } finally {
+        if (!cancelled) {
+          setIsSessionsLoading(false);
+        }
       }
     }
 
     bootstrapSessions();
+
+    return () => {
+      cancelled = true;
+    };
   }, [serverBaseUrl, maxSessionFrames, loadSessionDetails]);
 
   useEffect(() => {
@@ -576,6 +597,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
     networkInfo,
     serverConfig,
     isConfigLoading,
+    isSessionsLoading,
     updateServerConfig,
     clearServerHistory,
     deleteServerSession,
