@@ -124,7 +124,7 @@ namespace UnityProfileV2.Telemetry
         public static TelemetrySnapshot CreateSnapshot(int maxAssetsPerCategory, TelemetrySnapshotOptions options, TelemetryCollectionState state = null)
         {
             var normalizedOptions = NormalizeOptions(options);
-            var snapshotData = CaptureSnapshotData(normalizedOptions);
+            var snapshotData = CaptureSnapshotData(normalizedOptions, state);
             return BuildSnapshot(state, maxAssetsPerCategory, normalizedOptions, snapshotData);
         }
 
@@ -136,7 +136,7 @@ namespace UnityProfileV2.Telemetry
         public static Task<TelemetrySnapshot> CreateSnapshotAsync(int maxAssetsPerCategory, TelemetrySnapshotOptions options, TelemetryCollectionState state = null)
         {
             var normalizedOptions = NormalizeOptions(options);
-            var snapshotData = CaptureSnapshotData(normalizedOptions);
+            var snapshotData = CaptureSnapshotData(normalizedOptions, state);
             return Task.Run(() => BuildSnapshot(state, maxAssetsPerCategory, normalizedOptions, snapshotData));
         }
 
@@ -481,27 +481,37 @@ namespace UnityProfileV2.Telemetry
                 shaderVariantStats = shaderVariantStats
             };
 
-            FrameTimingInfo frameTiming = null;
             if (options.includeFrameInsights)
             {
-                frameTiming = CaptureFrameTimingInfo();
-                snapshot.frameTiming = frameTiming;
+                snapshot.frameTiming = snapshotData.frameTiming;
             }
 
             if (options.includeSystemStats)
             {
-                snapshot.memoryStats = CaptureMemoryStats(snapshotData);
-                snapshot.threadStats = CaptureThreadStats(frameTiming);
+                snapshot.memoryStats = snapshotData.memoryStats ?? new MemoryStats
+                {
+                    gc = new GarbageCollectionStats()
+                };
+                snapshot.threadStats = snapshotData.threadStats ?? new ThreadStats
+                {
+                    utilization = Array.Empty<ThreadUtilizationSample>()
+                };
             }
 
             if (options.includeAssetIo)
             {
-                snapshot.assetIo = CaptureAssetIoStats(state, snapshotData);
+                snapshot.assetIo = snapshotData.assetIo ?? new AssetIoStats
+                {
+                    recentLoads = Array.Empty<AssetLoadSample>(),
+                    resourceInstances = Array.Empty<ResourceInstanceStats>(),
+                    unloadEvents = Array.Empty<ResourceUnloadEvent>(),
+                    streamingStatuses = Array.Empty<StreamingStatus>()
+                };
             }
 
             if (options.includeEnvironment)
             {
-                snapshot.environment = CaptureEnvironmentInfo();
+                snapshot.environment = snapshotData.environment ?? new EnvironmentInfo();
             }
 
             if (state != null)
@@ -552,7 +562,7 @@ namespace UnityProfileV2.Telemetry
             }
         }
 
-        private static SnapshotData CaptureSnapshotData(TelemetrySnapshotOptions options)
+        private static SnapshotData CaptureSnapshotData(TelemetrySnapshotOptions options, TelemetryCollectionState state)
         {
             var data = new SnapshotData();
 
@@ -579,6 +589,27 @@ namespace UnityProfileV2.Telemetry
             if (options.includeShaders)
             {
                 data.shaders = CaptureShaderInfos();
+            }
+
+            if (options.includeFrameInsights)
+            {
+                data.frameTiming = CaptureFrameTimingInfo();
+            }
+
+            if (options.includeSystemStats)
+            {
+                data.memoryStats = CaptureMemoryStats(data);
+                data.threadStats = CaptureThreadStats(data.frameTiming);
+            }
+
+            if (options.includeAssetIo)
+            {
+                data.assetIo = CaptureAssetIoStats(state, data);
+            }
+
+            if (options.includeEnvironment)
+            {
+                data.environment = CaptureEnvironmentInfo();
             }
 
             return data;
@@ -887,6 +918,11 @@ namespace UnityProfileV2.Telemetry
             public RenderTextureInfo[] renderTextures = Array.Empty<RenderTextureInfo>();
             public MaterialInfo[] materials = Array.Empty<MaterialInfo>();
             public ShaderInfo[] shaders = Array.Empty<ShaderInfo>();
+            public FrameTimingInfo frameTiming;
+            public MemoryStats memoryStats;
+            public ThreadStats threadStats;
+            public AssetIoStats assetIo;
+            public EnvironmentInfo environment;
         }
 
         private struct CachedEntry<TInfo, TSignature>
