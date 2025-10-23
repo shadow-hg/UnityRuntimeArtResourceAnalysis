@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Badge,
   Button,
@@ -727,6 +727,7 @@ export default function App() {
     networkInfo,
     serverConfig,
     isConfigLoading,
+    isSessionsLoading,
     updateServerConfig,
     clearServerHistory,
     deleteServerSession,
@@ -736,6 +737,7 @@ export default function App() {
   const [isDarkMode, setIsDarkMode] = usePreferredDarkMode();
   const algorithm = isDarkMode ? theme.darkAlgorithm : theme.defaultAlgorithm;
   const [messageApi, contextHolder] = message.useMessage();
+  const loadingMessageKeyRef = useRef('telemetry-sessions-loading');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [isClearingHistory, setIsClearingHistory] = useState(false);
@@ -885,6 +887,24 @@ export default function App() {
     window.localStorage.setItem('unityProfile:theme', isDarkMode ? 'dark' : 'light');
     document.body.setAttribute('data-theme', isDarkMode ? 'dark' : 'light');
   }, [isDarkMode]);
+
+  useEffect(() => {
+    const key = loadingMessageKeyRef.current;
+    if (isSessionsLoading) {
+      messageApi.open({
+        type: 'loading',
+        content: '历史数据库加载中，请稍候…',
+        key,
+        duration: 0,
+      });
+    } else {
+      messageApi.destroy(key);
+    }
+
+    return () => {
+      messageApi.destroy(key);
+    };
+  }, [isSessionsLoading, messageApi]);
 
   return (
     <ConfigProvider
