@@ -43,6 +43,10 @@ interface ServerSettingsFormValues {
   includeRenderTextures: boolean;
   includeMaterials: boolean;
   includeShaders: boolean;
+  includeFrameInsights: boolean;
+  includeSystemStats: boolean;
+  includeAssetIo: boolean;
+  includeEnvironment: boolean;
   maxSessionFrames: number;
 }
 
@@ -57,6 +61,10 @@ const DEFAULT_FORM_VALUES: ServerSettingsFormValues = {
   includeRenderTextures: true,
   includeMaterials: true,
   includeShaders: true,
+  includeFrameInsights: true,
+  includeSystemStats: true,
+  includeAssetIo: true,
+  includeEnvironment: true,
   maxSessionFrames: 10000,
 };
 
@@ -65,6 +73,7 @@ function buildInitialValues(config: ServerConfig | null): ServerSettingsFormValu
     return { ...DEFAULT_FORM_VALUES };
   }
   const categories = config.clientDefaults?.assetCategories;
+  const telemetrySections = config.clientDefaults?.telemetrySections;
   return {
     sampleIntervalSeconds: config.clientDefaults?.sampleIntervalSeconds ?? DEFAULT_FORM_VALUES.sampleIntervalSeconds,
     framePreviewScale: config.clientDefaults?.framePreviewScale ?? DEFAULT_FORM_VALUES.framePreviewScale,
@@ -77,6 +86,10 @@ function buildInitialValues(config: ServerConfig | null): ServerSettingsFormValu
     includeRenderTextures: categories?.includeRenderTextures ?? DEFAULT_FORM_VALUES.includeRenderTextures,
     includeMaterials: categories?.includeMaterials ?? DEFAULT_FORM_VALUES.includeMaterials,
     includeShaders: categories?.includeShaders ?? DEFAULT_FORM_VALUES.includeShaders,
+    includeFrameInsights: telemetrySections?.includeFrameInsights ?? DEFAULT_FORM_VALUES.includeFrameInsights,
+    includeSystemStats: telemetrySections?.includeSystemStats ?? DEFAULT_FORM_VALUES.includeSystemStats,
+    includeAssetIo: telemetrySections?.includeAssetIo ?? DEFAULT_FORM_VALUES.includeAssetIo,
+    includeEnvironment: telemetrySections?.includeEnvironment ?? DEFAULT_FORM_VALUES.includeEnvironment,
     maxSessionFrames: config.history?.maxSessionFrames ?? DEFAULT_FORM_VALUES.maxSessionFrames,
   };
 }
@@ -101,6 +114,12 @@ async function submitForm(
         includeRenderTextures: values.includeRenderTextures,
         includeMaterials: values.includeMaterials,
         includeShaders: values.includeShaders,
+      },
+      telemetrySections: {
+        includeFrameInsights: values.includeFrameInsights,
+        includeSystemStats: values.includeSystemStats,
+        includeAssetIo: values.includeAssetIo,
+        includeEnvironment: values.includeEnvironment,
       },
     },
     history: {
@@ -308,6 +327,50 @@ export default function ServerSettingsModal({
                 label="采集着色器数据"
                 name="includeShaders"
                 tooltip="关闭后客户端将跳过着色器资源的采集"
+                valuePropName="checked"
+              >
+                <Switch checkedChildren="开启" unCheckedChildren="关闭" />
+              </Form.Item>
+            </Col>
+          </Row>
+
+          <Typography.Title level={5}>性能数据采集</Typography.Title>
+          <Row gutter={[16, 16]}>
+            <Col xs={24} sm={12} lg={6}>
+              <Form.Item
+                label="帧执行明细"
+                name="includeFrameInsights"
+                tooltip="关闭后将不会采集 CPU/GPU 耗时与渲染阶段细节"
+                valuePropName="checked"
+              >
+                <Switch checkedChildren="开启" unCheckedChildren="关闭" />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={12} lg={6}>
+              <Form.Item
+                label="系统占用"
+                name="includeSystemStats"
+                tooltip="关闭后将不会采集内存、GC 与线程利用率数据"
+                valuePropName="checked"
+              >
+                <Switch checkedChildren="开启" unCheckedChildren="关闭" />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={12} lg={6}>
+              <Form.Item
+                label="资产 IO"
+                name="includeAssetIo"
+                tooltip="关闭后将不会采集资源加载与卸载的统计信息"
+                valuePropName="checked"
+              >
+                <Switch checkedChildren="开启" unCheckedChildren="关闭" />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={12} lg={6}>
+              <Form.Item
+                label="运行环境"
+                name="includeEnvironment"
+                tooltip="关闭后将不会采集设备、场景及玩家位置信息"
                 valuePropName="checked"
               >
                 <Switch checkedChildren="开启" unCheckedChildren="关闭" />

@@ -12,6 +12,12 @@
       "includeRenderTextures": true,
       "includeMaterials": true,
       "includeShaders": true
+    },
+    "telemetrySections": {
+      "includeFrameInsights": true,
+      "includeSystemStats": true,
+      "includeAssetIo": true,
+      "includeEnvironment": true
     }
   },
   "history": {

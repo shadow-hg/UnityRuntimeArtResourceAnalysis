@@ -17,13 +17,24 @@ function formatPosition(position: EnvironmentInfo['playerPosition']): string | n
   return null;
 }
 
-function normalizeExtra(extra: Record<string, unknown> | null | undefined) {
-  if (!extra || typeof extra !== 'object') {
+function normalizeExtra(extra: EnvironmentInfo['extra']) {
+  if (!extra) {
     return [] as Array<{ key: string; value: unknown }>;
   }
-  return Object.entries(extra)
-    .filter(([key]) => typeof key === 'string' && key.length > 0)
-    .map(([key, value]) => ({ key, value }));
+
+  if (Array.isArray(extra)) {
+    return extra
+      .filter((entry) => Boolean(entry && typeof entry.key === 'string' && entry.key.length > 0))
+      .map((entry) => ({ key: entry.key, value: entry.value }));
+  }
+
+  if (typeof extra === 'object') {
+    return Object.entries(extra)
+      .filter(([key]) => typeof key === 'string' && key.length > 0)
+      .map(([key, value]) => ({ key, value }));
+  }
+
+  return [];
 }
 
 export default function EnvironmentPanel({ frame }: EnvironmentPanelProps) {
