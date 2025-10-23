@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
-import { Avatar, Badge, Empty, List, Space, Tag, Typography } from 'antd';
-import type { TelemetrySession } from '../types';
+import { Avatar, Badge, Empty, List, Segmented, Select, Space, Tag, Typography } from 'antd';
+import type { TelemetrySession, SessionSortOrder, SessionStatusFilter } from '../types';
 import { resolveSessionIp } from '../utils/session';
 import dayjs from 'dayjs';
 
@@ -11,9 +11,27 @@ interface SessionSidebarProps {
   clientIps: { ip: string; sessionCount: number; activeSessionCount: number }[];
   selectedClientIp: string | null;
   onSelectClientIp: (ip: string | null) => void;
+  sortOrder: SessionSortOrder;
+  onChangeSortOrder: (order: SessionSortOrder) => void;
+  statusFilter: SessionStatusFilter;
+  onChangeStatusFilter: (filter: SessionStatusFilter) => void;
+  statusCounts: Record<SessionStatusFilter, number>;
 }
 
 const { CheckableTag } = Tag;
+
+const statusFilterLabels: Record<SessionStatusFilter, string> = {
+  all: '性能数据会话',
+  active: '实时会话',
+  closed: '已结束会话',
+};
+
+const sortSelectOptions: { label: string; value: SessionSortOrder }[] = [
+  { label: '按最新时间 (降序)', value: 'newest' },
+  { label: '按最早时间 (升序)', value: 'oldest' },
+  { label: '帧数最多优先', value: 'frames-desc' },
+  { label: '帧数最少优先', value: 'frames-asc' },
+];
 
 function SessionItem({ session, isActive, onSelect }: { session: TelemetrySession; isActive: boolean; onSelect: () => void }) {
   const title = (session.client?.productName as string) ?? 'Unknown Product';
@@ -86,23 +104,53 @@ export default function SessionSidebar({
   clientIps,
   selectedClientIp,
   onSelectClientIp,
+  sortOrder,
+  onChangeSortOrder,
+  statusFilter,
+  onChangeStatusFilter,
+  statusCounts,
 }: SessionSidebarProps) {
-  const sortedSessions = useMemo(
-    () => [...sessions].sort((a, b) => dayjs(b.createdAt).valueOf() - dayjs(a.createdAt).valueOf()),
-    [sessions]
+  const statusSegmentOptions = useMemo(
+    () => [
+      { label: `全部 (${statusCounts.all})`, value: 'all' as const },
+      { label: `实时 (${statusCounts.active})`, value: 'active' as const },
+      { label: `已结束 (${statusCounts.closed})`, value: 'closed' as const },
+    ],
+    [statusCounts]
   );
   const emptyDescription = selectedClientIp
-    ? `IP ${selectedClientIp} 暂无历史记录`
-    : '暂无性能数据会话';
+    ? `IP ${selectedClientIp} 暂无${statusFilterLabels[statusFilter]}`
+    : `暂无${statusFilterLabels[statusFilter]}`;
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ padding: '0 16px' }}>
-        <Space direction="vertical" size={4} style={{ width: '100%' }}>
-          <Typography.Text type="secondary">游戏客户端 IP</Typography.Text>
-          <Typography.Text style={{ fontSize: 16, fontWeight: 600 }}>
-            {selectedClientIp ?? '全部客户端'}
-          </Typography.Text>
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Space direction="vertical" size={4} style={{ width: '100%' }}>
+            <Typography.Text type="secondary">历史记录分类</Typography.Text>
+            <Segmented
+              block
+              value={statusFilter}
+              options={statusSegmentOptions}
+              onChange={(value) => onChangeStatusFilter(value as SessionStatusFilter)}
+            />
+          </Space>
+          <Space direction="vertical" size={4} style={{ width: '100%' }}>
+            <Typography.Text type="secondary">排序方式</Typography.Text>
+            <Select<SessionSortOrder>
+              value={sortOrder}
+              options={sortSelectOptions}
+              onChange={(value) => onChangeSortOrder(value)}
+              size="small"
+              style={{ width: '100%' }}
+            />
+          </Space>
+          <Space direction="vertical" size={4} style={{ width: '100%' }}>
+            <Typography.Text type="secondary">游戏客户端 IP</Typography.Text>
+            <Typography.Text style={{ fontSize: 16, fontWeight: 600 }}>
+              {selectedClientIp ?? '全部客户端'}
+            </Typography.Text>
+          </Space>
         </Space>
         <div
           style={{
@@ -177,11 +225,11 @@ export default function SessionSidebar({
         </div>
       </div>
       <div style={{ flex: 1, overflowY: 'auto' }}>
-        {sortedSessions.length === 0 ? (
+        {sessions.length === 0 ? (
           <Empty description={emptyDescription} style={{ marginTop: 80 }} />
         ) : (
           <List
-            dataSource={sortedSessions}
+            dataSource={sessions}
             renderItem={(session) => (
               <SessionItem
                 key={session.id}
