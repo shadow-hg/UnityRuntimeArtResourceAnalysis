@@ -160,6 +160,11 @@ namespace UnityProfileV2.Telemetry
                 streamingStatuses = Array.Empty<StreamingStatus>()
             };
 
+            if (!IsMainThread())
+            {
+                return stats;
+            }
+
             var asyncOperations = Resources.FindObjectsOfTypeAll(typeof(AsyncOperation));
             if (asyncOperations != null)
             {
@@ -281,6 +286,11 @@ namespace UnityProfileV2.Telemetry
 
         private static EnvironmentInfo CaptureEnvironmentInfo()
         {
+            if (!IsMainThread())
+            {
+                return new EnvironmentInfo();
+            }
+
             var info = new EnvironmentInfo
             {
                 gpuModel = SafeTrim(SystemInfo.graphicsDeviceName),
