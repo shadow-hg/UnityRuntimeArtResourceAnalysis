@@ -30,6 +30,10 @@ import SessionSidebar from './components/SessionSidebar';
 import ResourceExplorer from './components/ResourceExplorer';
 import PerformanceChart from './components/PerformanceChart';
 import ServerSettingsModal from './components/ServerSettingsModal';
+import FrameInsightsPanel from './components/FrameInsightsPanel';
+import SystemStatsPanel from './components/SystemStatsPanel';
+import AssetIoPanel from './components/AssetIoPanel';
+import EnvironmentPanel from './components/EnvironmentPanel';
 import { formatBytes, formatFps } from './utils/format';
 
 const { Header, Sider, Content } = Layout;
@@ -509,6 +513,14 @@ function AppShell({
               onSelectFrame={handleFrameSelect}
               serverBaseUrl={serverBaseUrl}
             />
+            <Flex gap={16} wrap style={{ width: '100%' }}>
+              <FrameInsightsPanel frame={selectedFrame} />
+              <SystemStatsPanel frame={selectedFrame} />
+            </Flex>
+            <Flex gap={16} wrap style={{ width: '100%' }}>
+              <AssetIoPanel frame={selectedFrame} />
+              <EnvironmentPanel frame={selectedFrame} />
+            </Flex>
             <ResourceExplorer frame={selectedFrame} serverBaseUrl={serverBaseUrl} />
           </Flex>
         </Content>

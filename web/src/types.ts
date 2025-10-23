@@ -96,6 +96,133 @@ export interface ShaderVariantStats {
   totalVariants: number;
 }
 
+export interface PipelineStageTiming {
+  stage: string;
+  timeMs?: number;
+  contributionPercent?: number;
+}
+
+export interface DrawCallStats {
+  drawCalls?: number;
+  setPassCalls?: number;
+  shadowDrawCalls?: number;
+  transparentDrawCalls?: number;
+  instancedBatches?: number;
+  dynamicBatches?: number;
+}
+
+export type BottleneckSeverity = 'info' | 'warning' | 'critical';
+
+export interface BottleneckHint {
+  type?: string;
+  message: string;
+  severity?: BottleneckSeverity;
+  source?: string;
+}
+
+export interface FrameTimingInfo {
+  cpuFrameTimeMs?: number;
+  gpuFrameTimeMs?: number;
+  cpuMainThreadTimeMs?: number;
+  cpuRenderThreadTimeMs?: number;
+  pipelineStages?: PipelineStageTiming[];
+  drawCalls?: DrawCallStats;
+  bottleneckHints?: BottleneckHint[];
+}
+
+export interface GarbageCollectionStats {
+  totalCollections?: number;
+  lastCollectionDurationMs?: number;
+  managedHeapSizeBytes?: number;
+  recentCollectionDurationMs?: number;
+}
+
+export interface MemoryStats {
+  unityHeapBytes?: number;
+  nativeMemoryBytes?: number;
+  gpuMemoryBytes?: number;
+  texturePoolBytes?: number;
+  meshPoolBytes?: number;
+  otherMemoryBytes?: number;
+  gc?: GarbageCollectionStats | null;
+}
+
+export interface ThreadUtilizationSample {
+  threadName: string;
+  utilizationPercent?: number;
+  frameTimeMs?: number;
+}
+
+export interface ThreadStats {
+  utilization?: ThreadUtilizationSample[];
+  mainThreadPercent?: number;
+  renderThreadPercent?: number;
+  jobWorkerPercent?: number;
+}
+
+export type AssetLoadStatus = 'success' | 'failed' | 'in-progress';
+
+export interface AssetLoadSample {
+  name?: string;
+  durationMs?: number;
+  status?: AssetLoadStatus;
+  sizeBytes?: number;
+  type?: string;
+  timestampUtc?: string;
+}
+
+export interface ResourceInstanceStats {
+  resourceType?: string;
+  activeCount?: number;
+  peakCount?: number;
+}
+
+export interface ResourceUnloadEvent {
+  resourceType?: string;
+  name?: string;
+  timestampUtc?: string;
+}
+
+export interface StreamingStatus {
+  type: string;
+  bufferedSeconds?: number;
+  droppedFrames?: number;
+  isStalled?: boolean;
+}
+
+export interface AssetIoStats {
+  assetBundleAverageLoadMs?: number;
+  addressableAverageLoadMs?: number;
+  asyncQueueLength?: number;
+  loadFailureRate?: number;
+  recentLoads?: AssetLoadSample[];
+  resourceInstances?: ResourceInstanceStats[];
+  unloadEvents?: ResourceUnloadEvent[];
+  streamingStatuses?: StreamingStatus[];
+}
+
+export interface PositionInfo {
+  x?: number;
+  y?: number;
+  z?: number;
+}
+
+export interface EnvironmentInfo {
+  gpuModel?: string;
+  gpuDriverVersion?: string;
+  cpuModel?: string;
+  cpuCoreCount?: number;
+  qualitySetting?: string;
+  screenResolution?: string;
+  screenRefreshRate?: number;
+  platform?: string;
+  sceneId?: string;
+  sceneName?: string;
+  playerPosition?: PositionInfo | null;
+  cameraHeight?: number;
+  extra?: Record<string, unknown>;
+}
+
 export interface TelemetrySnapshot {
   isIncremental?: boolean;
   timestampUtc: string;
@@ -120,6 +247,11 @@ export interface TelemetrySnapshot {
   shaders: ShaderInfo[];
   shaderVariantStats?: ShaderVariantStats;
   framePreview?: FramePreviewInfo | null;
+  frameTiming?: FrameTimingInfo | null;
+  memoryStats?: MemoryStats | null;
+  threadStats?: ThreadStats | null;
+  assetIo?: AssetIoStats | null;
+  environment?: EnvironmentInfo | null;
 }
 
 export interface TelemetrySession {
