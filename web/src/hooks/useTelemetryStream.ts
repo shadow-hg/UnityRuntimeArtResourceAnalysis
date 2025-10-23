@@ -5,6 +5,7 @@ import type {
   TelemetrySession,
   TelemetrySnapshot,
   ServerConfig,
+  TextureInfo,
 } from '../types';
 
 interface UseTelemetryStreamOptions {
@@ -79,6 +80,84 @@ function ensureBoolean(value: unknown, fallback: boolean): boolean {
     }
   }
   return fallback;
+}
+
+function getTextureId(texture: TextureInfo | null | undefined): string | null {
+  if (!texture) {
+    return null;
+  }
+  const id = typeof texture.textureId === 'string' ? texture.textureId.trim() : '';
+  if (id.length > 0) {
+    return id;
+  }
+  return null;
+}
+
+function isTextureReference(texture: TextureInfo | null | undefined): boolean {
+  if (!texture) {
+    return false;
+  }
+  if ((texture as { __textureRef?: boolean }).__textureRef) {
+    return true;
+  }
+  if (!Number.isFinite(texture.EstimatedBytes ?? Number.NaN)) {
+    return true;
+  }
+  return false;
+}
+
+function hydrateTextureFromCache(
+  texture: TextureInfo,
+  cache: Map<string, TextureInfo>
+): TextureInfo {
+  if (!isTextureReference(texture)) {
+    const id = getTextureId(texture);
+    if (id && !cache.has(id)) {
+      cache.set(id, { ...texture, textureId: texture.textureId ?? id });
+    }
+    return texture;
+  }
+  const textureId = getTextureId(texture);
+  if (!textureId) {
+    return texture;
+  }
+  const cached = cache.get(textureId);
+  if (!cached) {
+    return texture;
+  }
+  const next: TextureInfo = {
+    ...cached,
+    textureId: cached.textureId ?? textureId,
+  };
+  if (texture.instanceId != null) {
+    next.instanceId = texture.instanceId;
+  }
+  return next;
+}
+
+function hydrateFrameTexturesFromCache(
+  frame: TelemetrySnapshot,
+  cache: Map<string, TextureInfo>
+): TelemetrySnapshot {
+  if (!Array.isArray(frame.textures) || frame.textures.length === 0) {
+    return frame;
+  }
+  let changed = false;
+  const hydratedTextures = frame.textures.map((texture) => {
+    const source = texture ?? ({} as TextureInfo);
+    const hydrated = hydrateTextureFromCache(source, cache);
+    if (hydrated !== source) {
+      changed = true;
+    }
+    return hydrated;
+  });
+  if (!changed) {
+    return frame;
+  }
+  return {
+    ...frame,
+    textures: hydratedTextures,
+  };
 }
 
 function sanitizeServerConfig(rawConfig: Partial<ServerConfig> | null | undefined): ServerConfig {
@@ -226,6 +305,19 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
 
   const maxSessionFrames = resolveFrameLimit(serverConfig?.history?.maxSessionFrames);
   const loadedSessionIdsRef = useRef<Set<string>>(new Set());
+  const sessionTextureCacheRef = useRef<Map<string, Map<string, TextureInfo>>>(new Map());
+
+  const getSessionTextureCache = useCallback(
+    (sessionId: string): Map<string, TextureInfo> => {
+      let cache = sessionTextureCacheRef.current.get(sessionId);
+      if (!cache) {
+        cache = new Map<string, TextureInfo>();
+        sessionTextureCacheRef.current.set(sessionId, cache);
+      }
+      return cache;
+    },
+    []
+  );
 
   useEffect(() => {
     if (!serverBaseUrl) {
@@ -233,6 +325,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
       setNetworkInfo(null);
       setConnectionState('disconnected');
       setIsSessionsLoading(false);
+      sessionTextureCacheRef.current.clear();
     }
   }, [serverBaseUrl]);
 
@@ -297,7 +390,9 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
       }
 
       try {
-        const response = await fetch(`${serverBaseUrl}/sessions/${encodeURIComponent(sessionId)}`);
+        const response = await fetch(
+          `${serverBaseUrl}/sessions/${encodeURIComponent(sessionId)}?hydrateTextures=false`
+        );
         if (response.status === 404) {
           loadedSessionIdsRef.current.delete(sessionId);
           return null;
@@ -307,31 +402,38 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
         }
         const payload = (await response.json()) as TelemetrySession;
         const normalized = normalizeSession(payload, maxSessionFrames);
+        const cache = getSessionTextureCache(sessionId);
+        const frames = Array.isArray(normalized.frames) ? normalized.frames : [];
+        const hydratedFrames = frames.map((frame) => hydrateFrameTexturesFromCache(frame, cache));
+        const shouldReplaceFrames = hydratedFrames.some((frame, index) => frame !== frames[index]);
+        const nextSession = shouldReplaceFrames
+          ? { ...normalized, frames: hydratedFrames }
+          : normalized;
         loadedSessionIdsRef.current.add(sessionId);
         setSessions((prev) => {
           let found = false;
           const next = prev.map((session) => {
-            if (session.id !== normalized.id) {
+            if (session.id !== nextSession.id) {
               return session;
             }
             found = true;
             return {
               ...session,
-              ...normalized,
+              ...nextSession,
             };
           });
           if (!found) {
-            next.push(normalized);
+            next.push(nextSession);
           }
           return next;
         });
-        return normalized;
+        return nextSession;
       } catch (error) {
         console.error(error);
         return null;
       }
     },
-    [serverBaseUrl, maxSessionFrames]
+    [serverBaseUrl, maxSessionFrames, getSessionTextureCache]
   );
 
   useEffect(() => {
@@ -447,8 +549,10 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
             return session;
           }
 
+          const cache = getSessionTextureCache(payload.sessionId);
+          const incomingFrame = hydrateFrameTexturesFromCache(payload.frame, cache);
           const previousTrimmed = session.trimmedFrameCount ?? 0;
-          let frames = [...(session.frames ?? []), payload.frame];
+          let frames = [...(session.frames ?? []), incomingFrame];
           let removed = payload.removedFrameCount;
           let nextTrimmed = payload.trimmedFrameCount ?? previousTrimmed;
 
@@ -492,6 +596,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
     function handleHistoryCleared() {
       setSessions([]);
       loadedSessionIdsRef.current.clear();
+      sessionTextureCacheRef.current.clear();
     }
 
     function handleSessionDeleted(payload: { sessionId?: string } | undefined) {
@@ -501,6 +606,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
       }
       setSessions((prev) => prev.filter((session) => session.id !== sessionId));
       loadedSessionIdsRef.current.delete(sessionId);
+      sessionTextureCacheRef.current.delete(sessionId);
     }
 
     socket.on('connect', handleConnect);
@@ -526,6 +632,65 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
       socket.disconnect();
     };
   }, [socket, maxSessionFrames, applyServerConfig]);
+
+  const ensureSessionTextures = useCallback(
+    async (sessionId: string, textureIds: string[]) => {
+      if (!serverBaseUrl || !sessionId || !Array.isArray(textureIds) || textureIds.length === 0) {
+        return;
+      }
+
+      const cache = getSessionTextureCache(sessionId);
+      const normalizedIds = Array.from(
+        new Set(
+          textureIds
+            .map((id) => (typeof id === 'string' ? id.trim() : ''))
+            .filter((id) => id.length > 0)
+        )
+      );
+
+      const missing = normalizedIds.filter((id) => !cache.has(id));
+
+      if (missing.length > 0) {
+        const query = missing.map((id) => encodeURIComponent(id)).join(',');
+        const response = await fetch(
+          `${serverBaseUrl}/sessions/${encodeURIComponent(sessionId)}/textures?ids=${query}`
+        );
+        if (!response.ok) {
+          throw new Error(`Failed to load textures for session ${sessionId}: ${response.statusText}`);
+        }
+        const payload = (await response.json()) as { textures?: TextureInfo[] };
+        const textures = Array.isArray(payload?.textures) ? payload.textures : [];
+        textures.forEach((texture) => {
+          const id = getTextureId(texture);
+          if (!id) {
+            return;
+          }
+          cache.set(id, { ...texture, textureId: texture.textureId ?? id });
+        });
+      }
+
+      setSessions((prev) =>
+        prev.map((session) => {
+          if (session.id !== sessionId) {
+            return session;
+          }
+          if (!Array.isArray(session.frames) || session.frames.length === 0) {
+            return session;
+          }
+          const hydratedFrames = session.frames.map((frame) => hydrateFrameTexturesFromCache(frame, cache));
+          const changed = hydratedFrames.some((frame, index) => frame !== session.frames?.[index]);
+          if (!changed) {
+            return session;
+          }
+          return {
+            ...session,
+            frames: hydratedFrames,
+          };
+        })
+      );
+    },
+    [serverBaseUrl, getSessionTextureCache]
+  );
 
   const updateServerConfig = useCallback(
     async (partialConfig: Partial<ServerConfig>) => {
@@ -565,6 +730,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
 
     setSessions([]);
     loadedSessionIdsRef.current.clear();
+    sessionTextureCacheRef.current.clear();
   }, [serverBaseUrl]);
 
   const deleteServerSession = useCallback(
@@ -587,6 +753,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
 
       setSessions((prev) => prev.filter((session) => session.id !== sessionId));
       loadedSessionIdsRef.current.delete(sessionId);
+      sessionTextureCacheRef.current.delete(sessionId);
     },
     [serverBaseUrl]
   );
@@ -603,5 +770,6 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
     deleteServerSession,
     refreshServerConfig,
     loadSessionDetails,
+    ensureSessionTextures,
   };
 }
