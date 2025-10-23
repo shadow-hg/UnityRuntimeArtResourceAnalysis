@@ -1,5 +1,7 @@
-export function formatBytes(bytes: number): string {
-  if (!bytes || bytes < 0) return '0 B';
+export function formatBytes(bytes: number | null | undefined): string {
+  if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes <= 0) {
+    return '0 B';
+  }
   const units = ['B', 'KB', 'MB', 'GB'];
   const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   const value = bytes / Math.pow(1024, exponent);
@@ -24,4 +26,18 @@ export function formatInteger(value: number | null | undefined, fallback = '0'):
     return fallback;
   }
   return rounded.toLocaleString();
+}
+
+export function formatMilliseconds(value: number | null | undefined, fractionDigits = 1): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return '—';
+  }
+  return `${value.toFixed(fractionDigits)} ms`;
+}
+
+export function formatSeconds(value: number | null | undefined, fractionDigits = 1): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return '—';
+  }
+  return `${value.toFixed(fractionDigits)} s`;
 }

@@ -102,6 +102,20 @@ function cloneArray(items) {
   });
 }
 
+function deepClone(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => deepClone(item));
+  }
+  if (value && typeof value === 'object') {
+    const cloned = {};
+    for (const [key, entry] of Object.entries(value)) {
+      cloned[key] = deepClone(entry);
+    }
+    return cloned;
+  }
+  return value;
+}
+
 function ensureFiniteNumber(value, fallback = 0) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : fallback;
@@ -150,6 +164,11 @@ function sanitizeFramePayload(payload) {
     totalShaderBytes = 0,
     shaderMemoryBytes = 0,
     isIncremental = false,
+    frameTiming = null,
+    memoryStats = null,
+    threadStats = null,
+    assetIo = null,
+    environment = null,
     ...rest
   } = payload ?? {};
   const preview =
@@ -173,6 +192,11 @@ function sanitizeFramePayload(payload) {
     totalShaderBytes: ensureFiniteNumber(totalShaderBytes, 0),
     shaderMemoryBytes: ensureFiniteNumber(shaderMemoryBytes, 0),
     shaderVariantStats: normalizeShaderVariantStats(shaderVariantStats),
+    frameTiming: frameTiming && typeof frameTiming === 'object' ? deepClone(frameTiming) : null,
+    memoryStats: memoryStats && typeof memoryStats === 'object' ? deepClone(memoryStats) : null,
+    threadStats: threadStats && typeof threadStats === 'object' ? deepClone(threadStats) : null,
+    assetIo: assetIo && typeof assetIo === 'object' ? deepClone(assetIo) : null,
+    environment: environment && typeof environment === 'object' ? deepClone(environment) : null,
   };
 }
 
@@ -375,6 +399,19 @@ async function expandIncrementalFrame(sessionId, frame) {
   normalizedFrame.shaders = shaderDelta.items;
   normalizedFrame.shaderOrder = shaderDelta.order;
   normalizedFrame.isIncremental = false;
+
+  const carryForward = (key) => {
+    if (normalizedFrame[key] != null) {
+      return;
+    }
+    const previousValue = previousFrame[key];
+    if (previousValue == null) {
+      return;
+    }
+    normalizedFrame[key] = deepClone(previousValue);
+  };
+
+  ['frameTiming', 'memoryStats', 'threadStats', 'assetIo', 'environment'].forEach((key) => carryForward(key));
 
   updateTotals();
 
