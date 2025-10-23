@@ -110,6 +110,7 @@ export default function FrameInsightsPanel({ frame }: FrameInsightsPanelProps) {
       title={<Typography.Text strong>帧执行明细</Typography.Text>}
       style={{ flex: 1, minWidth: 320 }}
       bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 16 }}
+      collapseMode="compact"
     >
       {!hasTimingData ? (
         <Empty description="暂无帧执行数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />

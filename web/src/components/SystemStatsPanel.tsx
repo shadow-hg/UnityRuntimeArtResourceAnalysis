@@ -96,6 +96,7 @@ export default function SystemStatsPanel({ frame }: SystemStatsPanelProps) {
       title={<Typography.Text strong>系统与资源占用</Typography.Text>}
       style={{ flex: 1, minWidth: 320 }}
       bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 16 }}
+      collapseMode="compact"
     >
       {!hasAnyData ? (
         <Empty description="暂无系统占用数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />

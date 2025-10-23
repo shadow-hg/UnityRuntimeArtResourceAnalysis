@@ -77,6 +77,7 @@ export default function AssetIoPanel({ frame }: AssetIoPanelProps) {
       title={<Typography.Text strong>资产生命周期与 IO</Typography.Text>}
       style={{ flex: 1, minWidth: 320 }}
       bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 16 }}
+      collapseMode="compact"
     >
       {!hasAnyData ? (
         <Empty description="暂无资产 IO 数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />

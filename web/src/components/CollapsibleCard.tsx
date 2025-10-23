@@ -1,13 +1,14 @@
 import { CaretDownOutlined, CaretUpOutlined } from '@ant-design/icons';
-import { Button, Card, Space } from 'antd';
+import { Button, Card, Space, theme } from 'antd';
 import type { CardProps } from 'antd';
-import type { ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import { useCallback, useMemo, useState } from 'react';
 
 export interface CollapsibleCardProps extends CardProps {
   title: ReactNode;
   defaultCollapsed?: boolean;
   collapsible?: boolean;
+  collapseMode?: 'hidden' | 'compact';
   onCollapseChange?: (collapsed: boolean) => void;
 }
 
@@ -15,6 +16,7 @@ export default function CollapsibleCard({
   title,
   defaultCollapsed = false,
   collapsible = true,
+  collapseMode = 'hidden',
   onCollapseChange,
   extra,
   bodyStyle,
@@ -22,6 +24,7 @@ export default function CollapsibleCard({
   children,
   ...cardProps
 }: CollapsibleCardProps) {
+  const { token } = theme.useToken();
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
 
   const handleToggle = useCallback(() => {
@@ -90,15 +93,81 @@ export default function CollapsibleCard({
     );
   }, [title, extra, collapseButton]);
 
+  const { contentBodyStyle, wrapperStyle, cardBodyStyle } = useMemo(() => {
+    if (collapseMode !== 'compact') {
+      return {
+        contentBodyStyle: undefined,
+        wrapperStyle: undefined,
+        cardBodyStyle: collapsed ? { ...(bodyStyle ?? {}), padding: 0 } : bodyStyle,
+      };
+    }
+
+    const originalBodyStyle: CSSProperties = bodyStyle ? { ...bodyStyle } : {};
+    const {
+      padding,
+      paddingTop,
+      paddingRight,
+      paddingBottom,
+      paddingLeft,
+      ...restBodyStyle
+    } = originalBodyStyle;
+
+    const defaultPadding = typeof token.paddingLG === 'number' ? token.paddingLG : 24;
+    const resolvedPadding = padding !== undefined ? padding : defaultPadding;
+
+    const collapsibleWrapperStyle: CSSProperties = {
+      overflow: 'hidden',
+      width: '100%',
+      boxSizing: 'border-box',
+      transition: 'max-height 0.3s ease, padding-top 0.3s ease, padding-bottom 0.3s ease, opacity 0.2s ease',
+      maxHeight: collapsed ? 0 : 9999,
+      opacity: collapsed ? 0 : 1,
+      pointerEvents: collapsed ? 'none' : 'auto',
+      padding: resolvedPadding,
+    };
+
+    if (paddingLeft !== undefined) {
+      collapsibleWrapperStyle.paddingLeft = paddingLeft;
+    }
+    if (paddingRight !== undefined) {
+      collapsibleWrapperStyle.paddingRight = paddingRight;
+    }
+    if (collapsed) {
+      collapsibleWrapperStyle.paddingTop = 0;
+      collapsibleWrapperStyle.paddingBottom = 0;
+    } else {
+      if (paddingTop !== undefined) {
+        collapsibleWrapperStyle.paddingTop = paddingTop;
+      }
+      if (paddingBottom !== undefined) {
+        collapsibleWrapperStyle.paddingBottom = paddingBottom;
+      }
+    }
+
+    return {
+      contentBodyStyle: restBodyStyle,
+      wrapperStyle: collapsibleWrapperStyle,
+      cardBodyStyle: { padding: 0 },
+    };
+  }, [bodyStyle, collapseMode, collapsed, token.paddingLG]);
+
+  const contentStyle = contentBodyStyle ? { ...contentBodyStyle } : {};
+
   return (
     <Card
       {...cardProps}
       title={header}
       extra={undefined}
       headStyle={headStyle}
-      bodyStyle={collapsed ? { ...(bodyStyle ?? {}), padding: 0 } : bodyStyle}
+      bodyStyle={cardBodyStyle}
     >
-      {collapsed ? null : children}
+      {collapseMode === 'compact' ? (
+        <div style={wrapperStyle} aria-hidden={collapsed}>
+          <div style={{ width: '100%', ...contentStyle }}>{children}</div>
+        </div>
+      ) : collapsed ? null : (
+        children
+      )}
     </Card>
   );
 }
