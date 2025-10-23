@@ -26,7 +26,14 @@ import {
   SettingOutlined,
 } from '@ant-design/icons';
 import { useTelemetryStream } from './hooks/useTelemetryStream';
-import type { NetworkInfoResponse, ServerConfig, TelemetrySession, TelemetrySnapshot } from './types';
+import type {
+  NetworkInfoResponse,
+  ServerConfig,
+  TelemetrySession,
+  TelemetrySnapshot,
+  SessionSortOrder,
+  SessionStatusFilter,
+} from './types';
 import SessionSidebar from './components/SessionSidebar';
 import ResourceExplorer from './components/ResourceExplorer';
 import PerformanceChart from './components/PerformanceChart';
@@ -116,6 +123,23 @@ function resolveSessionIp(session: TelemetrySession): string {
   return UNKNOWN_IP_LABEL;
 }
 
+function resolveTotalFrameCount(session: TelemetrySession): number {
+  const trimmed = typeof session.trimmedFrameCount === 'number' && Number.isFinite(session.trimmedFrameCount)
+    ? session.trimmedFrameCount
+    : 0;
+  const visibleFrames = Array.isArray(session.frames) ? session.frames.length : 0;
+  const total =
+    typeof session.totalFrameCount === 'number' && Number.isFinite(session.totalFrameCount)
+      ? session.totalFrameCount
+      : trimmed + visibleFrames;
+  return total;
+}
+
+function resolveSessionTimestamp(session: TelemetrySession): number {
+  const timestamp = new Date(session.createdAt).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
 const connectionBadgeMeta: Record<
   ReturnType<typeof useTelemetryStream>['connectionState'],
   { status: 'success' | 'processing' | 'default' | 'error'; text: string }
@@ -172,10 +196,6 @@ function AppShell({
   onToggleConnection,
   onExportGlobalReport,
 }: AppShellProps) {
-  const sortedSessions = useMemo(
-    () => [...sessions].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
-    [sessions]
-  );
   const serverDisplayUrl = useMemo(
     () => (serverBaseUrl ? deriveDisplayServerUrl(networkInfo, serverBaseUrl) : '未连接'),
     [networkInfo, serverBaseUrl]
@@ -184,6 +204,8 @@ function AppShell({
   const [selectedFrame, setSelectedFrame] = useState<TelemetrySnapshot | null>(null);
   const [isAutoFollowLatest, setIsAutoFollowLatest] = useState(true);
   const [selectedClientIp, setSelectedClientIp] = useState<string | null>(null);
+  const [sessionSortOrder, setSessionSortOrder] = useState<SessionSortOrder>('newest');
+  const [sessionStatusFilter, setSessionStatusFilter] = useState<SessionStatusFilter>('all');
   const [samplingIntervalMs, setSamplingIntervalMs] = useState<number>(
     () => Math.max(0, (serverConfig?.clientDefaults?.sampleIntervalSeconds ?? 0) * 1000)
   );
@@ -197,10 +219,41 @@ function AppShell({
     });
   }, [serverConfig]);
 
+  const statusCounts = useMemo<Record<SessionStatusFilter, number>>(() => {
+    const basePool = selectedClientIp
+      ? sessions.filter((session) => resolveSessionIp(session) === selectedClientIp)
+      : sessions;
+    let active = 0;
+    let closed = 0;
+    basePool.forEach((session) => {
+      if (session.closedAt) {
+        closed += 1;
+      } else {
+        active += 1;
+      }
+    });
+    return {
+      all: basePool.length,
+      active,
+      closed,
+    };
+  }, [sessions, selectedClientIp]);
+
+  const statusFilteredSessions = useMemo(() => {
+    switch (sessionStatusFilter) {
+      case 'active':
+        return sessions.filter((session) => !session.closedAt);
+      case 'closed':
+        return sessions.filter((session) => Boolean(session.closedAt));
+      default:
+        return sessions;
+    }
+  }, [sessions, sessionStatusFilter]);
+
   const clientIpOptions = useMemo(
     () => {
       const map = new Map<string, { ip: string; sessionCount: number; activeSessionCount: number }>();
-      sortedSessions.forEach((session) => {
+      statusFilteredSessions.forEach((session) => {
         const ip = resolveSessionIp(session);
         const existing = map.get(ip) ?? { ip, sessionCount: 0, activeSessionCount: 0 };
         existing.sessionCount += 1;
@@ -219,15 +272,43 @@ function AppShell({
         return a.ip.localeCompare(b.ip);
       });
     },
-    [sortedSessions]
+    [statusFilteredSessions]
   );
 
-  const visibleSessions = useMemo(() => {
+  const sessionsForDisplay = useMemo(() => {
     if (!selectedClientIp) {
-      return sortedSessions;
+      return statusFilteredSessions;
     }
-    return sortedSessions.filter((session) => resolveSessionIp(session) === selectedClientIp);
-  }, [sortedSessions, selectedClientIp]);
+    return statusFilteredSessions.filter((session) => resolveSessionIp(session) === selectedClientIp);
+  }, [statusFilteredSessions, selectedClientIp]);
+
+  const visibleSessions = useMemo(() => {
+    const list = [...sessionsForDisplay];
+    list.sort((a, b) => {
+      switch (sessionSortOrder) {
+        case 'oldest':
+          return resolveSessionTimestamp(a) - resolveSessionTimestamp(b);
+        case 'frames-desc': {
+          const diff = resolveTotalFrameCount(b) - resolveTotalFrameCount(a);
+          if (diff !== 0) {
+            return diff;
+          }
+          return resolveSessionTimestamp(b) - resolveSessionTimestamp(a);
+        }
+        case 'frames-asc': {
+          const diff = resolveTotalFrameCount(a) - resolveTotalFrameCount(b);
+          if (diff !== 0) {
+            return diff;
+          }
+          return resolveSessionTimestamp(a) - resolveSessionTimestamp(b);
+        }
+        case 'newest':
+        default:
+          return resolveSessionTimestamp(b) - resolveSessionTimestamp(a);
+      }
+    });
+    return list;
+  }, [sessionsForDisplay, sessionSortOrder]);
 
   useEffect(() => {
     if (clientIpOptions.length === 0) {
@@ -508,6 +589,11 @@ function AppShell({
                 clientIps={clientIpOptions}
                 selectedClientIp={selectedClientIp}
                 onSelectClientIp={setSelectedClientIp}
+                sortOrder={sessionSortOrder}
+                onChangeSortOrder={(order) => setSessionSortOrder(order)}
+                statusFilter={sessionStatusFilter}
+                onChangeStatusFilter={(filter) => setSessionStatusFilter(filter)}
+                statusCounts={statusCounts}
               />
             </div>
           </div>

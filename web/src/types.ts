@@ -323,3 +323,7 @@ export interface ServerConfig {
   clientDefaults: ClientDefaultsConfig;
   history: HistoryConfig;
 }
+
+export type SessionSortOrder = 'newest' | 'oldest' | 'frames-desc' | 'frames-asc';
+
+export type SessionStatusFilter = 'all' | 'active' | 'closed';
