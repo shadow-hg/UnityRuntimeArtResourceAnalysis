@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "start": "node scripts/start-preview.mjs",
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview"

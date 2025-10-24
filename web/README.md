@@ -15,4 +15,10 @@ npm install
 npm run dev
 ```
 
+## Production build
+
+```bash
+npm start
+```
+
 By default the dashboard connects to `http://localhost:48080`. Override this by setting `VITE_SERVER_URL` in an `.env` file.
