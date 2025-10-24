@@ -1,5 +1,6 @@
-import { useMemo } from 'react';
-import { Avatar, Badge, Empty, Input, List, Segmented, Select, Space, Tag, Typography } from 'antd';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Avatar, Badge, Empty, Input, Segmented, Select, Space, Tag, Typography } from 'antd';
+import VirtualList from 'rc-virtual-list';
 import type {
   TelemetrySession,
   SessionSortOrder,
@@ -44,7 +45,15 @@ const sortSelectOptions: { label: string; value: SessionSortOrder }[] = [
   { label: '帧数最少优先', value: 'frames-asc' },
 ];
 
-function SessionItem({ session, isActive, onSelect }: { session: TelemetrySession; isActive: boolean; onSelect: () => void }) {
+const SESSION_ROW_ESTIMATED_HEIGHT = 136;
+
+interface SessionRowProps {
+  session: TelemetrySession;
+  isActive: boolean;
+  onSelect: (sessionId: string) => void;
+}
+
+const SessionRow = memo(function SessionRow({ session, isActive, onSelect }: SessionRowProps) {
   const title = (session.client?.productName as string) ?? 'Unknown Product';
   const frameCount = session.frames?.length ?? 0;
   const trimmedFrameCount = session.trimmedFrameCount ?? 0;
@@ -63,12 +72,14 @@ function SessionItem({ session, isActive, onSelect }: { session: TelemetrySessio
   const platform = session.client?.platform as string | undefined;
   const clientIp = resolveSessionIp(session);
   const subtitle = `${dayjs(session.createdAt).format('MMM D HH:mm:ss')} • ${frameSummary}`;
+  const handleClick = useCallback(() => {
+    window.getSelection()?.removeAllRanges();
+    onSelect(session.id);
+  }, [onSelect, session.id]);
   return (
-    <List.Item
-      onClick={() => {
-        window.getSelection()?.removeAllRanges();
-        onSelect();
-      }}
+    <div
+      role="button"
+      onClick={handleClick}
       style={{
         padding: '12px 16px',
         cursor: 'pointer',
@@ -104,9 +115,9 @@ function SessionItem({ session, isActive, onSelect }: { session: TelemetrySessio
           {platform ? <Tag color="blue">{platform}</Tag> : null}
         </Space>
       </Space>
-    </List.Item>
+    </div>
   );
-}
+});
 
 export default function SessionSidebar({
   sessions,
@@ -144,6 +155,37 @@ export default function SessionSidebar({
   const emptyDescription = selectedGroupingValue
     ? `${selectedGroupingLabel} 暂无${statusFilterLabels[statusFilter]}`
     : `暂无${statusFilterLabels[statusFilter]}`;
+
+  const listContainerRef = useRef<HTMLDivElement | null>(null);
+  const [listHeight, setListHeight] = useState<number>(0);
+
+  useEffect(() => {
+    const element = listContainerRef.current;
+    if (!element) {
+      return;
+    }
+
+    const updateHeight = () => {
+      setListHeight(element.clientHeight);
+    };
+
+    updateHeight();
+
+    if (typeof ResizeObserver === 'undefined') {
+      return;
+    }
+
+    const observer = new ResizeObserver(() => {
+      updateHeight();
+    });
+    observer.observe(element);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [sessions.length]);
+
+  const virtualListHeight = listHeight > 0 ? listHeight : Math.min(sessions.length * SESSION_ROW_ESTIMATED_HEIGHT, 480);
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -266,21 +308,26 @@ export default function SessionSidebar({
           )}
         </div>
       </div>
-      <div style={{ flex: 1, overflowY: 'auto' }}>
+      <div ref={listContainerRef} style={{ flex: 1, minHeight: 0 }}>
         {sessions.length === 0 ? (
           <Empty description={emptyDescription} style={{ marginTop: 80 }} />
         ) : (
-          <List
-            dataSource={sessions}
-            renderItem={(session) => (
-              <SessionItem
+          <VirtualList
+            data={sessions}
+            height={Math.max(virtualListHeight, SESSION_ROW_ESTIMATED_HEIGHT)}
+            itemKey="id"
+            itemHeight={SESSION_ROW_ESTIMATED_HEIGHT}
+            style={{ height: '100%', overflow: 'auto', paddingRight: 4 }}
+          >
+            {(session: TelemetrySession) => (
+              <SessionRow
                 key={session.id}
                 session={session}
                 isActive={session.id === selectedSessionId}
-                onSelect={() => onSelectSession(session.id)}
+                onSelect={onSelectSession}
               />
             )}
-          />
+          </VirtualList>
         )}
       </div>
     </div>

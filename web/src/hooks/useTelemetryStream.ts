@@ -304,14 +304,56 @@ function attachSessionComputedFields(session: TelemetrySession): TelemetrySessio
   return session;
 }
 
+function areFrameArraysEqual(
+  a: TelemetrySnapshot[] | undefined,
+  b: TelemetrySnapshot[] | undefined
+): boolean {
+  if (a === b) {
+    return true;
+  }
+  if (!Array.isArray(a) || !Array.isArray(b)) {
+    return a === b;
+  }
+  if (a.length !== b.length) {
+    return false;
+  }
+  for (let index = 0; index < a.length; index += 1) {
+    if (a[index] !== b[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function mergeSessionWithUpdates(
   session: TelemetrySession,
   updates: Partial<TelemetrySession>
 ): TelemetrySession {
-  return attachSessionComputedFields({
-    ...session,
-    ...updates,
+  let changed = false;
+  const next: TelemetrySession = { ...session };
+
+  (Object.entries(updates) as [keyof TelemetrySession, unknown][]).forEach(([key, value]) => {
+    if (key === 'frames') {
+      const nextFrames = Array.isArray(value) ? (value as TelemetrySnapshot[]) : undefined;
+      if (!areFrameArraysEqual(session.frames, nextFrames)) {
+        changed = true;
+        (next as any).frames = nextFrames;
+      }
+      return;
+    }
+
+    const current = session[key];
+    if (!Object.is(current, value)) {
+      changed = true;
+      (next as any)[key] = value;
+    }
   });
+
+  if (!changed) {
+    return session;
+  }
+
+  return attachSessionComputedFields(next);
 }
 
 function normalizeSession(session: TelemetrySession, maxSessionFrames: number): TelemetrySession {
@@ -355,6 +397,20 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
   const maxSessionFrames = resolveFrameLimit(serverConfig?.history?.maxSessionFrames);
   const loadedSessionIdsRef = useRef<Set<string>>(new Set());
   const sessionTextureCacheRef = useRef<Map<string, Map<string, TextureInfo>>>(new Map());
+  const sessionRequestControllersRef = useRef<Map<string, AbortController>>(new Map());
+
+  const abortSessionRequest = useCallback((sessionId: string) => {
+    const controller = sessionRequestControllersRef.current.get(sessionId);
+    if (controller) {
+      controller.abort();
+      sessionRequestControllersRef.current.delete(sessionId);
+    }
+  }, []);
+
+  const abortAllSessionRequests = useCallback(() => {
+    sessionRequestControllersRef.current.forEach((controller) => controller.abort());
+    sessionRequestControllersRef.current.clear();
+  }, []);
 
   const getSessionTextureCache = useCallback(
     (sessionId: string): Map<string, TextureInfo> => {
@@ -375,8 +431,9 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
       setConnectionState('disconnected');
       setIsSessionsLoading(false);
       sessionTextureCacheRef.current.clear();
+      abortAllSessionRequests();
     }
-  }, [serverBaseUrl]);
+  }, [serverBaseUrl, abortAllSessionRequests]);
 
   const socket = useMemo<Socket | null>(() => {
     if (!serverBaseUrl) return null;
@@ -438,9 +495,14 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
         return null;
       }
 
+      abortSessionRequest(sessionId);
+      const controller = new AbortController();
+      sessionRequestControllersRef.current.set(sessionId, controller);
+
       try {
         const response = await fetch(
-          `${serverBaseUrl}/sessions/${encodeURIComponent(sessionId)}?hydrateTextures=false`
+          `${serverBaseUrl}/sessions/${encodeURIComponent(sessionId)}?hydrateTextures=false`,
+          { signal: controller.signal }
         );
         if (response.status === 404) {
           loadedSessionIdsRef.current.delete(sessionId);
@@ -462,27 +524,49 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
         let storedSession: TelemetrySession = nextSession;
         setSessions((prev) => {
           let found = false;
+          let didChange = false;
           const next = prev.map((session) => {
             if (session.id !== nextSession.id) {
               return session;
             }
             found = true;
-            storedSession = mergeSessionWithUpdates(session, nextSession);
-            return storedSession;
+            const merged = mergeSessionWithUpdates(session, nextSession);
+            if (merged !== session) {
+              didChange = true;
+            }
+            storedSession = merged;
+            return merged;
           });
           if (!found) {
-            next.push(nextSession);
             storedSession = nextSession;
+            return [...prev, nextSession];
           }
-          return next;
+          return didChange ? next : prev;
         });
         return storedSession;
       } catch (error) {
+        if (
+          error instanceof DOMException
+            ? error.name === 'AbortError'
+            : (error as { name?: string } | null)?.name === 'AbortError'
+        ) {
+          return null;
+        }
         console.error(error);
         return null;
+      } finally {
+        const active = sessionRequestControllersRef.current.get(sessionId);
+        if (active === controller) {
+          sessionRequestControllersRef.current.delete(sessionId);
+        }
       }
     },
-    [serverBaseUrl, maxSessionFrames, getSessionTextureCache]
+    [
+      serverBaseUrl,
+      maxSessionFrames,
+      getSessionTextureCache,
+      abortSessionRequest,
+    ]
   );
 
   useEffect(() => {
@@ -645,6 +729,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
       setSessions([]);
       loadedSessionIdsRef.current.clear();
       sessionTextureCacheRef.current.clear();
+      abortAllSessionRequests();
     }
 
     function handleSessionDeleted(payload: { sessionId?: string } | undefined) {
@@ -655,6 +740,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
       setSessions((prev) => prev.filter((session) => session.id !== sessionId));
       loadedSessionIdsRef.current.delete(sessionId);
       sessionTextureCacheRef.current.delete(sessionId);
+      abortSessionRequest(sessionId);
     }
 
     socket.on('connect', handleConnect);
@@ -679,7 +765,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
       socket.off('session:deleted', handleSessionDeleted);
       socket.disconnect();
     };
-  }, [socket, maxSessionFrames, applyServerConfig]);
+  }, [socket, maxSessionFrames, applyServerConfig, abortAllSessionRequests, abortSessionRequest]);
 
   const ensureSessionTextures = useCallback(
     async (sessionId: string, textureIds: string[]) => {
@@ -778,7 +864,8 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
     setSessions([]);
     loadedSessionIdsRef.current.clear();
     sessionTextureCacheRef.current.clear();
-  }, [serverBaseUrl]);
+    abortAllSessionRequests();
+  }, [serverBaseUrl, abortAllSessionRequests]);
 
   const deleteServerSession = useCallback(
     async (sessionId: string) => {
@@ -801,8 +888,9 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
       setSessions((prev) => prev.filter((session) => session.id !== sessionId));
       loadedSessionIdsRef.current.delete(sessionId);
       sessionTextureCacheRef.current.delete(sessionId);
+      abortSessionRequest(sessionId);
     },
-    [serverBaseUrl]
+    [serverBaseUrl, abortSessionRequest]
   );
 
   return {
