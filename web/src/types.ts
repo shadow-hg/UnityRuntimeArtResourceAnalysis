@@ -261,17 +261,6 @@ export interface TelemetrySnapshot {
   environment?: EnvironmentInfo | null;
 }
 
-export interface TelemetrySession {
-  id: string;
-  createdAt: string;
-  closedAt?: string;
-  client: Record<string, unknown>;
-  clientIp?: string | null;
-  frames?: TelemetrySnapshot[];
-  trimmedFrameCount?: number;
-  totalFrameCount?: number;
-}
-
 export interface TimelinePoint {
   id: string | number;
   content: string;
@@ -333,6 +322,28 @@ export type SessionSortOrder = 'newest' | 'oldest' | 'frames-desc' | 'frames-asc
 export type SessionStatusFilter = 'all' | 'active' | 'closed';
 
 export type SessionGrouping = 'ip' | 'account' | 'device' | 'product' | 'platform';
+
+export interface TelemetrySession {
+  id: string;
+  createdAt: string;
+  closedAt?: string;
+  client: Record<string, unknown>;
+  clientIp?: string | null;
+  frames?: TelemetrySnapshot[];
+  trimmedFrameCount?: number;
+  totalFrameCount?: number;
+  /**
+   * Cached, normalized tokens for quick session search matching. These are defined as
+   * non-enumerable properties to avoid leaking back to the telemetry server when
+   * sessions are serialized.
+   */
+  searchTokens?: string[];
+  /**
+   * Cached grouping keys keyed by grouping strategy. Like {@link searchTokens}, they are
+   * stored as non-enumerable properties.
+   */
+  groupKeys?: Partial<Record<SessionGrouping, string>>;
+}
 
 export interface SessionGroupingItem {
   value: string;
