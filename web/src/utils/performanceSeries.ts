@@ -206,6 +206,54 @@ export interface PerformanceSeriesMutable {
   };
 }
 
+export function createPerformanceSeriesSnapshot(
+  series: PerformanceSeriesMutable
+): PerformanceSeriesSnapshot {
+  return {
+    frameNumbers: series.frameNumbers,
+    timestamps: series.timestamps,
+    fps: series.fps,
+    memory: {
+      textures: series.memory.textures,
+      meshes: series.memory.meshes,
+      renderTextures: series.memory.renderTextures,
+      shaders: series.memory.shaders,
+      materials: series.memory.materials,
+      unityHeap: series.memory.unityHeap,
+      nativeMemory: series.memory.nativeMemory,
+      gpuMemory: series.memory.gpuMemory,
+      texturePool: series.memory.texturePool,
+      meshPool: series.memory.meshPool,
+      otherMemory: series.memory.otherMemory,
+      managedHeap: series.memory.managedHeap,
+    },
+    frameTiming: {
+      cpu: series.frameTiming.cpu,
+      gpu: series.frameTiming.gpu,
+      mainThread: series.frameTiming.mainThread,
+      renderThread: series.frameTiming.renderThread,
+    },
+    threadUtilization: {
+      mainThread: series.threadUtilization.mainThread,
+      renderThread: series.threadUtilization.renderThread,
+      jobWorker: series.threadUtilization.jobWorker,
+    },
+  };
+}
+
+export interface PerformanceSeriesStore {
+  readonly mutable: PerformanceSeriesMutable;
+  readonly snapshot: PerformanceSeriesSnapshot;
+}
+
+export function createPerformanceSeriesStore(): PerformanceSeriesStore {
+  const mutable = createEmptySeries();
+  return {
+    mutable,
+    snapshot: createPerformanceSeriesSnapshot(mutable),
+  };
+}
+
 function createEmptySeries(): PerformanceSeriesMutable {
   return {
     frameNumbers: [],
@@ -443,6 +491,14 @@ export function rebuildSeries(frames: TelemetrySnapshot[]): PerformanceSeriesMut
   });
 
   return series;
+}
+
+export function rebuildSeriesStore(frames: TelemetrySnapshot[]): PerformanceSeriesStore {
+  const mutable = rebuildSeries(frames);
+  return {
+    mutable,
+    snapshot: createPerformanceSeriesSnapshot(mutable),
+  };
 }
 
 export { createEmptySeries as createPerformanceSeries };
