@@ -12,6 +12,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Networking;
+using UnityEngine.SceneManagement;
 
 namespace UnityProfileV2.Telemetry
 {
@@ -72,6 +73,9 @@ namespace UnityProfileV2.Telemetry
 
         private static CoroutineRunner _coroutineRunner;
 
+        public event Action<UnityEngine.Object> OnResourceCreated;
+        public event Action<int> OnResourceDestroyed;
+
         public IEnumerable<PendingSnapshotStatus> PendingSnapshots => _pendingSnapshots.Values;
 
         public string ServerEndpointOverride => _serverEndpointOverride;
@@ -81,6 +85,45 @@ namespace UnityProfileV2.Telemetry
         public string GetAutoDetectedServerEndpoint()
         {
             return BuildEndpointFromHost(ResolveLocalIpAddress());
+        }
+
+        public void NotifyResourceCreated(UnityEngine.Object resource)
+        {
+            if (resource == null)
+            {
+                return;
+            }
+
+            AssetTelemetryUtility.NotifyResourceCreated(resource, _collectionState);
+            OnResourceCreated?.Invoke(resource);
+        }
+
+        public void NotifyResourceDestroyed(UnityEngine.Object resource)
+        {
+            if (resource == null)
+            {
+                return;
+            }
+
+            AssetTelemetryUtility.NotifyResourceDestroyed(resource, _collectionState);
+
+            OnResourceDestroyed?.Invoke(resource.GetInstanceID());
+        }
+
+        public void NotifyResourceDestroyed(int instanceId)
+        {
+            if (instanceId == 0)
+            {
+                return;
+            }
+
+            AssetTelemetryUtility.NotifyResourceDestroyed(instanceId, _collectionState);
+            OnResourceDestroyed?.Invoke(instanceId);
+        }
+
+        public void MarkResourceCacheDirty()
+        {
+            AssetTelemetryUtility.MarkResourceCacheDirty(_collectionState);
         }
 
         public void ApplyServerEndpointOverride(string endpoint, bool persist = true)
@@ -531,6 +574,10 @@ namespace UnityProfileV2.Telemetry
             _sessionManagedAutomatically = false;
             _lastAppliedClientDefaults = null;
 
+            SceneManager.sceneLoaded += HandleSceneLoaded;
+            SceneManager.sceneUnloaded += HandleSceneUnloaded;
+            SceneManager.activeSceneChanged += HandleActiveSceneChanged;
+
             if (_initializationCoroutine != null)
             {
                 StopCoroutine(_initializationCoroutine);
@@ -543,6 +590,10 @@ namespace UnityProfileV2.Telemetry
         {
             StopSnapshotUploadLoop();
             ProcessMainThreadActions();
+
+            SceneManager.sceneLoaded -= HandleSceneLoaded;
+            SceneManager.sceneUnloaded -= HandleSceneUnloaded;
+            SceneManager.activeSceneChanged -= HandleActiveSceneChanged;
 
             if (_initializationCoroutine != null)
             {
@@ -595,6 +646,21 @@ namespace UnityProfileV2.Telemetry
             }
 
             ProcessMainThreadActions();
+        }
+
+        private void HandleSceneLoaded(Scene scene, LoadSceneMode mode)
+        {
+            AssetTelemetryUtility.MarkResourceCacheDirty(_collectionState);
+        }
+
+        private void HandleSceneUnloaded(Scene scene)
+        {
+            AssetTelemetryUtility.MarkResourceCacheDirty(_collectionState);
+        }
+
+        private void HandleActiveSceneChanged(Scene previousScene, Scene newScene)
+        {
+            AssetTelemetryUtility.MarkResourceCacheDirty(_collectionState);
         }
 
         private void StartConfigPolling()

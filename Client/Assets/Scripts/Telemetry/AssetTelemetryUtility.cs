@@ -96,6 +96,17 @@ namespace UnityProfileV2.Telemetry
             internal List<ResourceUnloadEvent> RecentUnloads { get; } = new();
             internal bool HasBaseline { get; set; }
             internal int NextStableTextureInstanceId { get; set; } = -1;
+            internal ResourceSnapshotCache<Texture, TextureInfo> TextureSnapshots { get; } = new();
+            internal ResourceSnapshotCache<Mesh, MeshInfo> MeshSnapshots { get; } = new();
+            internal ResourceSnapshotCache<RenderTexture, RenderTextureInfo> RenderTextureSnapshots { get; } = new();
+            internal ResourceSnapshotCache<Material, MaterialInfo> MaterialSnapshots { get; } = new();
+            internal ResourceSnapshotCache<Shader, ShaderInfo> ShaderSnapshots { get; } = new();
+
+            internal IReadOnlyDictionary<int, double> TextureSnapshotTimestamps => TextureSnapshots.SnapshotTimestamps;
+            internal IReadOnlyDictionary<int, double> MeshSnapshotTimestamps => MeshSnapshots.SnapshotTimestamps;
+            internal IReadOnlyDictionary<int, double> RenderTextureSnapshotTimestamps => RenderTextureSnapshots.SnapshotTimestamps;
+            internal IReadOnlyDictionary<int, double> MaterialSnapshotTimestamps => MaterialSnapshots.SnapshotTimestamps;
+            internal IReadOnlyDictionary<int, double> ShaderSnapshotTimestamps => ShaderSnapshots.SnapshotTimestamps;
 
             public void Reset()
             {
@@ -114,6 +125,11 @@ namespace UnityProfileV2.Telemetry
                 RecentUnloads.Clear();
                 HasBaseline = false;
                 NextStableTextureInstanceId = -1;
+                TextureSnapshots.Clear();
+                MeshSnapshots.Clear();
+                RenderTextureSnapshots.Clear();
+                MaterialSnapshots.Clear();
+                ShaderSnapshots.Clear();
             }
 
             internal int AllocateStableTextureInstanceId()
@@ -126,6 +142,280 @@ namespace UnityProfileV2.Telemetry
                 var value = NextStableTextureInstanceId;
                 NextStableTextureInstanceId -= 1;
                 return value;
+            }
+
+            internal void MarkResourceCacheDirty()
+            {
+                TextureSnapshots.MarkDirty();
+                MeshSnapshots.MarkDirty();
+                RenderTextureSnapshots.MarkDirty();
+                MaterialSnapshots.MarkDirty();
+                ShaderSnapshots.MarkDirty();
+            }
+        }
+
+        private delegate bool TryBuildInfo<in TResource, TInfo>(TResource resource, out TInfo info);
+
+        private sealed class ResourceSnapshotCache<TResource, TInfo>
+            where TResource : UnityEngine.Object
+        {
+            private readonly Dictionary<int, TInfo> _entries = new();
+            private readonly Dictionary<int, double> _timestamps = new();
+            private readonly Dictionary<int, WeakReference<TResource>> _pendingAdds = new();
+            private readonly HashSet<int> _pendingRemovals = new();
+
+            internal IReadOnlyDictionary<int, double> SnapshotTimestamps => _timestamps;
+
+            private bool HasBaseline { get; set; }
+            private bool IsDirty { get; set; } = true;
+
+            internal void Clear()
+            {
+                _entries.Clear();
+                _timestamps.Clear();
+                _pendingAdds.Clear();
+                _pendingRemovals.Clear();
+                HasBaseline = false;
+                IsDirty = true;
+            }
+
+            internal void MarkDirty()
+            {
+                if (!HasBaseline)
+                {
+                    return;
+                }
+
+                IsDirty = true;
+            }
+
+            internal void NotifyCreated(TResource resource)
+            {
+                if (resource == null)
+                {
+                    return;
+                }
+
+                if (!HasBaseline)
+                {
+                    IsDirty = true;
+                    return;
+                }
+
+                var instanceId = resource.GetInstanceID();
+                if (instanceId == 0)
+                {
+                    return;
+                }
+
+                _pendingAdds[instanceId] = new WeakReference<TResource>(resource);
+                _pendingRemovals.Remove(instanceId);
+            }
+
+            internal void NotifyDestroyed(int instanceId)
+            {
+                if (instanceId == 0)
+                {
+                    return;
+                }
+
+                if (!HasBaseline)
+                {
+                    return;
+                }
+
+                _pendingAdds.Remove(instanceId);
+                _pendingRemovals.Add(instanceId);
+            }
+
+            internal TInfo[] ResolveSnapshot(
+                Func<TInfo[]> fallback,
+                TryBuildInfo<TResource, TInfo> tryBuildInfo,
+                Func<TInfo, int> getInstanceId)
+            {
+                if (fallback == null || getInstanceId == null)
+                {
+                    return Array.Empty<TInfo>();
+                }
+
+                if (IsDirty || !HasBaseline)
+                {
+                    var baseline = fallback();
+                    ReplaceWithBaseline(baseline, getInstanceId);
+                    return baseline;
+                }
+
+                ApplyPendingAdds(tryBuildInfo, getInstanceId);
+                ApplyPendingRemovals();
+                RefreshTimestamps();
+                return ToArray();
+            }
+
+            private void ReplaceWithBaseline(IEnumerable<TInfo> infos, Func<TInfo, int> getInstanceId)
+            {
+                _entries.Clear();
+                _timestamps.Clear();
+
+                var timestamp = GetSnapshotTimestamp();
+
+                if (infos != null)
+                {
+                    foreach (var info in infos)
+                    {
+                        var id = getInstanceId(info);
+                        if (id == 0)
+                        {
+                            continue;
+                        }
+
+                        _entries[id] = info;
+                        _timestamps[id] = timestamp;
+                    }
+                }
+
+                _pendingAdds.Clear();
+                _pendingRemovals.Clear();
+                HasBaseline = true;
+                IsDirty = false;
+            }
+
+            private void ApplyPendingAdds(TryBuildInfo<TResource, TInfo> tryBuildInfo, Func<TInfo, int> getInstanceId)
+            {
+                if (tryBuildInfo == null || _pendingAdds.Count == 0)
+                {
+                    return;
+                }
+
+                var processed = ListPool<int>.Rent();
+                var timestamp = GetSnapshotTimestamp();
+
+                foreach (var pair in _pendingAdds)
+                {
+                    if (!pair.Value.TryGetTarget(out var resource) || resource == null)
+                    {
+                        processed.Add(pair.Key);
+                        continue;
+                    }
+
+                    if (!tryBuildInfo(resource, out var info))
+                    {
+                        continue;
+                    }
+
+                    var id = getInstanceId(info);
+                    if (id == 0)
+                    {
+                        continue;
+                    }
+
+                    _entries[id] = info;
+                    _timestamps[id] = timestamp;
+                    processed.Add(pair.Key);
+                }
+
+                foreach (var id in processed)
+                {
+                    _pendingAdds.Remove(id);
+                }
+
+                ListPool<int>.Return(processed);
+            }
+
+            private void ApplyPendingRemovals()
+            {
+                if (_pendingRemovals.Count == 0)
+                {
+                    return;
+                }
+
+                foreach (var id in _pendingRemovals)
+                {
+                    _entries.Remove(id);
+                    _timestamps.Remove(id);
+                }
+
+                _pendingRemovals.Clear();
+            }
+
+            private TInfo[] ToArray()
+            {
+                if (_entries.Count == 0)
+                {
+                    return Array.Empty<TInfo>();
+                }
+
+                var orderedKeys = ListPool<int>.Rent();
+                foreach (var key in _entries.Keys)
+                {
+                    orderedKeys.Add(key);
+                }
+
+                orderedKeys.Sort((a, b) =>
+                {
+                    var hasA = _timestamps.TryGetValue(a, out var timeA);
+                    var hasB = _timestamps.TryGetValue(b, out var timeB);
+                    if (!hasA && !hasB)
+                    {
+                        return a.CompareTo(b);
+                    }
+
+                    if (!hasA)
+                    {
+                        return 1;
+                    }
+
+                    if (!hasB)
+                    {
+                        return -1;
+                    }
+
+                    return timeA.CompareTo(timeB);
+                });
+
+                var list = ListPool<TInfo>.Rent();
+                foreach (var key in orderedKeys)
+                {
+                    if (_entries.TryGetValue(key, out var value))
+                    {
+                        list.Add(value);
+                    }
+                }
+
+                var array = ArrayPoolUtility<TInfo>.FromList(list);
+                ListPool<TInfo>.Return(list);
+                ListPool<int>.Return(orderedKeys);
+                return array;
+            }
+
+            private void RefreshTimestamps()
+            {
+                if (_entries.Count == 0)
+                {
+                    return;
+                }
+
+                var timestamp = GetSnapshotTimestamp();
+                var keys = ListPool<int>.Rent();
+                foreach (var key in _entries.Keys)
+                {
+                    keys.Add(key);
+                }
+
+                foreach (var key in keys)
+                {
+                    _timestamps[key] = timestamp;
+                }
+
+                ListPool<int>.Return(keys);
+            }
+
+            private static double GetSnapshotTimestamp()
+            {
+#if UNITY_2021_2_OR_NEWER
+                return Time.realtimeSinceStartupAsDouble;
+#else
+                return Time.realtimeSinceStartup;
+#endif
             }
         }
 
@@ -755,27 +1045,27 @@ namespace UnityProfileV2.Telemetry
 
             if (options.includeTextures)
             {
-                data.textures = CaptureTextureInfos();
+                data.textures = CaptureTextureInfos(state);
             }
 
             if (options.includeMeshes)
             {
-                data.meshes = CaptureMeshInfos();
+                data.meshes = CaptureMeshInfos(state);
             }
 
             if (options.includeRenderTextures)
             {
-                data.renderTextures = CaptureRenderTextureInfos();
+                data.renderTextures = CaptureRenderTextureInfos(state);
             }
 
             if (options.includeMaterials)
             {
-                data.materials = CaptureMaterialInfos();
+                data.materials = CaptureMaterialInfos(state);
             }
 
             if (options.includeShaders)
             {
-                data.shaders = CaptureShaderInfos();
+                data.shaders = CaptureShaderInfos(state);
             }
 
             if (options.includeFrameInsights)
@@ -802,41 +1092,110 @@ namespace UnityProfileV2.Telemetry
             return data;
         }
 
-        private static TextureInfo[] CaptureTextureInfos()
+        internal static void MarkResourceCacheDirty(TelemetryCollectionState state)
+        {
+            state?.MarkResourceCacheDirty();
+        }
+
+        internal static void NotifyResourceCreated(UnityEngine.Object resource, TelemetryCollectionState state)
+        {
+            if (state == null || resource == null)
+            {
+                return;
+            }
+
+            if (!ShouldTrackResource(resource))
+            {
+                return;
+            }
+
+            switch (resource)
+            {
+                case RenderTexture renderTexture:
+                    state.RenderTextureSnapshots.NotifyCreated(renderTexture);
+                    break;
+                case Texture texture:
+                    if (IsRenderTextureLike(texture))
+                    {
+                        if (texture is RenderTexture textureAsRenderTexture)
+                        {
+                            state.RenderTextureSnapshots.NotifyCreated(textureAsRenderTexture);
+                        }
+
+                        break;
+                    }
+
+                    state.TextureSnapshots.NotifyCreated(texture);
+                    break;
+                case Mesh mesh:
+                    state.MeshSnapshots.NotifyCreated(mesh);
+                    break;
+                case Material material:
+                    state.MaterialSnapshots.NotifyCreated(material);
+                    break;
+                case Shader shader:
+                    state.ShaderSnapshots.NotifyCreated(shader);
+                    break;
+            }
+        }
+
+        internal static void NotifyResourceDestroyed(UnityEngine.Object resource, TelemetryCollectionState state)
+        {
+            if (resource == null)
+            {
+                return;
+            }
+
+            NotifyResourceDestroyed(resource.GetInstanceID(), state);
+        }
+
+        internal static void NotifyResourceDestroyed(int instanceId, TelemetryCollectionState state)
+        {
+            if (state == null || instanceId == 0)
+            {
+                return;
+            }
+
+            state.TextureSnapshots.NotifyDestroyed(instanceId);
+            state.MeshSnapshots.NotifyDestroyed(instanceId);
+            state.RenderTextureSnapshots.NotifyDestroyed(instanceId);
+            state.MaterialSnapshots.NotifyDestroyed(instanceId);
+            state.ShaderSnapshots.NotifyDestroyed(instanceId);
+
+            TextureCache.Remove(instanceId);
+            MeshCache.Remove(instanceId);
+            RenderTextureCache.Remove(instanceId);
+            MaterialCache.Remove(instanceId);
+            ShaderCache.Remove(instanceId);
+        }
+
+        private static TextureInfo[] CaptureTextureInfos(TelemetryCollectionState state)
+        {
+            if (state == null)
+            {
+                return CaptureTextureInfosFull();
+            }
+
+            return state.TextureSnapshots.ResolveSnapshot(
+                CaptureTextureInfosFull,
+                TryBuildTextureInfo,
+                static info => info.instanceId);
+        }
+
+        private static TextureInfo[] CaptureTextureInfosFull()
         {
             TextureInfoBuffer.Clear();
             TextureSeenIds.Clear();
 
             foreach (var texture in EnumerateRuntimeObjects<Texture>())
             {
-                if (texture == null)
-                {
-                    continue;
-                }
-
-                if (IsRenderTextureLike(texture))
-                {
-                    continue;
-                }
-
-                if (texture is Texture2D tex && tex.hideFlags.HasFlag(HideFlags.DontSave))
-                {
-                    continue;
-                }
-
-                var info = GetOrCreateTextureInfo(texture);
-                if (!info.IsValid || info.isRenderTexture)
-                {
-                    continue;
-                }
-
-                if (IsTinyTexture(info.width, info.height))
+                if (!TryBuildTextureInfo(texture, out var info))
                 {
                     continue;
                 }
 
                 TextureInfoBuffer.Add(info);
-                TextureSeenIds.Add(texture.GetInstanceID());
+                TextureSeenIds.Add(info.instanceId);
             }
 
             PruneCache(TextureCache, TextureSeenIds);
@@ -846,26 +1205,33 @@ namespace UnityProfileV2.Telemetry
             return result;
         }
 
-        private static MeshInfo[] CaptureMeshInfos()
+        private static MeshInfo[] CaptureMeshInfos(TelemetryCollectionState state)
+        {
+            if (state == null)
+            {
+                return CaptureMeshInfosFull();
+            }
+
+            return state.MeshSnapshots.ResolveSnapshot(
+                CaptureMeshInfosFull,
+                TryBuildMeshInfo,
+                static info => info.instanceId);
+        }
+
+        private static MeshInfo[] CaptureMeshInfosFull()
         {
             MeshInfoBuffer.Clear();
             MeshSeenIds.Clear();
 
             foreach (var mesh in EnumerateRuntimeObjects<Mesh>())
             {
-                if (mesh == null)
-                {
-                    continue;
-                }
-
-                var info = GetOrCreateMeshInfo(mesh);
-                if (!info.IsValid)
+                if (!TryBuildMeshInfo(mesh, out var info))
                 {
                     continue;
                 }
 
                 MeshInfoBuffer.Add(info);
-                MeshSeenIds.Add(mesh.GetInstanceID());
+                MeshSeenIds.Add(info.instanceId);
             }
 
             PruneCache(MeshCache, MeshSeenIds);
@@ -875,26 +1241,33 @@ namespace UnityProfileV2.Telemetry
             return result;
         }
 
-        private static RenderTextureInfo[] CaptureRenderTextureInfos()
+        private static RenderTextureInfo[] CaptureRenderTextureInfos(TelemetryCollectionState state)
+        {
+            if (state == null)
+            {
+                return CaptureRenderTextureInfosFull();
+            }
+
+            return state.RenderTextureSnapshots.ResolveSnapshot(
+                CaptureRenderTextureInfosFull,
+                TryBuildRenderTextureInfo,
+                static info => info.instanceId);
+        }
+
+        private static RenderTextureInfo[] CaptureRenderTextureInfosFull()
         {
             RenderTextureInfoBuffer.Clear();
             RenderTextureSeenIds.Clear();
 
             foreach (var renderTexture in EnumerateRuntimeObjects<RenderTexture>())
             {
-                if (renderTexture == null)
-                {
-                    continue;
-                }
-
-                var info = GetOrCreateRenderTextureInfo(renderTexture);
-                if (!info.IsValid)
+                if (!TryBuildRenderTextureInfo(renderTexture, out var info))
                 {
                     continue;
                 }
 
                 RenderTextureInfoBuffer.Add(info);
-                RenderTextureSeenIds.Add(renderTexture.GetInstanceID());
+                RenderTextureSeenIds.Add(info.instanceId);
             }
 
             PruneCache(RenderTextureCache, RenderTextureSeenIds);
@@ -904,26 +1277,33 @@ namespace UnityProfileV2.Telemetry
             return result;
         }
 
-        private static MaterialInfo[] CaptureMaterialInfos()
+        private static MaterialInfo[] CaptureMaterialInfos(TelemetryCollectionState state)
+        {
+            if (state == null)
+            {
+                return CaptureMaterialInfosFull();
+            }
+
+            return state.MaterialSnapshots.ResolveSnapshot(
+                CaptureMaterialInfosFull,
+                TryBuildMaterialInfo,
+                static info => info.instanceId);
+        }
+
+        private static MaterialInfo[] CaptureMaterialInfosFull()
         {
             MaterialInfoBuffer.Clear();
             MaterialSeenIds.Clear();
 
             foreach (var material in EnumerateRuntimeObjects<Material>())
             {
-                if (material == null)
-                {
-                    continue;
-                }
-
-                var info = GetOrCreateMaterialInfo(material);
-                if (!info.IsValid)
+                if (!TryBuildMaterialInfo(material, out var info))
                 {
                     continue;
                 }
 
                 MaterialInfoBuffer.Add(info);
-                MaterialSeenIds.Add(material.GetInstanceID());
+                MaterialSeenIds.Add(info.instanceId);
             }
 
             PruneCache(MaterialCache, MaterialSeenIds);
@@ -933,26 +1313,33 @@ namespace UnityProfileV2.Telemetry
             return result;
         }
 
-        private static ShaderInfo[] CaptureShaderInfos()
+        private static ShaderInfo[] CaptureShaderInfos(TelemetryCollectionState state)
+        {
+            if (state == null)
+            {
+                return CaptureShaderInfosFull();
+            }
+
+            return state.ShaderSnapshots.ResolveSnapshot(
+                CaptureShaderInfosFull,
+                TryBuildShaderInfo,
+                static info => info.instanceId);
+        }
+
+        private static ShaderInfo[] CaptureShaderInfosFull()
         {
             ShaderInfoBuffer.Clear();
             ShaderSeenIds.Clear();
 
             foreach (var shader in EnumerateRuntimeObjects<Shader>())
             {
-                if (shader == null)
-                {
-                    continue;
-                }
-
-                var info = GetOrCreateShaderInfo(shader);
-                if (!info.IsValid)
+                if (!TryBuildShaderInfo(shader, out var info))
                 {
                     continue;
                 }
 
                 ShaderInfoBuffer.Add(info);
-                ShaderSeenIds.Add(shader.GetInstanceID());
+                ShaderSeenIds.Add(info.instanceId);
             }
 
             PruneCache(ShaderCache, ShaderSeenIds);
@@ -960,6 +1347,107 @@ namespace UnityProfileV2.Telemetry
             var result = ArrayPoolUtility<ShaderInfo>.FromList(ShaderInfoBuffer);
             ShaderInfoBuffer.Clear();
             return result;
+        }
+
+        private static bool TryBuildTextureInfo(Texture texture, out TextureInfo info)
+        {
+            info = default;
+
+            if (texture == null)
+            {
+                return false;
+            }
+
+            if (IsRenderTextureLike(texture))
+            {
+                return false;
+            }
+
+            if (texture is Texture2D tex && tex.hideFlags.HasFlag(HideFlags.DontSave))
+            {
+                return false;
+            }
+
+            info = GetOrCreateTextureInfo(texture);
+            if (!info.IsValid || info.isRenderTexture)
+            {
+                return false;
+            }
+
+            if (IsTinyTexture(info.width, info.height))
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        private static bool ShouldTrackResource(UnityEngine.Object resource)
+        {
+            if (resource == null)
+            {
+                return false;
+            }
+
+            var hideFlags = resource.hideFlags;
+            if ((hideFlags & HideFlags.HideAndDontSave) == HideFlags.HideAndDontSave)
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        private static bool TryBuildMeshInfo(Mesh mesh, out MeshInfo info)
+        {
+            info = default;
+
+            if (mesh == null)
+            {
+                return false;
+            }
+
+            info = GetOrCreateMeshInfo(mesh);
+            return info.IsValid;
+        }
+
+        private static bool TryBuildRenderTextureInfo(RenderTexture renderTexture, out RenderTextureInfo info)
+        {
+            info = default;
+
+            if (renderTexture == null)
+            {
+                return false;
+            }
+
+            info = GetOrCreateRenderTextureInfo(renderTexture);
+            return info.IsValid;
+        }
+
+        private static bool TryBuildMaterialInfo(Material material, out MaterialInfo info)
+        {
+            info = default;
+
+            if (material == null)
+            {
+                return false;
+            }
+
+            info = GetOrCreateMaterialInfo(material);
+            return info.IsValid;
+        }
+
+        private static bool TryBuildShaderInfo(Shader shader, out ShaderInfo info)
+        {
+            info = default;
+
+            if (shader == null)
+            {
+                return false;
+            }
+
+            info = GetOrCreateShaderInfo(shader);
+            return info.IsValid;
         }
 
         private static TextureInfo GetOrCreateTextureInfo(Texture texture)
