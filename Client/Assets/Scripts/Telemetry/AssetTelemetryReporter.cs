@@ -38,6 +38,9 @@ namespace UnityProfileV2.Telemetry
         private bool _framePreviewDisabled = false;
 
         private const int ServerConfigRequestTimeoutSeconds = 5;
+        private const int MaxConcurrentServerConfigRequests = 4;
+        private const float MinServerConfigProbeTimeoutSeconds = 1f;
+        private const float ServerConfigTimeoutDecayFactor = 0.75f;
         private const int ServerConfigRetryCount = 3;
         private const float ServerConfigRetryDelaySeconds = 1f;
         private const float ServerConfigPollingIntervalSeconds = 1f;
@@ -54,6 +57,8 @@ namespace UnityProfileV2.Telemetry
         private TelemetrySnapshotOptions _snapshotOptions = TelemetrySnapshotOptions.Default;
         private AssetTelemetryUtility.TelemetryCollectionState _collectionState = new();
         private ClientDefaultsPayload? _lastAppliedClientDefaults;
+        private string _cachedServerConfigurationJson;
+        private bool _hasPendingCachedServerConfiguration;
 
         private readonly ConcurrentQueue<PendingSnapshotUpload> _snapshotUploadQueue = new();
         private readonly ConcurrentDictionary<int, PendingSnapshotStatus> _pendingSnapshots = new();
@@ -446,10 +451,23 @@ namespace UnityProfileV2.Telemetry
 
         private IEnumerable<string> EnumerateServerEndpointCandidates()
         {
+            foreach (var batch in EnumerateServerEndpointCandidateBatches())
+            {
+                foreach (var endpoint in batch)
+                {
+                    yield return endpoint;
+                }
+            }
+        }
+
+        private IEnumerable<IReadOnlyList<string>> EnumerateServerEndpointCandidateBatches()
+        {
             var localIpAddress = ResolveLocalIpAddress();
             var isPrivateNetwork = IsPrivateIpv4(localIpAddress);
 
-            var candidates = new List<string>
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            var prioritized = new List<string>
             {
                 _serverEndpointOverride,
                 _serverEndpoint,
@@ -458,25 +476,44 @@ namespace UnityProfileV2.Telemetry
                 BuildEndpointFromHost("localhost")
             };
 
-            if (isPrivateNetwork)
-            {
-                candidates.AddRange(EnumerateLocalSubnetEndpointCandidates(localIpAddress));
-            }
-
-            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-            foreach (var candidate in candidates)
+            foreach (var candidate in prioritized)
             {
                 var sanitized = SanitizeEndpoint(candidate);
-                if (string.IsNullOrEmpty(sanitized))
+                if (string.IsNullOrEmpty(sanitized) || !seen.Add(sanitized))
                 {
                     continue;
                 }
 
-                if (seen.Add(sanitized))
+                yield return new List<string> { sanitized };
+            }
+
+            if (!isPrivateNetwork)
+            {
+                yield break;
+            }
+
+            var batch = new List<string>(MaxConcurrentServerConfigRequests);
+
+            foreach (var candidate in EnumerateLocalSubnetEndpointCandidates(localIpAddress))
+            {
+                var sanitized = SanitizeEndpoint(candidate);
+                if (string.IsNullOrEmpty(sanitized) || !seen.Add(sanitized))
                 {
-                    yield return sanitized;
+                    continue;
                 }
+
+                batch.Add(sanitized);
+
+                if (batch.Count >= MaxConcurrentServerConfigRequests)
+                {
+                    yield return new List<string>(batch);
+                    batch.Clear();
+                }
+            }
+
+            if (batch.Count > 0)
+            {
+                yield return new List<string>(batch);
             }
         }
 
@@ -658,6 +695,16 @@ namespace UnityProfileV2.Telemetry
 
         private IEnumerator RefreshServerConfigCoroutine(bool allowReconnect = true)
         {
+            if (_hasPendingCachedServerConfiguration && !string.IsNullOrEmpty(_cachedServerConfigurationJson))
+            {
+                _hasPendingCachedServerConfiguration = false;
+
+                if (ApplyServerConfigurationFromJson(_cachedServerConfigurationJson))
+                {
+                    yield break;
+                }
+            }
+
             if (string.IsNullOrEmpty(_serverEndpoint))
             {
                 if (allowReconnect)
@@ -685,6 +732,7 @@ namespace UnityProfileV2.Telemetry
 
                     if (ApplyServerConfigurationFromJson(json))
                     {
+                        _cachedServerConfigurationJson = json;
                         yield break;
                     }
                 }
@@ -702,63 +750,96 @@ namespace UnityProfileV2.Telemetry
 
         private IEnumerator LoadServerConfigCoroutine()
         {
+            _cachedServerConfigurationJson = null;
+            _hasPendingCachedServerConfiguration = false;
+
             var initialEndpoint = _serverEndpoint;
+            var baseTimeoutSeconds = ServerConfigRequestTimeoutSeconds > 0
+                ? Mathf.Max(ServerConfigRequestTimeoutSeconds, Mathf.CeilToInt(MinServerConfigProbeTimeoutSeconds))
+                : 0;
 
-            foreach (var endpoint in EnumerateServerEndpointCandidates())
+            foreach (var batch in EnumerateServerEndpointCandidateBatches())
             {
-                var attempt = 0;
-                var retriesRemaining = ServerConfigRetryCount;
+                var dynamicTimeoutSeconds = baseTimeoutSeconds > 0 ? (float)baseTimeoutSeconds : 0f;
+                var states = new List<ServerEndpointProbeState>(batch.Count);
 
-                while (true)
+                foreach (var endpoint in batch)
                 {
-                    attempt++;
+                    states.Add(new ServerEndpointProbeState(endpoint, ServerConfigRetryCount));
+                }
 
-                    using (var request = UnityWebRequest.Get(endpoint + "/config"))
+                var pending = new Queue<ServerEndpointProbeState>(states);
+
+                while (pending.Count > 0)
+                {
+                    var window = new List<ServerEndpointProbeState>(MaxConcurrentServerConfigRequests);
+
+                    while (window.Count < MaxConcurrentServerConfigRequests && pending.Count > 0)
                     {
-                        request.downloadHandler = new DownloadHandlerBuffer();
+                        window.Add(pending.Dequeue());
+                    }
 
-                        if (ServerConfigRequestTimeoutSeconds > 0)
+                    var timeoutSeconds = dynamicTimeoutSeconds <= 0f
+                        ? 0
+                        : Mathf.Max(1, Mathf.CeilToInt(dynamicTimeoutSeconds));
+
+                    var result = new ServerEndpointBatchResult();
+                    yield return ProbeServerEndpointWindow(window, timeoutSeconds, result);
+
+                    if (result.Success)
+                    {
+                        if (!ApplyServerConfigurationFromJson(result.Json))
                         {
-                            request.timeout = Mathf.Max(ServerConfigRequestTimeoutSeconds, 0);
-                        }
-
-                        yield return request.SendWebRequest();
-
-                        if (request.result == UnityWebRequest.Result.Success)
-                        {
-                            var json = request.downloadHandler.text;
-
-                            if (!ApplyServerConfigurationFromJson(json))
-                            {
-                                yield break;
-                            }
-
-                            if (!string.Equals(_serverEndpoint, endpoint, StringComparison.Ordinal))
-                            {
-                                _serverEndpoint = endpoint;
-                            }
-
-                            if (!string.Equals(initialEndpoint, endpoint, StringComparison.Ordinal))
-                            {
-                                Debug.Log($"[UnityProfileV2] Connected to telemetry server at {endpoint}.");
-                            }
-
                             yield break;
                         }
 
-                        Debug.LogWarning(
-                            $"[UnityProfileV2] Failed to load server configuration from {endpoint} (attempt {attempt}): {request.error}"
+                        if (!string.Equals(_serverEndpoint, result.Endpoint, StringComparison.Ordinal))
+                        {
+                            _serverEndpoint = result.Endpoint;
+                        }
+
+                        _cachedServerConfigurationJson = result.Json;
+                        _hasPendingCachedServerConfiguration = true;
+
+                        if (!string.Equals(initialEndpoint, result.Endpoint, StringComparison.Ordinal))
+                        {
+                            Debug.Log($"[UnityProfileV2] Connected to telemetry server at {result.Endpoint}.");
+                        }
+
+                        yield break;
+                    }
+
+                    var shouldDelay = false;
+                    var hadTimeout = false;
+
+                    foreach (var state in window)
+                    {
+                        if (state.TimedOut && dynamicTimeoutSeconds > 0f)
+                        {
+                            hadTimeout = true;
+                        }
+
+                        if (!state.ShouldRetry)
+                        {
+                            continue;
+                        }
+
+                        state.ShouldRetry = false;
+                        pending.Enqueue(state);
+                        shouldDelay = true;
+                    }
+
+                    if (hadTimeout && dynamicTimeoutSeconds > 0f)
+                    {
+                        dynamicTimeoutSeconds = Mathf.Max(
+                            MinServerConfigProbeTimeoutSeconds,
+                            dynamicTimeoutSeconds * ServerConfigTimeoutDecayFactor
                         );
                     }
 
-                    if (retriesRemaining == 0)
+                    if (!shouldDelay)
                     {
-                        break;
-                    }
-
-                    if (retriesRemaining > 0)
-                    {
-                        retriesRemaining--;
+                        continue;
                     }
 
                     if (ServerConfigRetryDelaySeconds > 0f)
@@ -773,6 +854,171 @@ namespace UnityProfileV2.Telemetry
             }
 
             Debug.LogWarning("[UnityProfileV2] Unable to reach telemetry server at any known endpoint.");
+        }
+
+        private IEnumerator ProbeServerEndpointWindow(
+            List<ServerEndpointProbeState> window,
+            int timeoutSeconds,
+            ServerEndpointBatchResult result)
+        {
+            if (window == null || window.Count == 0)
+            {
+                yield break;
+            }
+
+            var operations = new List<ServerEndpointProbeOperation>(window.Count);
+
+            foreach (var state in window)
+            {
+                state.Attempts++;
+                state.ShouldRetry = false;
+                state.TimedOut = false;
+
+                var request = UnityWebRequest.Get(state.Endpoint + "/config");
+                request.downloadHandler = new DownloadHandlerBuffer();
+
+                if (timeoutSeconds > 0)
+                {
+                    request.timeout = timeoutSeconds;
+                }
+
+                var operation = request.SendWebRequest();
+                operations.Add(new ServerEndpointProbeOperation(state, request, operation));
+            }
+
+            while (operations.Count > 0)
+            {
+                ServerEndpointProbeOperation completedOperation = null;
+
+                for (var i = 0; i < operations.Count; i++)
+                {
+                    var candidate = operations[i];
+                    if (!candidate.Operation.isDone)
+                    {
+                        continue;
+                    }
+
+                    completedOperation = candidate;
+                    operations.RemoveAt(i);
+                    break;
+                }
+
+                if (completedOperation == null)
+                {
+                    yield return null;
+                    continue;
+                }
+
+                var request = completedOperation.Request;
+                var state = completedOperation.State;
+                var attempt = state.Attempts;
+
+                if (request.result == UnityWebRequest.Result.Success)
+                {
+                    result.Success = true;
+                    result.Endpoint = state.Endpoint;
+                    result.Json = request.downloadHandler.text;
+                    completedOperation.Dispose();
+                    break;
+                }
+
+                var error = request.error ?? string.Empty;
+
+                if (error.IndexOf("timed out", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    state.TimedOut = true;
+                }
+
+                if (string.IsNullOrEmpty(error))
+                {
+                    Debug.LogWarning(
+                        $"[UnityProfileV2] Failed to load server configuration from {state.Endpoint} (attempt {attempt})."
+                    );
+                }
+                else
+                {
+                    Debug.LogWarning(
+                        $"[UnityProfileV2] Failed to load server configuration from {state.Endpoint} (attempt {attempt}): {error}"
+                    );
+                }
+
+                if (state.RetriesRemaining != 0)
+                {
+                    if (state.RetriesRemaining > 0)
+                    {
+                        state.RetriesRemaining--;
+                    }
+
+                    state.ShouldRetry = true;
+                }
+
+                completedOperation.Dispose();
+            }
+
+            if (result.Success)
+            {
+                foreach (var operation in operations)
+                {
+                    operation.Request.Abort();
+                    operation.Dispose();
+                }
+            }
+            else
+            {
+                foreach (var operation in operations)
+                {
+                    if (!operation.Operation.isDone)
+                    {
+                        operation.Request.Abort();
+                    }
+
+                    operation.Dispose();
+                }
+            }
+        }
+
+        private sealed class ServerEndpointProbeState
+        {
+            public ServerEndpointProbeState(string endpoint, int retriesRemaining)
+            {
+                Endpoint = endpoint;
+                RetriesRemaining = retriesRemaining;
+            }
+
+            public string Endpoint { get; }
+            public int Attempts { get; set; }
+            public int RetriesRemaining { get; set; }
+            public bool ShouldRetry { get; set; }
+            public bool TimedOut { get; set; }
+        }
+
+        private sealed class ServerEndpointBatchResult
+        {
+            public bool Success { get; set; }
+            public string Endpoint { get; set; }
+            public string Json { get; set; }
+        }
+
+        private sealed class ServerEndpointProbeOperation : IDisposable
+        {
+            public ServerEndpointProbeOperation(
+                ServerEndpointProbeState state,
+                UnityWebRequest request,
+                UnityWebRequestAsyncOperation operation)
+            {
+                State = state;
+                Request = request;
+                Operation = operation;
+            }
+
+            public ServerEndpointProbeState State { get; }
+            public UnityWebRequest Request { get; }
+            public UnityWebRequestAsyncOperation Operation { get; }
+
+            public void Dispose()
+            {
+                Request.Dispose();
+            }
         }
 
         private void ApplyServerConfiguration(ServerConfigurationPayload payload)
