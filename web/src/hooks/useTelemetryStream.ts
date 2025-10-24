@@ -6,7 +6,10 @@ import type {
   TelemetrySnapshot,
   ServerConfig,
   TextureInfo,
+  SessionGrouping,
 } from '../types';
+import { resolveSessionGroupingValue, SESSION_GROUPINGS } from '../utils/sessionGrouping';
+import { buildSessionSearchTokens } from '../utils/sessionSearch';
 
 interface UseTelemetryStreamOptions {
   serverBaseUrl: string;
@@ -277,6 +280,40 @@ function resolveFrameLimit(limit: number | undefined): number {
   return Math.max(100, Math.round(limit));
 }
 
+function attachSessionComputedFields(session: TelemetrySession): TelemetrySession {
+  const searchTokens = buildSessionSearchTokens(session);
+  const groupKeys = SESSION_GROUPINGS.reduce((acc, grouping) => {
+    acc[grouping] = resolveSessionGroupingValue(session, grouping);
+    return acc;
+  }, {} as Record<SessionGrouping, string>);
+
+  Object.defineProperty(session, 'searchTokens', {
+    value: searchTokens,
+    enumerable: false,
+    configurable: true,
+    writable: true,
+  });
+
+  Object.defineProperty(session, 'groupKeys', {
+    value: groupKeys,
+    enumerable: false,
+    configurable: true,
+    writable: true,
+  });
+
+  return session;
+}
+
+function mergeSessionWithUpdates(
+  session: TelemetrySession,
+  updates: Partial<TelemetrySession>
+): TelemetrySession {
+  return attachSessionComputedFields({
+    ...session,
+    ...updates,
+  });
+}
+
 function normalizeSession(session: TelemetrySession, maxSessionFrames: number): TelemetrySession {
   const limit = resolveFrameLimit(maxSessionFrames);
   const frames = Array.isArray(session.frames) ? session.frames.filter((frame): frame is TelemetrySnapshot => !!frame) : [];
@@ -284,12 +321,12 @@ function normalizeSession(session: TelemetrySession, maxSessionFrames: number): 
   const totalFrameCount = session.totalFrameCount ?? trimmedFrameCount + frames.length;
 
   if (frames.length <= limit) {
-    return {
+    return attachSessionComputedFields({
       ...session,
       frames,
       trimmedFrameCount,
       totalFrameCount: Math.max(totalFrameCount, trimmedFrameCount + frames.length),
-    };
+    });
   }
 
   const overflow = frames.length - limit;
@@ -297,12 +334,12 @@ function normalizeSession(session: TelemetrySession, maxSessionFrames: number): 
   const nextTrimmed = trimmedFrameCount + overflow;
   const nextTotal = Math.max(totalFrameCount, nextTrimmed + trimmedFrames.length);
 
-  return {
+  return attachSessionComputedFields({
     ...session,
     frames: trimmedFrames,
     trimmedFrameCount: nextTrimmed,
     totalFrameCount: nextTotal,
-  };
+  });
 }
 
 export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions) {
@@ -419,9 +456,10 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
         const hydratedFrames = frames.map((frame) => hydrateFrameTexturesFromCache(frame, cache));
         const shouldReplaceFrames = hydratedFrames.some((frame, index) => frame !== frames[index]);
         const nextSession = shouldReplaceFrames
-          ? { ...normalized, frames: hydratedFrames }
+          ? attachSessionComputedFields({ ...normalized, frames: hydratedFrames })
           : normalized;
         loadedSessionIdsRef.current.add(sessionId);
+        let storedSession: TelemetrySession = nextSession;
         setSessions((prev) => {
           let found = false;
           const next = prev.map((session) => {
@@ -429,17 +467,16 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
               return session;
             }
             found = true;
-            return {
-              ...session,
-              ...nextSession,
-            };
+            storedSession = mergeSessionWithUpdates(session, nextSession);
+            return storedSession;
           });
           if (!found) {
             next.push(nextSession);
+            storedSession = nextSession;
           }
           return next;
         });
-        return nextSession;
+        return storedSession;
       } catch (error) {
         console.error(error);
         return null;
@@ -541,7 +578,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
       setSessions((prev) =>
         prev.map((session) =>
           session.id === payload.sessionId
-            ? { ...session, closedAt: new Date().toISOString() }
+            ? mergeSessionWithUpdates(session, { closedAt: new Date().toISOString() })
             : session
         )
       );
@@ -591,12 +628,11 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
             payload.totalFrameCount ??
             Math.max(nextTrimmed + frames.length, (session.totalFrameCount ?? 0) + 1);
 
-          return {
-            ...session,
+          return mergeSessionWithUpdates(session, {
             frames,
             trimmedFrameCount: nextTrimmed,
             totalFrameCount,
-          };
+          });
         })
       );
     }
@@ -694,10 +730,9 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
           if (!changed) {
             return session;
           }
-          return {
-            ...session,
+          return mergeSessionWithUpdates(session, {
             frames: hydratedFrames,
-          };
+          });
         })
       );
     },

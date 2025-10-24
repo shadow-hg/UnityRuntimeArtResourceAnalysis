@@ -56,8 +56,14 @@ import ServerSettingsModal from './components/ServerSettingsModal';
 import CollapsibleCard from './components/CollapsibleCard';
 import { formatBytes, formatFps } from './utils/format';
 import { buildGlobalReport } from './utils/report';
-import { resolveSessionIp, UNKNOWN_IP_LABEL } from './utils/session';
-import { SESSION_GROUPING_DISPLAY_META } from './utils/sessionGrouping';
+import { resolveSessionIp } from './utils/session';
+import {
+  SESSION_GROUPING_DISPLAY_META,
+  UNKNOWN_GROUP_VALUE,
+  normalizeGroupingCandidate,
+  resolveSessionGroupingValue,
+} from './utils/sessionGrouping';
+import { buildSessionSearchTokens } from './utils/sessionSearch';
 
 const { Header, Sider, Content } = Layout;
 
@@ -143,39 +149,12 @@ function resolveSessionTimestamp(session: TelemetrySession): number {
   return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
-const UNKNOWN_GROUP_VALUE = '__UNKNOWN__';
-
-function normalizeCandidate(value: unknown): string {
-  return typeof value === 'string' ? value.trim() : '';
-}
-
 function getSessionGroupingValue(session: TelemetrySession, grouping: SessionGrouping): string {
-  switch (grouping) {
-    case 'ip': {
-      const ip = resolveSessionIp(session);
-      return !ip || ip === UNKNOWN_IP_LABEL ? UNKNOWN_GROUP_VALUE : ip;
-    }
-    case 'account': {
-      const account = normalizeCandidate(session.client?.['accountName']);
-      if (account) return account;
-      const userName = normalizeCandidate(session.client?.['userName']);
-      return userName || UNKNOWN_GROUP_VALUE;
-    }
-    case 'device': {
-      const device = normalizeCandidate(session.client?.['deviceName']);
-      return device || UNKNOWN_GROUP_VALUE;
-    }
-    case 'product': {
-      const product = normalizeCandidate(session.client?.['productName']);
-      return product || UNKNOWN_GROUP_VALUE;
-    }
-    case 'platform': {
-      const platform = normalizeCandidate(session.client?.['platform']);
-      return platform || UNKNOWN_GROUP_VALUE;
-    }
-    default:
-      return UNKNOWN_GROUP_VALUE;
+  const cached = session.groupKeys?.[grouping];
+  if (cached) {
+    return cached;
   }
+  return resolveSessionGroupingValue(session, grouping);
 }
 
 function getSessionGroupingLabel(value: string, grouping: SessionGrouping): string {
@@ -191,18 +170,28 @@ function matchesSessionSearch(session: TelemetrySession, query: string): boolean
     return true;
   }
 
+  const cachedTokens = Array.isArray(session.searchTokens) ? session.searchTokens : null;
+  if (cachedTokens && cachedTokens.length > 0) {
+    return cachedTokens.some((token) => token.includes(normalized));
+  }
+
+  const computedTokens = buildSessionSearchTokens(session);
+  if (computedTokens.length > 0) {
+    return computedTokens.some((token) => token.includes(normalized));
+  }
+
   const client = session.client ?? {};
   const fields: (string | undefined | null)[] = [
     session.id,
     session.clientIp,
     resolveSessionIp(session),
-    normalizeCandidate(client['accountName'] as string | undefined),
-    normalizeCandidate(client['userName'] as string | undefined),
-    normalizeCandidate(client['productName'] as string | undefined),
-    normalizeCandidate(client['deviceName'] as string | undefined),
-    normalizeCandidate(client['platform'] as string | undefined),
-    normalizeCandidate(client['version'] as string | undefined),
-    normalizeCandidate(client['remoteAddress'] as string | undefined),
+    normalizeGroupingCandidate(client['accountName']),
+    normalizeGroupingCandidate(client['userName']),
+    normalizeGroupingCandidate(client['productName']),
+    normalizeGroupingCandidate(client['deviceName']),
+    normalizeGroupingCandidate(client['platform']),
+    normalizeGroupingCandidate(client['version']),
+    normalizeGroupingCandidate(client['remoteAddress']),
   ];
 
   return fields.some((raw) => {
