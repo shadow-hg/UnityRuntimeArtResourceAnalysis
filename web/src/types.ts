@@ -311,6 +311,8 @@ export interface ClientDefaultsConfig {
   framePreviewScale: number;
   disableFramePreview: boolean;
   maxAssetsPerCategory: number;
+  resourceHotspotTopCount: number;
+  lifecycleTopCount: number;
   autoManageSession: boolean;
   assetCategoryVersion: number;
   assetCategories: AssetCategoryConfig;

@@ -11,6 +11,8 @@ const DEFAULT_CONFIG = {
     framePreviewScale: 0.2,
     disableFramePreview: false,
     maxAssetsPerCategory: 200,
+    resourceHotspotTopCount: 10,
+    lifecycleTopCount: 10,
     autoManageSession: true,
     assetCategoryVersion: 1,
     assetCategories: {
@@ -89,6 +91,28 @@ function mergeConfig(baseConfig, overrideConfig) {
         fallback: baseConfig.clientDefaults.maxAssetsPerCategory,
         integer: true,
       });
+    }
+    if ('resourceHotspotTopCount' in clientDefaults) {
+      merged.clientDefaults.resourceHotspotTopCount = ensureNumber(
+        clientDefaults.resourceHotspotTopCount,
+        {
+          min: 1,
+          max: 50,
+          fallback: baseConfig.clientDefaults.resourceHotspotTopCount,
+          integer: true,
+        }
+      );
+    }
+    if ('lifecycleTopCount' in clientDefaults) {
+      merged.clientDefaults.lifecycleTopCount = ensureNumber(
+        clientDefaults.lifecycleTopCount,
+        {
+          min: 1,
+          max: 50,
+          fallback: baseConfig.clientDefaults.lifecycleTopCount,
+          integer: true,
+        }
+      );
     }
     if ('autoManageSession' in clientDefaults) {
       merged.clientDefaults.autoManageSession = ensureBoolean(
