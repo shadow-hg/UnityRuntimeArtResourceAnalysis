@@ -1,5 +1,6 @@
-import { useMemo } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Avatar, Badge, Empty, Input, List, Segmented, Select, Space, Tag, Typography } from 'antd';
+import VirtualList from 'rc-virtual-list';
 import type {
   TelemetrySession,
   SessionSortOrder,
@@ -31,6 +32,8 @@ interface SessionSidebarProps {
 
 const { CheckableTag } = Tag;
 
+const SESSION_ROW_HEIGHT = 156;
+
 const statusFilterLabels: Record<SessionStatusFilter, string> = {
   all: '性能数据会话',
   active: '实时会话',
@@ -44,69 +47,83 @@ const sortSelectOptions: { label: string; value: SessionSortOrder }[] = [
   { label: '帧数最少优先', value: 'frames-asc' },
 ];
 
-function SessionItem({ session, isActive, onSelect }: { session: TelemetrySession; isActive: boolean; onSelect: () => void }) {
-  const title = (session.client?.productName as string) ?? 'Unknown Product';
-  const frameCount = session.frames?.length ?? 0;
-  const trimmedFrameCount = session.trimmedFrameCount ?? 0;
-  const totalFrameCount = session.totalFrameCount ?? trimmedFrameCount + frameCount;
-  const frameSummary =
-    trimmedFrameCount > 0
-      ? `${totalFrameCount} 帧 (显示最近 ${frameCount} 帧)`
-      : `${totalFrameCount} 帧`;
-  const deviceName = (session.client?.deviceName as string) ?? 'Unknown Device';
-  const accountName = useMemo(() => {
-    const fromAccount = typeof session.client?.accountName === 'string' ? session.client?.accountName : null;
-    const fallback = typeof session.client?.userName === 'string' ? session.client?.userName : null;
-    const candidate = (fromAccount ?? fallback)?.trim();
-    return candidate && candidate.length > 0 ? candidate : null;
-  }, [session.client?.accountName, session.client?.userName]);
-  const platform = session.client?.platform as string | undefined;
-  const clientIp = resolveSessionIp(session);
-  const subtitle = `${dayjs(session.createdAt).format('MMM D HH:mm:ss')} • ${frameSummary}`;
-  return (
-    <List.Item
-      onClick={() => {
-        window.getSelection()?.removeAllRanges();
-        onSelect();
-      }}
-      style={{
-        padding: '12px 16px',
-        cursor: 'pointer',
-        background: isActive ? 'rgba(11, 27, 43, 0.08)' : 'transparent',
-        borderLeft: isActive ? '3px solid #1677ff' : '3px solid transparent',
-      }}
-    >
-      <Space align="start">
-        <Badge dot={!session.closedAt} offset={[-2, 6]}>
-          <Avatar shape="square">{title.slice(0, 2).toUpperCase()}</Avatar>
-        </Badge>
-        <Space direction="vertical" size={2} style={{ maxWidth: 200 }}>
-          <Space align="center" size={8}>
-            <Typography.Text strong ellipsis style={{ maxWidth: 140 }}>
-              {title}
-            </Typography.Text>
-            <Tag color={session.closedAt ? 'default' : 'success'}>
-              {session.closedAt ? '已结束' : '实时'}
-            </Tag>
-          </Space>
-          <Typography.Text type="secondary">{subtitle}</Typography.Text>
-          {accountName ? (
-            <Typography.Text type="secondary" ellipsis style={{ maxWidth: 200 }}>
-              账户：{accountName}
-            </Typography.Text>
-          ) : null}
-          <Typography.Text type="secondary" ellipsis style={{ maxWidth: 200 }}>
-            设备：{deviceName}
-          </Typography.Text>
-          <Typography.Text type="secondary" style={{ maxWidth: 200 }}>
-            IP：{clientIp}
-          </Typography.Text>
-          {platform ? <Tag color="blue">{platform}</Tag> : null}
-        </Space>
-      </Space>
-    </List.Item>
-  );
+interface SessionRowProps {
+  session: TelemetrySession;
+  isActive: boolean;
+  onSelect: (sessionId: string) => void;
 }
+
+const SessionRow = memo(
+  ({ session, isActive, onSelect }: SessionRowProps) => {
+    const title = (session.client?.productName as string) ?? 'Unknown Product';
+    const frameCount = session.frames?.length ?? 0;
+    const trimmedFrameCount = session.trimmedFrameCount ?? 0;
+    const totalFrameCount = session.totalFrameCount ?? trimmedFrameCount + frameCount;
+    const frameSummary =
+      trimmedFrameCount > 0
+        ? `${totalFrameCount} 帧 (显示最近 ${frameCount} 帧)`
+        : `${totalFrameCount} 帧`;
+    const deviceName = (session.client?.deviceName as string) ?? 'Unknown Device';
+    const derivedMeta = useMemo(() => {
+      const fromAccount =
+        typeof session.client?.accountName === 'string' ? session.client.accountName : null;
+      const fallback = typeof session.client?.userName === 'string' ? session.client.userName : null;
+      const candidate = (fromAccount ?? fallback)?.trim();
+      const accountName = candidate && candidate.length > 0 ? candidate : null;
+      const clientIp = resolveSessionIp(session);
+      const subtitle = `${dayjs(session.createdAt).format('MMM D HH:mm:ss')} • ${frameSummary}`;
+      return { accountName, clientIp, subtitle };
+    }, [session, frameSummary]);
+    const platform = session.client?.platform as string | undefined;
+
+    return (
+      <List.Item
+        key={session.id}
+        onClick={() => {
+          window.getSelection()?.removeAllRanges();
+          onSelect(session.id);
+        }}
+        style={{
+          padding: '12px 16px',
+          cursor: 'pointer',
+          background: isActive ? 'rgba(11, 27, 43, 0.08)' : 'transparent',
+          borderLeft: isActive ? '3px solid #1677ff' : '3px solid transparent',
+        }}
+      >
+        <Space align="start">
+          <Badge dot={!session.closedAt} offset={[-2, 6]}>
+            <Avatar shape="square">{title.slice(0, 2).toUpperCase()}</Avatar>
+          </Badge>
+          <Space direction="vertical" size={2} style={{ maxWidth: 200 }}>
+            <Space align="center" size={8}>
+              <Typography.Text strong ellipsis style={{ maxWidth: 140 }}>
+                {title}
+              </Typography.Text>
+              <Tag color={session.closedAt ? 'default' : 'success'}>
+                {session.closedAt ? '已结束' : '实时'}
+              </Tag>
+            </Space>
+            <Typography.Text type="secondary">{derivedMeta.subtitle}</Typography.Text>
+            {derivedMeta.accountName ? (
+              <Typography.Text type="secondary" ellipsis style={{ maxWidth: 200 }}>
+                账户：{derivedMeta.accountName}
+              </Typography.Text>
+            ) : null}
+            <Typography.Text type="secondary" ellipsis style={{ maxWidth: 200 }}>
+              设备：{deviceName}
+            </Typography.Text>
+            <Typography.Text type="secondary" style={{ maxWidth: 200 }}>
+              IP：{derivedMeta.clientIp}
+            </Typography.Text>
+            {platform ? <Tag color="blue">{platform}</Tag> : null}
+          </Space>
+        </Space>
+      </List.Item>
+    );
+  },
+  (prev, next) =>
+    prev.session === next.session && prev.isActive === next.isActive && prev.onSelect === next.onSelect
+);
 
 export default function SessionSidebar({
   sessions,
@@ -144,6 +161,45 @@ export default function SessionSidebar({
   const emptyDescription = selectedGroupingValue
     ? `${selectedGroupingLabel} 暂无${statusFilterLabels[statusFilter]}`
     : `暂无${statusFilterLabels[statusFilter]}`;
+
+  const listContainerRef = useRef<HTMLDivElement | null>(null);
+  const [listHeight, setListHeight] = useState(SESSION_ROW_HEIGHT * 6);
+
+  useEffect(() => {
+    const container = listContainerRef.current;
+    if (!container) {
+      return;
+    }
+    const updateHeight = () => {
+      const next = container.clientHeight;
+      if (next > 0) {
+        setListHeight((prev) => (Math.abs(prev - next) < 1 ? prev : next));
+      }
+    };
+    updateHeight();
+    if (typeof ResizeObserver === 'undefined') {
+      return undefined;
+    }
+    const observer = new ResizeObserver(updateHeight);
+    observer.observe(container);
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
+
+  const handleSessionSelect = useCallback(
+    (sessionId: string) => {
+      onSelectSession(sessionId);
+    },
+    [onSelectSession]
+  );
+
+  const renderSessionRow = useCallback(
+    (session: TelemetrySession) => (
+      <SessionRow session={session} isActive={session.id === selectedSessionId} onSelect={handleSessionSelect} />
+    ),
+    [handleSessionSelect, selectedSessionId]
+  );
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -266,21 +322,20 @@ export default function SessionSidebar({
           )}
         </div>
       </div>
-      <div style={{ flex: 1, overflowY: 'auto' }}>
+      <div ref={listContainerRef} style={{ flex: 1, minHeight: 0 }}>
         {sessions.length === 0 ? (
           <Empty description={emptyDescription} style={{ marginTop: 80 }} />
         ) : (
-          <List
-            dataSource={sessions}
-            renderItem={(session) => (
-              <SessionItem
-                key={session.id}
-                session={session}
-                isActive={session.id === selectedSessionId}
-                onSelect={() => onSelectSession(session.id)}
-              />
-            )}
-          />
+          <List split={false} style={{ height: '100%' }}>
+            <VirtualList
+              data={sessions}
+              height={Math.max(SESSION_ROW_HEIGHT, listHeight)}
+              itemHeight={SESSION_ROW_HEIGHT}
+              itemKey={(item) => item.id}
+            >
+              {renderSessionRow}
+            </VirtualList>
+          </List>
         )}
       </div>
     </div>
