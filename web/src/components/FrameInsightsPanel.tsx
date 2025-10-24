@@ -6,6 +6,7 @@ import CollapsibleCard from './CollapsibleCard';
 
 interface FrameInsightsPanelProps {
   frame: TelemetrySnapshot | null;
+  onCollapseChange?: (collapsed: boolean) => void;
 }
 
 function normalizeStagePercentage(value: number | undefined | null): number {
@@ -54,7 +55,7 @@ function getHintColor(severity: BottleneckHint['severity']): string {
   }
 }
 
-export default function FrameInsightsPanel({ frame }: FrameInsightsPanelProps) {
+export default function FrameInsightsPanel({ frame, onCollapseChange }: FrameInsightsPanelProps) {
   const { token } = theme.useToken();
   const timing = frame?.frameTiming ?? null;
 
@@ -111,6 +112,7 @@ export default function FrameInsightsPanel({ frame }: FrameInsightsPanelProps) {
       style={{ flex: 1, minWidth: 320 }}
       bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 16 }}
       collapseMode="compact"
+      onCollapseChange={onCollapseChange}
     >
       {!hasTimingData ? (
         <Empty description="暂无帧执行数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />
