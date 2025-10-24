@@ -45,6 +45,10 @@ namespace UnityProfileV2.Telemetry
         private const int ServerConfigRetryCount = 3;
         private const float ServerConfigRetryDelaySeconds = 1f;
         private const float ServerConfigPollingIntervalSeconds = 1f;
+        private const float EndpointCandidateCacheTtlSeconds = 30f;
+        private const int EndpointCandidateSampleMultiplier = 4;
+        private const float EndpointProbeBaseBackoffSeconds = 1f;
+        private const float EndpointProbeMaxBackoffSeconds = 30f;
 
         private string _sessionId;
         private float _lastSampleTime;
@@ -71,6 +75,15 @@ namespace UnityProfileV2.Telemetry
         private const float SnapshotUploadThrottleSeconds = 0.1f;
         private static readonly HttpClientWrapper SnapshotHttpClient = new();
 
+        private readonly List<string> _cachedSubnetCandidates = new();
+        private string _cachedSubnetLocalIp = string.Empty;
+        private float _cachedSubnetTimestamp;
+        private bool _cachedSubnetDirty = true;
+        private int _cachedSubnetProbeCursor;
+        private readonly System.Random _endpointProbeRandom = new();
+        private float _nextEndpointProbeTime;
+        private int _consecutiveEndpointProbeFailures;
+
         private static CoroutineRunner _coroutineRunner;
 
         public event Action<UnityEngine.Object> OnResourceCreated;
@@ -81,6 +94,12 @@ namespace UnityProfileV2.Telemetry
         public string ServerEndpointOverride => _serverEndpointOverride;
 
         public string CurrentServerEndpoint => _serverEndpoint;
+
+        public void RequestServerConfigurationRefresh(bool forceSubnetRescan = true)
+        {
+            var mode = forceSubnetRescan ? EndpointProbeRequestMode.Manual : EndpointProbeRequestMode.Automatic;
+            StartCoroutine(RefreshServerConfigCoroutine(true, mode));
+        }
 
         public string GetAutoDetectedServerEndpoint()
         {
@@ -146,6 +165,7 @@ namespace UnityProfileV2.Telemetry
             }
 
             _serverEndpointOverride = sanitized;
+            InvalidateEndpointCandidateCache();
 
             if (persist)
             {
@@ -175,6 +195,8 @@ namespace UnityProfileV2.Telemetry
         private void RestartTelemetry()
         {
             var wasActive = isActiveAndEnabled;
+
+            InvalidateEndpointCandidateCache();
 
             if (_initializationCoroutine != null)
             {
@@ -481,6 +503,193 @@ namespace UnityProfileV2.Telemetry
             }
         }
 
+        private enum EndpointProbeRequestMode
+        {
+            Automatic,
+            Manual,
+            OverrideChanged,
+            Initialization,
+            Retry
+        }
+
+        private sealed class EndpointCandidatePlan
+        {
+            public EndpointProbeRequestMode Mode { get; set; }
+            public bool CacheHit { get; set; }
+            public List<IReadOnlyList<string>> Batches { get; } = new();
+        }
+
+        private void InvalidateEndpointCandidateCache()
+        {
+            _cachedSubnetDirty = true;
+        }
+
+        private static bool ShouldForceEndpointRescan(EndpointProbeRequestMode mode)
+        {
+            switch (mode)
+            {
+                case EndpointProbeRequestMode.Manual:
+                case EndpointProbeRequestMode.OverrideChanged:
+                case EndpointProbeRequestMode.Initialization:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private EndpointCandidatePlan PrepareEndpointCandidatePlan(EndpointProbeRequestMode mode)
+        {
+            var plan = new EndpointCandidatePlan
+            {
+                Mode = mode
+            };
+
+            var now = Time.realtimeSinceStartup;
+            var localIpAddress = ResolveLocalIpAddress();
+
+            var forceRescan = ShouldForceEndpointRescan(mode) || _cachedSubnetDirty;
+
+            var shouldRefreshSubnet = forceRescan ||
+                string.IsNullOrEmpty(_cachedSubnetLocalIp) ||
+                !string.Equals(_cachedSubnetLocalIp, localIpAddress, StringComparison.Ordinal) ||
+                (EndpointCandidateCacheTtlSeconds > 0f &&
+                 now - _cachedSubnetTimestamp >= EndpointCandidateCacheTtlSeconds);
+
+            List<string> subnetCandidates;
+
+            if (shouldRefreshSubnet)
+            {
+                subnetCandidates = new List<string>();
+
+                foreach (var candidate in EnumerateLocalSubnetEndpointCandidates(localIpAddress))
+                {
+                    var sanitized = SanitizeEndpoint(candidate);
+                    if (string.IsNullOrEmpty(sanitized))
+                    {
+                        continue;
+                    }
+
+                    subnetCandidates.Add(sanitized);
+                }
+
+                ShuffleInPlace(subnetCandidates, _endpointProbeRandom);
+
+                _cachedSubnetCandidates.Clear();
+                _cachedSubnetCandidates.AddRange(subnetCandidates);
+                _cachedSubnetLocalIp = localIpAddress;
+                _cachedSubnetTimestamp = now;
+                _cachedSubnetProbeCursor = 0;
+                _cachedSubnetDirty = false;
+
+                plan.CacheHit = false;
+            }
+            else
+            {
+                subnetCandidates = _cachedSubnetCandidates;
+                plan.CacheHit = true;
+            }
+
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            void AddSingletonCandidate(string endpoint)
+            {
+                var sanitized = SanitizeEndpoint(endpoint);
+                if (string.IsNullOrEmpty(sanitized) || !seen.Add(sanitized))
+                {
+                    return;
+                }
+
+                plan.Batches.Add(new List<string> { sanitized });
+            }
+
+            AddSingletonCandidate(_serverEndpointOverride);
+            AddSingletonCandidate(_serverEndpoint);
+            AddSingletonCandidate(BuildEndpointFromHost(localIpAddress));
+            AddSingletonCandidate(BuildEndpointFromHost("127.0.0.1"));
+            AddSingletonCandidate(BuildEndpointFromHost("localhost"));
+
+            if (subnetCandidates.Count > 0 && IsPrivateIpv4(localIpAddress))
+            {
+                var subnetSample = BuildSubnetSample(subnetCandidates, seen, !plan.CacheHit);
+
+                if (subnetSample.Count > 0)
+                {
+                    var batch = new List<string>(MaxConcurrentServerConfigRequests);
+
+                    foreach (var candidate in subnetSample)
+                    {
+                        batch.Add(candidate);
+
+                        if (batch.Count >= MaxConcurrentServerConfigRequests)
+                        {
+                            plan.Batches.Add(new List<string>(batch));
+                            batch.Clear();
+                        }
+                    }
+
+                    if (batch.Count > 0)
+                    {
+                        plan.Batches.Add(batch);
+                    }
+                }
+            }
+
+            return plan;
+        }
+
+        private List<string> BuildSubnetSample(IReadOnlyList<string> candidates, HashSet<string> seen, bool forceFullScan)
+        {
+            var sample = new List<string>();
+
+            if (candidates == null || candidates.Count == 0)
+            {
+                return sample;
+            }
+
+            var sampleSize = forceFullScan
+                ? candidates.Count
+                : Mathf.Min(candidates.Count, MaxConcurrentServerConfigRequests * EndpointCandidateSampleMultiplier);
+
+            var totalCandidates = candidates.Count;
+            var processed = 0;
+
+            while (sample.Count < sampleSize && processed < totalCandidates)
+            {
+                var index = (_cachedSubnetProbeCursor + processed) % totalCandidates;
+                processed++;
+
+                var candidate = candidates[index];
+
+                if (string.IsNullOrEmpty(candidate) || !seen.Add(candidate))
+                {
+                    continue;
+                }
+
+                sample.Add(candidate);
+            }
+
+            if (totalCandidates > 0)
+            {
+                _cachedSubnetProbeCursor = (_cachedSubnetProbeCursor + processed) % totalCandidates;
+            }
+
+            return sample;
+        }
+
+        private static void ShuffleInPlace<T>(IList<T> list, System.Random random)
+        {
+            if (list == null || list.Count <= 1)
+            {
+                return;
+            }
+
+            for (var i = list.Count - 1; i > 0; i--)
+            {
+                var swapIndex = random.Next(i + 1);
+                (list[i], list[swapIndex]) = (list[swapIndex], list[i]);
+            }
+        }
+
         private string ResolveServerEndpoint()
         {
             if (!string.IsNullOrWhiteSpace(_serverEndpointOverride))
@@ -492,71 +701,16 @@ namespace UnityProfileV2.Telemetry
             return BuildEndpointFromHost(ipAddress);
         }
 
-        private IEnumerable<string> EnumerateServerEndpointCandidates()
+        private IEnumerable<string> EnumerateServerEndpointCandidates(EndpointProbeRequestMode mode = EndpointProbeRequestMode.Automatic)
         {
-            foreach (var batch in EnumerateServerEndpointCandidateBatches())
+            var plan = PrepareEndpointCandidatePlan(mode);
+
+            foreach (var batch in plan.Batches)
             {
                 foreach (var endpoint in batch)
                 {
                     yield return endpoint;
                 }
-            }
-        }
-
-        private IEnumerable<IReadOnlyList<string>> EnumerateServerEndpointCandidateBatches()
-        {
-            var localIpAddress = ResolveLocalIpAddress();
-            var isPrivateNetwork = IsPrivateIpv4(localIpAddress);
-
-            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-            var prioritized = new List<string>
-            {
-                _serverEndpointOverride,
-                _serverEndpoint,
-                BuildEndpointFromHost(localIpAddress),
-                BuildEndpointFromHost("127.0.0.1"),
-                BuildEndpointFromHost("localhost")
-            };
-
-            foreach (var candidate in prioritized)
-            {
-                var sanitized = SanitizeEndpoint(candidate);
-                if (string.IsNullOrEmpty(sanitized) || !seen.Add(sanitized))
-                {
-                    continue;
-                }
-
-                yield return new List<string> { sanitized };
-            }
-
-            if (!isPrivateNetwork)
-            {
-                yield break;
-            }
-
-            var batch = new List<string>(MaxConcurrentServerConfigRequests);
-
-            foreach (var candidate in EnumerateLocalSubnetEndpointCandidates(localIpAddress))
-            {
-                var sanitized = SanitizeEndpoint(candidate);
-                if (string.IsNullOrEmpty(sanitized) || !seen.Add(sanitized))
-                {
-                    continue;
-                }
-
-                batch.Add(sanitized);
-
-                if (batch.Count >= MaxConcurrentServerConfigRequests)
-                {
-                    yield return new List<string>(batch);
-                    batch.Clear();
-                }
-            }
-
-            if (batch.Count > 0)
-            {
-                yield return new List<string>(batch);
             }
         }
 
@@ -621,7 +775,7 @@ namespace UnityProfileV2.Telemetry
 
         private IEnumerator InitializeAndMaybeRegisterCoroutine()
         {
-            yield return LoadServerConfigCoroutine();
+            yield return LoadServerConfigCoroutine(EndpointProbeRequestMode.Initialization);
 
             StartConfigPolling();
 
@@ -696,7 +850,7 @@ namespace UnityProfileV2.Telemetry
             while (isActiveAndEnabled)
             {
                 yield return wait;
-                yield return RefreshServerConfigCoroutine();
+                yield return RefreshServerConfigCoroutine(mode: EndpointProbeRequestMode.Automatic);
             }
 
             _configPollingCoroutine = null;
@@ -759,7 +913,7 @@ namespace UnityProfileV2.Telemetry
             }
         }
 
-        private IEnumerator RefreshServerConfigCoroutine(bool allowReconnect = true)
+        private IEnumerator RefreshServerConfigCoroutine(bool allowReconnect = true, EndpointProbeRequestMode mode = EndpointProbeRequestMode.Automatic)
         {
             if (_hasPendingCachedServerConfiguration && !string.IsNullOrEmpty(_cachedServerConfigurationJson))
             {
@@ -775,7 +929,10 @@ namespace UnityProfileV2.Telemetry
             {
                 if (allowReconnect)
                 {
-                    yield return LoadServerConfigCoroutine();
+                    var reconnectMode = mode == EndpointProbeRequestMode.Automatic
+                        ? EndpointProbeRequestMode.Retry
+                        : mode;
+                    yield return LoadServerConfigCoroutine(reconnectMode);
                 }
 
                 yield break;
@@ -810,21 +967,41 @@ namespace UnityProfileV2.Telemetry
 
             if (allowReconnect)
             {
-                yield return LoadServerConfigCoroutine();
+                var reconnectMode = mode == EndpointProbeRequestMode.Automatic
+                    ? EndpointProbeRequestMode.Retry
+                    : mode;
+                yield return LoadServerConfigCoroutine(reconnectMode);
             }
         }
 
-        private IEnumerator LoadServerConfigCoroutine()
+        private IEnumerator LoadServerConfigCoroutine(EndpointProbeRequestMode mode = EndpointProbeRequestMode.Automatic)
         {
             _cachedServerConfigurationJson = null;
             _hasPendingCachedServerConfiguration = false;
 
             var initialEndpoint = _serverEndpoint;
+            var plan = PrepareEndpointCandidatePlan(mode);
             var baseTimeoutSeconds = ServerConfigRequestTimeoutSeconds > 0
                 ? Mathf.Max(ServerConfigRequestTimeoutSeconds, Mathf.CeilToInt(MinServerConfigProbeTimeoutSeconds))
                 : 0;
 
-            foreach (var batch in EnumerateServerEndpointCandidateBatches())
+            if (plan.CacheHit &&
+                (mode == EndpointProbeRequestMode.Automatic || mode == EndpointProbeRequestMode.Retry) &&
+                _consecutiveEndpointProbeFailures > 0)
+            {
+                var now = Time.realtimeSinceStartup;
+
+                if (now < _nextEndpointProbeTime)
+                {
+                    var delay = Mathf.Max(0f, _nextEndpointProbeTime - now);
+                    if (delay > 0f)
+                    {
+                        yield return new WaitForSecondsRealtime(delay);
+                    }
+                }
+            }
+
+            foreach (var batch in plan.Batches)
             {
                 var dynamicTimeoutSeconds = baseTimeoutSeconds > 0 ? (float)baseTimeoutSeconds : 0f;
                 var states = new List<ServerEndpointProbeState>(batch.Count);
@@ -872,6 +1049,8 @@ namespace UnityProfileV2.Telemetry
                             Debug.Log($"[UnityProfileV2] Connected to telemetry server at {result.Endpoint}.");
                         }
 
+                        _consecutiveEndpointProbeFailures = 0;
+                        _nextEndpointProbeTime = 0f;
                         yield break;
                     }
 
@@ -920,6 +1099,22 @@ namespace UnityProfileV2.Telemetry
             }
 
             Debug.LogWarning("[UnityProfileV2] Unable to reach telemetry server at any known endpoint.");
+
+            if (plan.CacheHit && (mode == EndpointProbeRequestMode.Automatic || mode == EndpointProbeRequestMode.Retry))
+            {
+                _consecutiveEndpointProbeFailures = Mathf.Clamp(_consecutiveEndpointProbeFailures + 1, 0, 10);
+                var exponent = Mathf.Max(0, _consecutiveEndpointProbeFailures - 1);
+                var backoffSeconds = Mathf.Min(
+                    EndpointProbeMaxBackoffSeconds,
+                    EndpointProbeBaseBackoffSeconds * Mathf.Pow(2f, exponent));
+                var jitter = (float)_endpointProbeRandom.NextDouble() * EndpointProbeBaseBackoffSeconds;
+                _nextEndpointProbeTime = Time.realtimeSinceStartup + backoffSeconds + jitter;
+            }
+            else
+            {
+                _consecutiveEndpointProbeFailures = 0;
+                _nextEndpointProbeTime = 0f;
+            }
         }
 
         private IEnumerator ProbeServerEndpointWindow(
