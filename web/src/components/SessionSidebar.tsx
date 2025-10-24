@@ -1,5 +1,6 @@
-import { useMemo } from 'react';
-import { Avatar, Badge, Empty, Input, List, Segmented, Select, Space, Tag, Typography } from 'antd';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Avatar, Badge, Empty, Input, Segmented, Select, Space, Tag, Typography } from 'antd';
+import VirtualList from 'rc-virtual-list';
 import type {
   TelemetrySession,
   SessionSortOrder,
@@ -31,6 +32,8 @@ interface SessionSidebarProps {
 
 const { CheckableTag } = Tag;
 
+const ESTIMATED_SESSION_ITEM_HEIGHT = 112;
+
 const statusFilterLabels: Record<SessionStatusFilter, string> = {
   all: '性能数据会话',
   active: '实时会话',
@@ -44,7 +47,16 @@ const sortSelectOptions: { label: string; value: SessionSortOrder }[] = [
   { label: '帧数最少优先', value: 'frames-asc' },
 ];
 
-function SessionItem({ session, isActive, onSelect }: { session: TelemetrySession; isActive: boolean; onSelect: () => void }) {
+const SessionItem = memo(
+  function SessionItem({
+    session,
+    isActive,
+    onSelect,
+  }: {
+    session: TelemetrySession;
+    isActive: boolean;
+    onSelect: (sessionId: string) => void;
+  }) {
   const title = (session.client?.productName as string) ?? 'Unknown Product';
   const frameCount = session.frames?.length ?? 0;
   const trimmedFrameCount = session.trimmedFrameCount ?? 0;
@@ -63,12 +75,14 @@ function SessionItem({ session, isActive, onSelect }: { session: TelemetrySessio
   const platform = session.client?.platform as string | undefined;
   const clientIp = resolveSessionIp(session);
   const subtitle = `${dayjs(session.createdAt).format('MMM D HH:mm:ss')} • ${frameSummary}`;
+  const handleClick = useCallback(() => {
+    window.getSelection()?.removeAllRanges();
+    onSelect(session.id);
+  }, [onSelect, session.id]);
+
   return (
-    <List.Item
-      onClick={() => {
-        window.getSelection()?.removeAllRanges();
-        onSelect();
-      }}
+    <div
+      onClick={handleClick}
       style={{
         padding: '12px 16px',
         cursor: 'pointer',
@@ -104,9 +118,31 @@ function SessionItem({ session, isActive, onSelect }: { session: TelemetrySessio
           {platform ? <Tag color="blue">{platform}</Tag> : null}
         </Space>
       </Space>
-    </List.Item>
+    </div>
   );
-}
+},
+  (prev, next) => {
+    if (prev.isActive !== next.isActive) {
+      return false;
+    }
+    if (prev.session === next.session) {
+      return true;
+    }
+    if (prev.session.id !== next.session.id) {
+      return false;
+    }
+    const keysToCompare: (keyof TelemetrySession)[] = [
+      'closedAt',
+      'frames',
+      'trimmedFrameCount',
+      'totalFrameCount',
+      'client',
+      'clientIp',
+      'createdAt',
+    ];
+    return keysToCompare.every((key) => Object.is(prev.session[key], next.session[key]));
+  }
+);
 
 export default function SessionSidebar({
   sessions,
@@ -144,6 +180,47 @@ export default function SessionSidebar({
   const emptyDescription = selectedGroupingValue
     ? `${selectedGroupingLabel} 暂无${statusFilterLabels[statusFilter]}`
     : `暂无${statusFilterLabels[statusFilter]}`;
+
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const [listHeight, setListHeight] = useState(0);
+
+  useEffect(() => {
+    const element = scrollContainerRef.current;
+    if (!element) {
+      return;
+    }
+
+    const updateHeight = () => {
+      setListHeight(element.clientHeight);
+    };
+
+    updateHeight();
+
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(() => {
+        updateHeight();
+      });
+      observer.observe(element);
+      return () => observer.disconnect();
+    }
+
+    window.addEventListener('resize', updateHeight);
+    return () => {
+      window.removeEventListener('resize', updateHeight);
+    };
+  }, []);
+
+  const renderSessionItem = useCallback(
+    (session: TelemetrySession) => (
+      <SessionItem
+        key={session.id}
+        session={session}
+        isActive={session.id === selectedSessionId}
+        onSelect={onSelectSession}
+      />
+    ),
+    [onSelectSession, selectedSessionId]
+  );
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -266,21 +343,22 @@ export default function SessionSidebar({
           )}
         </div>
       </div>
-      <div style={{ flex: 1, overflowY: 'auto' }}>
+      <div
+        ref={scrollContainerRef}
+        style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}
+      >
         {sessions.length === 0 ? (
           <Empty description={emptyDescription} style={{ marginTop: 80 }} />
         ) : (
-          <List
-            dataSource={sessions}
-            renderItem={(session) => (
-              <SessionItem
-                key={session.id}
-                session={session}
-                isActive={session.id === selectedSessionId}
-                onSelect={() => onSelectSession(session.id)}
-              />
-            )}
-          />
+          <VirtualList
+            data={sessions}
+            height={Math.max(listHeight, 1)}
+            itemHeight={ESTIMATED_SESSION_ITEM_HEIGHT}
+            itemKey="id"
+            fullHeight={false}
+          >
+            {(session) => renderSessionItem(session)}
+          </VirtualList>
         )}
       </div>
     </div>

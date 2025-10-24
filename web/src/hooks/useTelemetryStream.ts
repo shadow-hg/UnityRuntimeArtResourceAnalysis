@@ -317,6 +317,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
 
   const maxSessionFrames = resolveFrameLimit(serverConfig?.history?.maxSessionFrames);
   const loadedSessionIdsRef = useRef<Set<string>>(new Set());
+  const loadSessionAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
   const sessionTextureCacheRef = useRef<Map<string, Map<string, TextureInfo>>>(new Map());
 
   const getSessionTextureCache = useCallback(
@@ -401,16 +402,29 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
         return null;
       }
 
+      const existingController = loadSessionAbortControllersRef.current.get(sessionId);
+      existingController?.abort();
+
+      const controller = new AbortController();
+      loadSessionAbortControllersRef.current.set(sessionId, controller);
+
       try {
         const response = await fetch(
-          `${serverBaseUrl}/sessions/${encodeURIComponent(sessionId)}?hydrateTextures=false`
+          `${serverBaseUrl}/sessions/${encodeURIComponent(sessionId)}?hydrateTextures=false`,
+          { signal: controller.signal }
         );
         if (response.status === 404) {
           loadedSessionIdsRef.current.delete(sessionId);
+          if (loadSessionAbortControllersRef.current.get(sessionId) === controller) {
+            loadSessionAbortControllersRef.current.delete(sessionId);
+          }
           return null;
         }
         if (!response.ok) {
           throw new Error(`Failed to fetch session ${sessionId}: ${response.statusText}`);
+        }
+        if (controller.signal.aborted) {
+          return null;
         }
         const payload = (await response.json()) as TelemetrySession;
         const normalized = normalizeSession(payload, maxSessionFrames);
@@ -423,26 +437,35 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
           : normalized;
         loadedSessionIdsRef.current.add(sessionId);
         setSessions((prev) => {
-          let found = false;
-          const next = prev.map((session) => {
-            if (session.id !== nextSession.id) {
-              return session;
-            }
-            found = true;
-            return {
-              ...session,
-              ...nextSession,
-            };
-          });
-          if (!found) {
-            next.push(nextSession);
+          const index = prev.findIndex((session) => session.id === nextSession.id);
+          if (index === -1) {
+            return [...prev, nextSession];
           }
+
+          const current = prev[index];
+          const keys = Object.keys(nextSession) as (keyof TelemetrySession)[];
+          const hasChanges = keys.some((key) => !Object.is(current[key], nextSession[key]));
+          if (!hasChanges) {
+            return prev;
+          }
+
+          const merged = { ...current, ...nextSession };
+          const next = [...prev];
+          next[index] = merged;
           return next;
         });
         return nextSession;
       } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') {
+          return null;
+        }
         console.error(error);
         return null;
+      } finally {
+        const currentController = loadSessionAbortControllersRef.current.get(sessionId);
+        if (currentController === controller) {
+          loadSessionAbortControllersRef.current.delete(sessionId);
+        }
       }
     },
     [serverBaseUrl, maxSessionFrames, getSessionTextureCache]
@@ -609,6 +632,8 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
       setSessions([]);
       loadedSessionIdsRef.current.clear();
       sessionTextureCacheRef.current.clear();
+      loadSessionAbortControllersRef.current.forEach((controller) => controller.abort());
+      loadSessionAbortControllersRef.current.clear();
     }
 
     function handleSessionDeleted(payload: { sessionId?: string } | undefined) {
@@ -618,6 +643,9 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
       }
       setSessions((prev) => prev.filter((session) => session.id !== sessionId));
       loadedSessionIdsRef.current.delete(sessionId);
+      const controller = loadSessionAbortControllersRef.current.get(sessionId);
+      controller?.abort();
+      loadSessionAbortControllersRef.current.delete(sessionId);
       sessionTextureCacheRef.current.delete(sessionId);
     }
 
