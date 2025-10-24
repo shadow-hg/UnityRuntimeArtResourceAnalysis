@@ -924,7 +924,23 @@ namespace UnityProfileV2.Telemetry
             {
                 downloadHandler = new DownloadHandlerBuffer()
             };
-            var json = JsonUtility.ToJson(payload);
+
+            string json;
+            if (payload is TelemetrySnapshot telemetrySnapshot)
+            {
+                try
+                {
+                    json = JsonUtility.ToJson(telemetrySnapshot);
+                }
+                finally
+                {
+                    AssetTelemetryUtility.ReleaseSnapshot(telemetrySnapshot);
+                }
+            }
+            else
+            {
+                json = JsonUtility.ToJson(payload);
+            }
             var bodyRaw = Encoding.UTF8.GetBytes(json);
             request.uploadHandler = new UploadHandlerRaw(bodyRaw);
             request.SetRequestHeader("Content-Type", "application/json");
