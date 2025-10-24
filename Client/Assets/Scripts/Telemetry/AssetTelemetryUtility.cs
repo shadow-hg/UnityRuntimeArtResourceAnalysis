@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -449,8 +450,12 @@ namespace UnityProfileV2.Telemetry
                 next = Array.Empty<TInfo>();
             }
 
-            var order = new int[next.Count];
-            var updates = new List<TInfo>(next.Count);
+            var order = ArrayPoolUtility<int>.Rent(next.Count);
+            var updates = ListPool<TInfo>.Rent();
+            if (updates.Capacity < next.Count)
+            {
+                updates.Capacity = next.Count;
+            }
             var nextMap = new Dictionary<int, TInfo>(next.Count);
 
             for (var index = 0; index < next.Count; index += 1)
@@ -475,7 +480,10 @@ namespace UnityProfileV2.Telemetry
                 }
             }
 
-            return new CategoryDiff<TInfo>(order, updates.ToArray());
+            var updatesArray = ArrayPoolUtility<TInfo>.FromList(updates);
+            ListPool<TInfo>.Return(updates);
+
+            return new CategoryDiff<TInfo>(order, updatesArray);
         }
 
         private static TelemetrySnapshot BuildSnapshot(
@@ -487,53 +495,138 @@ namespace UnityProfileV2.Telemetry
             var maxPerCategory = Mathf.Max(1, maxAssetsPerCategory);
             var hasBaseline = state?.HasBaseline ?? false;
 
-            var textures = options.includeTextures
-                ? DistinctBy(
-                        snapshotData.textures
-                            .OrderByDescending(info => info.EstimatedBytes),
-                        info => info.name,
-                        StringComparison.OrdinalIgnoreCase)
-                    .Take(maxPerCategory)
-                    .ToArray()
-                : Array.Empty<TextureInfo>();
+            TextureInfo[] textures;
+            if (options.includeTextures && snapshotData.textures.Length > 0)
+            {
+                var textureSource = snapshotData.textures;
+                if (textureSource.Length > 1)
+                {
+                    Array.Sort(textureSource, 0, textureSource.Length, TextureSizeComparer);
+                }
+
+                TextureNameSet.Clear();
+                TextureInfoBuffer.Clear();
+
+                for (var index = 0; index < textureSource.Length && TextureInfoBuffer.Count < maxPerCategory; index += 1)
+                {
+                    var info = textureSource[index];
+                    var name = info.name ?? string.Empty;
+                    if (!TextureNameSet.Add(name))
+                    {
+                        continue;
+                    }
+
+                    TextureInfoBuffer.Add(info);
+                }
+
+                textures = ArrayPoolUtility<TextureInfo>.FromList(TextureInfoBuffer);
+                TextureInfoBuffer.Clear();
+                TextureNameSet.Clear();
+            }
+            else
+            {
+                textures = Array.Empty<TextureInfo>();
+            }
 
             if (textures.Length > 0)
             {
                 NormalizeTextureInstanceIds(state, textures);
             }
 
-            var meshes = options.includeMeshes
-                ? snapshotData.meshes
-                    .OrderByDescending(info => info.EstimatedBytes)
-                    .Take(maxPerCategory)
-                    .ToArray()
-                : Array.Empty<MeshInfo>();
+            MeshInfo[] meshes;
+            if (options.includeMeshes && snapshotData.meshes.Length > 0)
+            {
+                var meshSource = snapshotData.meshes;
+                if (meshSource.Length > 1)
+                {
+                    Array.Sort(meshSource, 0, meshSource.Length, MeshSizeComparer);
+                }
 
-            var renderTextures = options.includeRenderTextures
-                ? DistinctBy(
-                        snapshotData.renderTextures
-                            .OrderByDescending(info => info.EstimatedBytes),
-                        info => info.name,
-                        StringComparison.OrdinalIgnoreCase)
-                    .Take(maxPerCategory)
-                    .ToArray()
-                : Array.Empty<RenderTextureInfo>();
+                var meshCount = Math.Min(maxPerCategory, meshSource.Length);
+                meshes = ArrayPoolUtility<MeshInfo>.CopyRange(meshSource, meshCount);
+            }
+            else
+            {
+                meshes = Array.Empty<MeshInfo>();
+            }
 
-            var materials = options.includeMaterials
-                ? DistinctBy(
-                        snapshotData.materials
-                            .OrderByDescending(info => info.memoryBytes),
-                        info => info.name,
-                        StringComparison.OrdinalIgnoreCase)
-                    .Take(maxPerCategory)
-                    .ToArray()
-                : Array.Empty<MaterialInfo>();
+            RenderTextureInfo[] renderTextures;
+            if (options.includeRenderTextures && snapshotData.renderTextures.Length > 0)
+            {
+                var renderTextureSource = snapshotData.renderTextures;
+                if (renderTextureSource.Length > 1)
+                {
+                    Array.Sort(renderTextureSource, 0, renderTextureSource.Length, RenderTextureSizeComparer);
+                }
 
-            var shaders = options.includeShaders
-                ? snapshotData.shaders
-                    .Take(maxPerCategory)
-                    .ToArray()
-                : Array.Empty<ShaderInfo>();
+                RenderTextureNameSet.Clear();
+                RenderTextureInfoBuffer.Clear();
+
+                for (var index = 0; index < renderTextureSource.Length && RenderTextureInfoBuffer.Count < maxPerCategory; index += 1)
+                {
+                    var info = renderTextureSource[index];
+                    var name = info.name ?? string.Empty;
+                    if (!RenderTextureNameSet.Add(name))
+                    {
+                        continue;
+                    }
+
+                    RenderTextureInfoBuffer.Add(info);
+                }
+
+                renderTextures = ArrayPoolUtility<RenderTextureInfo>.FromList(RenderTextureInfoBuffer);
+                RenderTextureInfoBuffer.Clear();
+                RenderTextureNameSet.Clear();
+            }
+            else
+            {
+                renderTextures = Array.Empty<RenderTextureInfo>();
+            }
+
+            MaterialInfo[] materials;
+            if (options.includeMaterials && snapshotData.materials.Length > 0)
+            {
+                var materialSource = snapshotData.materials;
+                if (materialSource.Length > 1)
+                {
+                    Array.Sort(materialSource, 0, materialSource.Length, MaterialSizeComparer);
+                }
+
+                MaterialNameSet.Clear();
+                MaterialInfoBuffer.Clear();
+
+                for (var index = 0; index < materialSource.Length && MaterialInfoBuffer.Count < maxPerCategory; index += 1)
+                {
+                    var info = materialSource[index];
+                    var name = info.name ?? string.Empty;
+                    if (!MaterialNameSet.Add(name))
+                    {
+                        continue;
+                    }
+
+                    MaterialInfoBuffer.Add(info);
+                }
+
+                materials = ArrayPoolUtility<MaterialInfo>.FromList(MaterialInfoBuffer);
+                MaterialInfoBuffer.Clear();
+                MaterialNameSet.Clear();
+            }
+            else
+            {
+                materials = Array.Empty<MaterialInfo>();
+            }
+
+            ShaderInfo[] shaders;
+            if (options.includeShaders && snapshotData.shaders.Length > 0)
+            {
+                var shaderSource = snapshotData.shaders;
+                var shaderCount = Math.Min(maxPerCategory, shaderSource.Length);
+                shaders = ArrayPoolUtility<ShaderInfo>.CopyRange(shaderSource, shaderCount);
+            }
+            else
+            {
+                shaders = Array.Empty<ShaderInfo>();
+            }
 
             var shaderVariantStats = options.includeShaders
                 ? CalculateShaderVariantStats(snapshotData.shaders)
@@ -599,47 +692,61 @@ namespace UnityProfileV2.Telemetry
                 state.HasBaseline = true;
             }
 
+            ReleaseSnapshotData(snapshotData);
+
             return snapshot;
         }
 
-        private static IEnumerable<T> DistinctBy<T>(IEnumerable<T> source, Func<T, string> keySelector, StringComparison comparison = StringComparison.Ordinal)
+        private static void ReleaseSnapshotData(SnapshotData snapshotData)
         {
-            if (source == null)
+            if (snapshotData == null)
             {
-                yield break;
+                return;
             }
 
-            var seenKeys = new HashSet<string>(StringComparerFromComparison(comparison));
-            foreach (var element in source)
-            {
-                var key = keySelector != null ? keySelector(element) : null;
-                key = key ?? string.Empty;
+            ArrayPoolUtility<TextureInfo>.Return(snapshotData.textures);
+            ArrayPoolUtility<MeshInfo>.Return(snapshotData.meshes);
+            ArrayPoolUtility<RenderTextureInfo>.Return(snapshotData.renderTextures);
+            ArrayPoolUtility<MaterialInfo>.Return(snapshotData.materials);
+            ArrayPoolUtility<ShaderInfo>.Return(snapshotData.shaders);
 
-                if (seenKeys.Add(key))
-                {
-                    yield return element;
-                }
-            }
+            snapshotData.textures = Array.Empty<TextureInfo>();
+            snapshotData.meshes = Array.Empty<MeshInfo>();
+            snapshotData.renderTextures = Array.Empty<RenderTextureInfo>();
+            snapshotData.materials = Array.Empty<MaterialInfo>();
+            snapshotData.shaders = Array.Empty<ShaderInfo>();
         }
 
-        private static StringComparer StringComparerFromComparison(StringComparison comparison)
+        public static void ReleaseSnapshot(TelemetrySnapshot snapshot)
         {
-            switch (comparison)
+            if (snapshot == null)
             {
-                case StringComparison.CurrentCulture:
-                    return StringComparer.CurrentCulture;
-                case StringComparison.CurrentCultureIgnoreCase:
-                    return StringComparer.CurrentCultureIgnoreCase;
-                case StringComparison.InvariantCulture:
-                    return StringComparer.InvariantCulture;
-                case StringComparison.InvariantCultureIgnoreCase:
-                    return StringComparer.InvariantCultureIgnoreCase;
-                case StringComparison.OrdinalIgnoreCase:
-                    return StringComparer.OrdinalIgnoreCase;
-                case StringComparison.Ordinal:
-                default:
-                    return StringComparer.Ordinal;
+                return;
             }
+
+            ArrayPoolUtility<TextureInfo>.Return(snapshot.textures);
+            ArrayPoolUtility<MeshInfo>.Return(snapshot.meshes);
+            ArrayPoolUtility<RenderTextureInfo>.Return(snapshot.renderTextures);
+            ArrayPoolUtility<MaterialInfo>.Return(snapshot.materials);
+            ArrayPoolUtility<ShaderInfo>.Return(snapshot.shaders);
+
+            ArrayPoolUtility<int>.Return(snapshot.textureOrder);
+            ArrayPoolUtility<int>.Return(snapshot.meshOrder);
+            ArrayPoolUtility<int>.Return(snapshot.renderTextureOrder);
+            ArrayPoolUtility<int>.Return(snapshot.materialOrder);
+            ArrayPoolUtility<int>.Return(snapshot.shaderOrder);
+
+            snapshot.textures = Array.Empty<TextureInfo>();
+            snapshot.meshes = Array.Empty<MeshInfo>();
+            snapshot.renderTextures = Array.Empty<RenderTextureInfo>();
+            snapshot.materials = Array.Empty<MaterialInfo>();
+            snapshot.shaders = Array.Empty<ShaderInfo>();
+
+            snapshot.textureOrder = Array.Empty<int>();
+            snapshot.meshOrder = Array.Empty<int>();
+            snapshot.renderTextureOrder = Array.Empty<int>();
+            snapshot.materialOrder = Array.Empty<int>();
+            snapshot.shaderOrder = Array.Empty<int>();
         }
 
         private static SnapshotData CaptureSnapshotData(TelemetrySnapshotOptions options, TelemetryCollectionState state)
@@ -734,7 +841,7 @@ namespace UnityProfileV2.Telemetry
 
             PruneCache(TextureCache, TextureSeenIds);
 
-            var result = TextureInfoBuffer.ToArray();
+            var result = ArrayPoolUtility<TextureInfo>.FromList(TextureInfoBuffer);
             TextureInfoBuffer.Clear();
             return result;
         }
@@ -763,7 +870,7 @@ namespace UnityProfileV2.Telemetry
 
             PruneCache(MeshCache, MeshSeenIds);
 
-            var result = MeshInfoBuffer.ToArray();
+            var result = ArrayPoolUtility<MeshInfo>.FromList(MeshInfoBuffer);
             MeshInfoBuffer.Clear();
             return result;
         }
@@ -792,7 +899,7 @@ namespace UnityProfileV2.Telemetry
 
             PruneCache(RenderTextureCache, RenderTextureSeenIds);
 
-            var result = RenderTextureInfoBuffer.ToArray();
+            var result = ArrayPoolUtility<RenderTextureInfo>.FromList(RenderTextureInfoBuffer);
             RenderTextureInfoBuffer.Clear();
             return result;
         }
@@ -821,7 +928,7 @@ namespace UnityProfileV2.Telemetry
 
             PruneCache(MaterialCache, MaterialSeenIds);
 
-            var result = MaterialInfoBuffer.ToArray();
+            var result = ArrayPoolUtility<MaterialInfo>.FromList(MaterialInfoBuffer);
             MaterialInfoBuffer.Clear();
             return result;
         }
@@ -850,7 +957,7 @@ namespace UnityProfileV2.Telemetry
 
             PruneCache(ShaderCache, ShaderSeenIds);
 
-            var result = ShaderInfoBuffer.ToArray();
+            var result = ArrayPoolUtility<ShaderInfo>.FromList(ShaderInfoBuffer);
             ShaderInfoBuffer.Clear();
             return result;
         }
@@ -1394,6 +1501,100 @@ namespace UnityProfileV2.Telemetry
         private static readonly List<RenderTextureInfo> RenderTextureInfoBuffer = new();
         private static readonly List<MaterialInfo> MaterialInfoBuffer = new();
         private static readonly List<ShaderInfo> ShaderInfoBuffer = new();
+
+        private static readonly HashSet<string> TextureNameSet = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly HashSet<string> RenderTextureNameSet = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly HashSet<string> MaterialNameSet = new(StringComparer.OrdinalIgnoreCase);
+
+        private static readonly Comparison<TextureInfo> TextureSizeComparer = (a, b) =>
+            b.EstimatedBytes.CompareTo(a.EstimatedBytes);
+
+        private static readonly Comparison<MeshInfo> MeshSizeComparer = (a, b) =>
+            b.EstimatedBytes.CompareTo(a.EstimatedBytes);
+
+        private static readonly Comparison<RenderTextureInfo> RenderTextureSizeComparer = (a, b) =>
+            b.EstimatedBytes.CompareTo(a.EstimatedBytes);
+
+        private static readonly Comparison<MaterialInfo> MaterialSizeComparer = (a, b) =>
+            b.memoryBytes.CompareTo(a.memoryBytes);
+
+        private static class ArrayPoolUtility<T>
+        {
+            private static readonly ConcurrentDictionary<int, ConcurrentBag<T[]>> Pools = new();
+
+            public static T[] Rent(int length)
+            {
+                if (length <= 0)
+                {
+                    return Array.Empty<T>();
+                }
+
+                var bag = Pools.GetOrAdd(length, static _ => new ConcurrentBag<T[]>());
+                if (bag.TryTake(out var array))
+                {
+                    return array;
+                }
+
+                return new T[length];
+            }
+
+            public static T[] FromList(List<T> source)
+            {
+                if (source == null || source.Count == 0)
+                {
+                    return Array.Empty<T>();
+                }
+
+                var array = Rent(source.Count);
+                source.CopyTo(array, 0);
+                return array;
+            }
+
+            public static T[] CopyRange(T[] source, int length)
+            {
+                if (source == null || length <= 0)
+                {
+                    return Array.Empty<T>();
+                }
+
+                var array = Rent(length);
+                Array.Copy(source, 0, array, 0, length);
+                return array;
+            }
+
+            public static void Return(T[] array)
+            {
+                if (array == null || array.Length == 0)
+                {
+                    return;
+                }
+
+                Array.Clear(array, 0, array.Length);
+                var bag = Pools.GetOrAdd(array.Length, static _ => new ConcurrentBag<T[]>());
+                bag.Add(array);
+            }
+        }
+
+        private static class ListPool<T>
+        {
+            private static readonly ConcurrentBag<List<T>> Pool = new();
+
+            public static List<T> Rent()
+            {
+                return Pool.TryTake(out var list) ? list : new List<T>();
+            }
+
+            public static void Return(List<T> list)
+            {
+                if (list == null)
+                {
+                    return;
+                }
+
+                list.Clear();
+                Pool.Add(list);
+            }
+        }
 
         public static IEnumerator PopulateFramePreview(TelemetrySnapshot snapshot, float framePreviewScale)
         {
