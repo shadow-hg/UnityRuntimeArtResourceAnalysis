@@ -322,6 +322,30 @@ function mergeSessionWithUpdates(
   });
 }
 
+function hasSessionTimelineChanged(
+  previous: TelemetrySession,
+  next: TelemetrySession
+): boolean {
+  const prevFrames = Array.isArray(previous.frames) ? previous.frames : [];
+  const nextFrames = Array.isArray(next.frames) ? next.frames : [];
+  if (prevFrames.length !== nextFrames.length) {
+    return true;
+  }
+  for (let index = 0; index < prevFrames.length; index += 1) {
+    if (prevFrames[index] !== nextFrames[index]) {
+      return true;
+    }
+  }
+  const prevTrimmed = previous.trimmedFrameCount ?? 0;
+  const nextTrimmed = next.trimmedFrameCount ?? 0;
+  if (prevTrimmed !== nextTrimmed) {
+    return true;
+  }
+  const prevTotal = previous.totalFrameCount ?? prevTrimmed + prevFrames.length;
+  const nextTotal = next.totalFrameCount ?? nextTrimmed + nextFrames.length;
+  return prevTotal !== nextTotal;
+}
+
 function normalizeSession(session: TelemetrySession, maxSessionFrames: number): TelemetrySession {
   const limit = resolveFrameLimit(maxSessionFrames);
   const frames = Array.isArray(session.frames) ? session.frames.filter((frame): frame is TelemetrySnapshot => !!frame) : [];
@@ -351,7 +375,9 @@ function normalizeSession(session: TelemetrySession, maxSessionFrames: number): 
 }
 
 export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions) {
-  const [sessions, setSessions] = useState<TelemetrySession[]>([]);
+  const [sessionsMap, setSessionsMap] = useState<Map<string, TelemetrySession>>(
+    () => new Map()
+  );
   const [connectionState, setConnectionState] = useState<'connecting' | 'connected' | 'disconnected' | 'error'>(
     () => (serverBaseUrl ? 'connecting' : 'disconnected')
   );
@@ -362,6 +388,8 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
 
   const performanceSeriesRef = useRef<Map<string, PerformanceSeriesMutable>>(new Map());
   const [performanceSeriesVersion, setPerformanceSeriesVersion] = useState(0);
+
+  const sessions = useMemo(() => Array.from(sessionsMap.values()), [sessionsMap]);
 
   const notifyPerformanceSeriesUpdate = useCallback(() => {
     setPerformanceSeriesVersion((prev) => prev + 1);
@@ -436,7 +464,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
 
   useEffect(() => {
     if (!serverBaseUrl) {
-      setSessions([]);
+      setSessionsMap(() => new Map());
       setNetworkInfo(null);
       setConnectionState('disconnected');
       setIsSessionsLoading(false);
@@ -460,12 +488,24 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
       }
       setServerConfig(config);
       const limit = resolveFrameLimit(config?.history?.maxSessionFrames);
-      setSessions((prev) => {
-        const next = prev.map((session) => normalizeSession(session, limit));
-        next.forEach((session) => {
-          setPerformanceSeriesForSession(session.id, session.frames ?? []);
+      setSessionsMap((prev) => {
+        if (prev.size === 0) {
+          return prev;
+        }
+        let changed = false;
+        const next = new Map<string, TelemetrySession>();
+        prev.forEach((session, id) => {
+          const normalized = normalizeSession(session, limit);
+          if (hasSessionTimelineChanged(session, normalized)) {
+            next.set(id, normalized);
+            changed = true;
+            setPerformanceSeriesForSession(id, normalized.frames ?? []);
+          } else {
+            next.set(id, session);
+            setPerformanceSeriesForSession(id, session.frames ?? []);
+          }
         });
-        return next;
+        return changed ? next : prev;
       });
     },
     [setPerformanceSeriesForSession]
@@ -533,20 +573,27 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
           : normalized;
         loadedSessionIdsRef.current.add(sessionId);
         let storedSession: TelemetrySession = nextSession;
-        setSessions((prev) => {
-          let found = false;
-          const next = prev.map((session) => {
-            if (session.id !== nextSession.id) {
-              return session;
-            }
-            found = true;
-            storedSession = mergeSessionWithUpdates(session, nextSession);
-            return storedSession;
-          });
-          if (!found) {
-            next.push(nextSession);
+        setSessionsMap((prev) => {
+          const current = prev.get(nextSession.id);
+          if (!current) {
+            const next = new Map(prev);
+            next.set(nextSession.id, nextSession);
             storedSession = nextSession;
+            return next;
           }
+          const merged = mergeSessionWithUpdates(current, nextSession);
+          const shouldUpdate =
+            hasSessionTimelineChanged(current, merged) ||
+            current.closedAt !== merged.closedAt ||
+            current.client !== merged.client ||
+            current.clientIp !== merged.clientIp;
+          if (!shouldUpdate) {
+            storedSession = current;
+            return prev;
+          }
+          const next = new Map(prev);
+          next.set(nextSession.id, merged);
+          storedSession = merged;
           return next;
         });
         setPerformanceSeriesForSession(sessionId, storedSession.frames ?? []);
@@ -571,7 +618,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
 
     async function bootstrapSessions() {
       if (!cancelled) {
-        setSessions([]);
+        setSessionsMap(() => new Map());
         setIsSessionsLoading(true);
         clearPerformanceSeries();
       }
@@ -584,7 +631,13 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
         const initialSessions: TelemetrySession[] = await response.json();
         const normalizedSessions = initialSessions.map((session) => normalizeSession(session, maxSessionFrames));
         if (!cancelled) {
-          setSessions(normalizedSessions);
+          setSessionsMap(() => {
+            const next = new Map<string, TelemetrySession>();
+            normalizedSessions.forEach((session) => {
+              next.set(session.id, session);
+            });
+            return next;
+          });
           normalizedSessions.forEach((session) => {
             setPerformanceSeriesForSession(session.id, session.frames ?? []);
           });
@@ -657,18 +710,42 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
 
     function handleSessionCreate(session: TelemetrySession) {
       const normalized = normalizeSession(session, maxSessionFrames);
-      setSessions((prev) => [...prev, normalized]);
-      setPerformanceSeriesForSession(normalized.id, normalized.frames ?? []);
+      let shouldUpdateSeries = true;
+      setSessionsMap((prev) => {
+        const existing = prev.get(normalized.id);
+        if (existing) {
+          const unchanged =
+            !hasSessionTimelineChanged(existing, normalized) &&
+            existing.closedAt === normalized.closedAt &&
+            existing.client === normalized.client &&
+            existing.clientIp === normalized.clientIp;
+          if (unchanged) {
+            shouldUpdateSeries = false;
+            return prev;
+          }
+        }
+        const next = new Map(prev);
+        next.set(normalized.id, normalized);
+        return next;
+      });
+      if (shouldUpdateSeries) {
+        setPerformanceSeriesForSession(normalized.id, normalized.frames ?? []);
+      }
     }
 
     function handleSessionClose(payload: { sessionId: string }) {
-      setSessions((prev) =>
-        prev.map((session) =>
-          session.id === payload.sessionId
-            ? mergeSessionWithUpdates(session, { closedAt: new Date().toISOString() })
-            : session
-        )
-      );
+      setSessionsMap((prev) => {
+        const current = prev.get(payload.sessionId);
+        if (!current || current.closedAt) {
+          return prev;
+        }
+        const next = new Map(prev);
+        next.set(
+          payload.sessionId,
+          mergeSessionWithUpdates(current, { closedAt: new Date().toISOString() })
+        );
+        return next;
+      });
     }
 
     function handleSessionFrame(payload: {
@@ -682,54 +759,61 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
       let processedFrame: TelemetrySnapshot | null = null;
       let trimmedForSeries = 0;
       let matched = false;
-      setSessions((prev) =>
-        prev.map((session) => {
-          if (session.id !== payload.sessionId) {
-            return session;
+      setSessionsMap((prev) => {
+        const session = prev.get(payload.sessionId);
+        if (!session) {
+          return prev;
+        }
+        matched = true;
+
+        const cache = getSessionTextureCache(payload.sessionId);
+        const incomingFrame = hydrateFrameTexturesFromCache(payload.frame, cache);
+        processedFrame = incomingFrame;
+        const previousTrimmed = session.trimmedFrameCount ?? 0;
+        const previousFrames = session.frames ?? [];
+        let frames = [...previousFrames, incomingFrame];
+        let removed = payload.removedFrameCount;
+        let nextTrimmed = payload.trimmedFrameCount ?? previousTrimmed;
+
+        if (removed === undefined) {
+          removed = Math.max(0, nextTrimmed - previousTrimmed);
+        }
+
+        removed = Math.max(0, removed ?? 0);
+
+        if (removed > 0) {
+          frames = frames.slice(removed);
+          if (payload.trimmedFrameCount === undefined) {
+            nextTrimmed = previousTrimmed + removed;
           }
-          matched = true;
+        }
 
-          const cache = getSessionTextureCache(payload.sessionId);
-          const incomingFrame = hydrateFrameTexturesFromCache(payload.frame, cache);
-          processedFrame = incomingFrame;
-          const previousTrimmed = session.trimmedFrameCount ?? 0;
-          const previousFrames = session.frames ?? [];
-          let frames = [...previousFrames, incomingFrame];
-          let removed = payload.removedFrameCount;
-          let nextTrimmed = payload.trimmedFrameCount ?? previousTrimmed;
+        if (frames.length > limit) {
+          const overflow = frames.length - limit;
+          frames = frames.slice(overflow);
+          nextTrimmed += overflow;
+        }
 
-          if (removed === undefined) {
-            removed = Math.max(0, nextTrimmed - previousTrimmed);
-          }
+        const totalFrameCount =
+          payload.totalFrameCount ??
+          Math.max(nextTrimmed + frames.length, (session.totalFrameCount ?? 0) + 1);
 
-          removed = Math.max(0, removed ?? 0);
+        trimmedForSeries = Math.max(0, previousFrames.length + 1 - frames.length);
 
-          if (removed > 0) {
-            frames = frames.slice(removed);
-            if (payload.trimmedFrameCount === undefined) {
-              nextTrimmed = previousTrimmed + removed;
-            }
-          }
+        const nextSession = mergeSessionWithUpdates(session, {
+          frames,
+          trimmedFrameCount: nextTrimmed,
+          totalFrameCount,
+        });
 
-          if (frames.length > limit) {
-            const overflow = frames.length - limit;
-            frames = frames.slice(overflow);
-            nextTrimmed += overflow;
-          }
+        if (!hasSessionTimelineChanged(session, nextSession)) {
+          return prev;
+        }
 
-          const totalFrameCount =
-            payload.totalFrameCount ??
-            Math.max(nextTrimmed + frames.length, (session.totalFrameCount ?? 0) + 1);
-
-          trimmedForSeries = Math.max(0, previousFrames.length + 1 - frames.length);
-
-          return mergeSessionWithUpdates(session, {
-            frames,
-            trimmedFrameCount: nextTrimmed,
-            totalFrameCount,
-          });
-        })
-      );
+        const next = new Map(prev);
+        next.set(payload.sessionId, nextSession);
+        return next;
+      });
       if (matched && processedFrame) {
         updatePerformanceSeriesForFrame(payload.sessionId, processedFrame, trimmedForSeries);
       }
@@ -740,7 +824,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
     }
 
     function handleHistoryCleared() {
-      setSessions([]);
+      setSessionsMap(() => new Map());
       loadedSessionIdsRef.current.clear();
       sessionTextureCacheRef.current.clear();
       clearPerformanceSeries();
@@ -751,7 +835,14 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
       if (!sessionId) {
         return;
       }
-      setSessions((prev) => prev.filter((session) => session.id !== sessionId));
+      setSessionsMap((prev) => {
+        if (!prev.has(sessionId)) {
+          return prev;
+        }
+        const next = new Map(prev);
+        next.delete(sessionId);
+        return next;
+      });
       loadedSessionIdsRef.current.delete(sessionId);
       sessionTextureCacheRef.current.delete(sessionId);
       deletePerformanceSeries(sessionId);
@@ -826,24 +917,28 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
         });
       }
 
-      setSessions((prev) =>
-        prev.map((session) => {
-          if (session.id !== sessionId) {
-            return session;
-          }
-          if (!Array.isArray(session.frames) || session.frames.length === 0) {
-            return session;
-          }
-          const hydratedFrames = session.frames.map((frame) => hydrateFrameTexturesFromCache(frame, cache));
-          const changed = hydratedFrames.some((frame, index) => frame !== session.frames?.[index]);
-          if (!changed) {
-            return session;
-          }
-          return mergeSessionWithUpdates(session, {
+      setSessionsMap((prev) => {
+        const session = prev.get(sessionId);
+        if (!session) {
+          return prev;
+        }
+        if (!Array.isArray(session.frames) || session.frames.length === 0) {
+          return prev;
+        }
+        const hydratedFrames = session.frames.map((frame) => hydrateFrameTexturesFromCache(frame, cache));
+        const changed = hydratedFrames.some((frame, index) => frame !== session.frames?.[index]);
+        if (!changed) {
+          return prev;
+        }
+        const next = new Map(prev);
+        next.set(
+          sessionId,
+          mergeSessionWithUpdates(session, {
             frames: hydratedFrames,
-          });
-        })
-      );
+          })
+        );
+        return next;
+      });
     },
     [serverBaseUrl, getSessionTextureCache]
   );
@@ -884,7 +979,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
       throw new Error(`Failed to clear telemetry history: ${response.statusText}`);
     }
 
-    setSessions([]);
+    setSessionsMap(() => new Map());
     loadedSessionIdsRef.current.clear();
     sessionTextureCacheRef.current.clear();
     clearPerformanceSeries();
@@ -908,7 +1003,14 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
         throw new Error(`Failed to delete telemetry session: ${response.statusText}`);
       }
 
-      setSessions((prev) => prev.filter((session) => session.id !== sessionId));
+      setSessionsMap((prev) => {
+        if (!prev.has(sessionId)) {
+          return prev;
+        }
+        const next = new Map(prev);
+        next.delete(sessionId);
+        return next;
+      });
       loadedSessionIdsRef.current.delete(sessionId);
       sessionTextureCacheRef.current.delete(sessionId);
       deletePerformanceSeries(sessionId);
@@ -918,6 +1020,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
 
   return {
     sessions,
+    sessionsMap: sessionsMap as ReadonlyMap<string, TelemetrySession>,
     connectionState,
     networkInfo,
     serverConfig,

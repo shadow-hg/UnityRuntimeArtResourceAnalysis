@@ -352,6 +352,7 @@ function usePreferredDarkMode() {
 
 interface AppShellProps {
   sessions: TelemetrySession[];
+  sessionsMap: ReadonlyMap<string, TelemetrySession>;
   connectionState: ReturnType<typeof useTelemetryStream>['connectionState'];
   networkInfo: ReturnType<typeof useTelemetryStream>['networkInfo'];
   isDarkMode: boolean;
@@ -374,6 +375,7 @@ interface AppShellProps {
 
 function AppShell({
   sessions,
+  sessionsMap,
   connectionState,
   networkInfo,
   isDarkMode,
@@ -411,6 +413,10 @@ function AppShell({
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const { token } = theme.useToken();
 
+  const sidebarSessions = useMemo(
+    () => Array.from(sessionsMap.values()),
+    [sessionsMap]
+  );
   useEffect(() => {
     setSamplingIntervalMs((prev) => {
       const next = Math.max(0, (serverConfig?.clientDefaults?.sampleIntervalSeconds ?? 0) * 1000);
@@ -422,10 +428,10 @@ function AppShell({
 
   const searchFilteredSessions = useMemo(() => {
     if (!normalizedSearchValue) {
-      return sessions;
+      return sidebarSessions;
     }
-    return sessions.filter((session) => matchesSessionSearch(session, normalizedSearchValue));
-  }, [sessions, normalizedSearchValue]);
+    return sidebarSessions.filter((session) => matchesSessionSearch(session, normalizedSearchValue));
+  }, [sidebarSessions, normalizedSearchValue]);
 
   const groupingOptions = useMemo<SessionGroupingItem[]>(() => {
     const map = new Map<string, SessionGroupingItem>();
@@ -902,6 +908,7 @@ export default function App() {
 
   const {
     sessions,
+    sessionsMap,
     connectionState,
     networkInfo,
     serverConfig,
@@ -1101,6 +1108,7 @@ export default function App() {
       {contextHolder}
       <AppShell
         sessions={sessions}
+        sessionsMap={sessionsMap}
         connectionState={connectionState}
         networkInfo={networkInfo}
         isDarkMode={isDarkMode}
