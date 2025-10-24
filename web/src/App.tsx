@@ -49,6 +49,7 @@ import type {
   SessionGrouping,
   SessionGroupingItem,
 } from './types';
+import type { PerformanceSeriesSnapshot } from './utils/performanceSeries';
 import SessionSidebar from './components/SessionSidebar';
 import ResourceExplorer from './components/ResourceExplorer';
 import PerformanceChart from './components/PerformanceChart';
@@ -367,6 +368,8 @@ interface AppShellProps {
   onExportGlobalReport: () => void;
   onLoadSessionDetails: (sessionId: string) => void;
   ensureSessionTextures?: (sessionId: string, textureIds: string[]) => Promise<void>;
+  performanceSeriesMap: ReadonlyMap<string, PerformanceSeriesSnapshot>;
+  performanceSeriesVersion: number;
 }
 
 function AppShell({
@@ -387,6 +390,8 @@ function AppShell({
   onExportGlobalReport,
   onLoadSessionDetails,
   ensureSessionTextures,
+  performanceSeriesMap,
+  performanceSeriesVersion,
 }: AppShellProps) {
   const serverDisplayUrl = useMemo(
     () => (serverBaseUrl ? deriveDisplayServerUrl(networkInfo, serverBaseUrl) : '未连接'),
@@ -562,6 +567,13 @@ function AppShell({
     if (!selectedSessionId) return visibleSessions[0] ?? null;
     return visibleSessions.find((session) => session.id === selectedSessionId) ?? visibleSessions[0] ?? null;
   }, [visibleSessions, selectedSessionId]);
+
+  const selectedSessionKey = selectedSession?.id ?? null;
+
+  const selectedPerformanceSeries = useMemo(
+    () => (selectedSessionKey ? performanceSeriesMap.get(selectedSessionKey) ?? null : null),
+    [performanceSeriesMap, performanceSeriesVersion, selectedSessionKey]
+  );
 
   const frames = useMemo(() => {
     if (!selectedSession) return [];
@@ -831,6 +843,7 @@ function AppShell({
               onChangeSamplingInterval={setSamplingIntervalMs}
               onSelectFrame={handleFrameSelect}
               serverBaseUrl={serverBaseUrl}
+              series={selectedPerformanceSeries}
             />
             <Flex gap={16} wrap style={{ width: '100%' }}>
               <TelemetryPanelLoader
@@ -900,6 +913,8 @@ export default function App() {
     refreshServerConfig,
     loadSessionDetails,
     ensureSessionTextures,
+    performanceSeries: performanceSeriesMap,
+    performanceSeriesVersion,
   } = useTelemetryStream({ serverBaseUrl });
   const [isDarkMode, setIsDarkMode] = usePreferredDarkMode();
   const algorithm = isDarkMode ? theme.darkAlgorithm : theme.defaultAlgorithm;
@@ -1102,6 +1117,8 @@ export default function App() {
         onExportGlobalReport={handleExportGlobalReport}
         onLoadSessionDetails={handleLoadSessionDetails}
         ensureSessionTextures={ensureSessionTextures}
+        performanceSeriesMap={performanceSeriesMap}
+        performanceSeriesVersion={performanceSeriesVersion}
       />
       <ServerSettingsModal
         open={isSettingsOpen}

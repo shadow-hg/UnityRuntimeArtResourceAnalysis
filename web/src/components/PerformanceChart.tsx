@@ -16,6 +16,7 @@ import { LineChart } from 'echarts/charts';
 import type { LineSeriesOption } from 'echarts';
 import { CanvasRenderer } from 'echarts/renderers';
 import type { TelemetrySnapshot } from '../types';
+import type { PerformanceSeriesSnapshot } from '../utils/performanceSeries';
 import { formatFps } from '../utils/format';
 import { resolvePreviewSource } from '../utils/preview';
 import CollapsibleCard from './CollapsibleCard';
@@ -38,74 +39,7 @@ interface PerformanceChartProps {
   onChangeSamplingInterval: (value: number) => void;
   onSelectFrame: (frame: TelemetrySnapshot | null, meta?: { userInitiated?: boolean }) => void;
   serverBaseUrl: string;
-}
-
-function ensureFiniteNumber(value: unknown, fallback = 0) {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return value;
-  }
-  if (typeof value === 'string') {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed)) {
-      return parsed;
-    }
-  }
-  return fallback;
-}
-
-function bytesToMegabytes(value: unknown) {
-  const finite = ensureFiniteNumber(value);
-  return finite / (1024 * 1024);
-}
-
-function mapFramesToMegabytes(
-  frames: TelemetrySnapshot[],
-  selector: (frame: TelemetrySnapshot) => unknown
-) {
-  return frames.map((frame) => {
-    const raw = selector(frame);
-    const numeric = ensureFiniteNumber(raw, Number.NaN);
-    if (!Number.isFinite(numeric) || numeric < 0) {
-      return null;
-    }
-    const megabytes = bytesToMegabytes(numeric);
-    if (!Number.isFinite(megabytes)) {
-      return null;
-    }
-    return Number(megabytes.toFixed(2));
-  });
-}
-
-function mapFramesToMilliseconds(
-  frames: TelemetrySnapshot[],
-  selector: (frame: TelemetrySnapshot) => unknown
-) {
-  return frames.map((frame) => {
-    const raw = selector(frame);
-    const numeric = ensureFiniteNumber(raw, Number.NaN);
-    if (!Number.isFinite(numeric) || numeric < 0) {
-      return null;
-    }
-    return Number(numeric.toFixed(2));
-  });
-}
-
-function mapFramesToPercentage(
-  frames: TelemetrySnapshot[],
-  selector: (frame: TelemetrySnapshot) => unknown
-) {
-  return frames.map((frame) => {
-    const raw = selector(frame);
-    const numeric = ensureFiniteNumber(raw, Number.NaN);
-    if (!Number.isFinite(numeric) || numeric < 0) {
-      return null;
-    }
-    const normalized = numeric <= 1 ? numeric * 100 : numeric;
-    if (!Number.isFinite(normalized)) {
-      return null;
-    }
-    return Number(normalized.toFixed(1));
-  });
+  series: PerformanceSeriesSnapshot | null;
 }
 
 function computeNonNegativeAxisExtent(
@@ -200,64 +134,91 @@ export default function PerformanceChart({
   onChangeSamplingInterval,
   onSelectFrame,
   serverBaseUrl,
+  series,
 }: PerformanceChartProps) {
   const chartRef = useRef<EChartsType | null>(null);
   const hoveredFrameNumberRef = useRef<number | null>(null);
   const { token } = theme.useToken();
 
-  const sampledFrames = useMemo(() => {
-    if (!Array.isArray(frames) || frames.length === 0) {
-      return [] as TelemetrySnapshot[];
+  const seriesData = series ?? null;
+
+  const allFrameNumbers = seriesData?.frameNumbers ?? [];
+  const allTimestamps = seriesData?.timestamps ?? [];
+
+  const sampledIndices = useMemo(() => {
+    if (!seriesData || allFrameNumbers.length === 0) {
+      return [] as number[];
     }
 
     if (samplingIntervalMs <= 0) {
-      return frames;
+      return allFrameNumbers.map((_, index) => index);
     }
 
-    const result: TelemetrySnapshot[] = [];
+    const result: number[] = [];
     let lastAcceptedTimestamp = Number.NEGATIVE_INFINITY;
     let lastAcceptedFrameNumber = Number.NEGATIVE_INFINITY;
 
-    frames.forEach((frame) => {
-      const timestamp = Date.parse(frame.timestampUtc ?? '');
-      if (Number.isFinite(timestamp)) {
-        if (timestamp - lastAcceptedTimestamp >= samplingIntervalMs) {
-          result.push(frame);
-          lastAcceptedTimestamp = timestamp;
-          lastAcceptedFrameNumber = frame.frameNumber;
+    allFrameNumbers.forEach((frameNumber, index) => {
+      const timestamp = allTimestamps[index];
+      const parsedTimestamp = typeof timestamp === 'string' ? Date.parse(timestamp) : Number.NaN;
+      if (Number.isFinite(parsedTimestamp)) {
+        if (parsedTimestamp - lastAcceptedTimestamp >= samplingIntervalMs) {
+          result.push(index);
+          lastAcceptedTimestamp = parsedTimestamp;
+          lastAcceptedFrameNumber = frameNumber;
         }
         return;
       }
 
-      if (!Number.isFinite(lastAcceptedFrameNumber) || frame.frameNumber - lastAcceptedFrameNumber >= 1) {
-        result.push(frame);
-        lastAcceptedFrameNumber = frame.frameNumber;
+      if (!Number.isFinite(lastAcceptedFrameNumber) || frameNumber - lastAcceptedFrameNumber >= 1) {
+        result.push(index);
+        lastAcceptedFrameNumber = frameNumber;
       }
     });
 
-    const latest = frames[frames.length - 1];
-    if (latest && !result.some((frame) => frame.frameNumber === latest.frameNumber)) {
-      result.push(latest);
+    const latestIndex = allFrameNumbers.length - 1;
+    if (latestIndex >= 0 && !result.includes(latestIndex)) {
+      result.push(latestIndex);
     }
 
-    return result.sort((a, b) => a.frameNumber - b.frameNumber);
-  }, [frames, samplingIntervalMs]);
+    return result.sort((a, b) => allFrameNumbers[a] - allFrameNumbers[b]);
+  }, [seriesData, allFrameNumbers, allTimestamps, samplingIntervalMs]);
 
-  const displayFrames = useMemo(() => {
-    if (!selectedFrame) {
-      return sampledFrames;
+  const selectedIndex = useMemo(() => {
+    if (!seriesData || !selectedFrame) {
+      return -1;
     }
+    return allFrameNumbers.findIndex((frameNumber) => frameNumber === selectedFrame.frameNumber);
+  }, [seriesData, allFrameNumbers, selectedFrame]);
 
-    if (sampledFrames.some((frame) => frame.frameNumber === selectedFrame.frameNumber)) {
-      return sampledFrames;
+  const visibleIndices = useMemo(() => {
+    if (!seriesData) {
+      return [] as number[];
     }
+    if (selectedIndex >= 0 && !sampledIndices.includes(selectedIndex)) {
+      return [...sampledIndices, selectedIndex].sort(
+        (a, b) => allFrameNumbers[a] - allFrameNumbers[b]
+      );
+    }
+    return sampledIndices;
+  }, [seriesData, sampledIndices, selectedIndex, allFrameNumbers]);
 
-    return [...sampledFrames, selectedFrame].sort((a, b) => a.frameNumber - b.frameNumber);
-  }, [sampledFrames, selectedFrame]);
+  const visibleFrameNumbers = useMemo(() => {
+    if (!seriesData) {
+      return [] as number[];
+    }
+    return visibleIndices.map((index) => allFrameNumbers[index]);
+  }, [seriesData, visibleIndices, allFrameNumbers]);
 
-  const frameNumbers = useMemo(() => displayFrames.map((frame) => frame.frameNumber), [displayFrames]);
-
-  const timestamps = useMemo(() => displayFrames.map((frame) => frame.timestampUtc), [displayFrames]);
+  const visibleTimestamps = useMemo(() => {
+    if (!seriesData) {
+      return [] as (string | null)[];
+    }
+    return visibleIndices.map((index) => {
+      const value = allTimestamps[index];
+      return typeof value === 'string' ? value : value ?? null;
+    });
+  }, [seriesData, visibleIndices, allTimestamps]);
 
   const previewSrc = useMemo(
     () => resolvePreviewSource(selectedFrame?.framePreview ?? null, serverBaseUrl),
@@ -345,14 +306,12 @@ export default function PerformanceChart({
     }
   }, []);
 
-  const fpsValues = useMemo(
-    () =>
-      displayFrames.map((frame) => {
-        const value = ensureFiniteNumber(frame.fps, Number.NaN);
-        return Number.isFinite(value) ? Number(value.toFixed(2)) : null;
-      }),
-    [displayFrames]
-  );
+  const fpsValues = useMemo(() => {
+    if (!seriesData) {
+      return [] as Array<number | null>;
+    }
+    return visibleIndices.map((index) => seriesData.fps[index] ?? null);
+  }, [seriesData, visibleIndices]);
 
   const fpsAxisExtent = useMemo(() => {
     const numericValues = fpsValues.filter(
@@ -394,224 +353,87 @@ export default function PerformanceChart({
     return { min: roundedMin, max: roundedMax } as const;
   }, [fpsValues]);
 
-  const textureValues = useMemo(
-    () =>
-      mapFramesToMegabytes(displayFrames, (frame) => {
-        const explicitTotal = ensureFiniteNumber(frame.totalTextureBytes, Number.NaN);
-        if (Number.isFinite(explicitTotal) && explicitTotal >= 0) {
-          return explicitTotal;
-        }
-        return frame.textures
-          .filter((texture) => !texture.isRenderTexture)
-          .reduce((sum, texture) => sum + ensureFiniteNumber(texture.EstimatedBytes, 0), 0);
+  const mapSeriesData = useCallback(
+    (source: ReadonlyArray<number | null>) =>
+      visibleIndices.map((index) => {
+        const value = source[index];
+        return typeof value === 'number' && Number.isFinite(value) ? value : null;
       }),
-    [displayFrames]
+    [visibleIndices]
   );
 
-  const meshValues = useMemo(
-    () =>
-      mapFramesToMegabytes(displayFrames, (frame) => {
-        const explicitTotal = ensureFiniteNumber(frame.totalMeshBytes, Number.NaN);
-        if (Number.isFinite(explicitTotal) && explicitTotal >= 0) {
-          return explicitTotal;
-        }
-        return frame.meshes.reduce(
-          (sum, mesh) => sum + ensureFiniteNumber(mesh.EstimatedBytes, 0),
-          0
-        );
-      }),
-    [displayFrames]
-  );
+  const memorySeries = useMemo(() => {
+    if (!seriesData) {
+      return [] as Array<{ name: string; data: Array<number | null> }>;
+    }
 
-  const renderTextureValues = useMemo(
-    () =>
-      mapFramesToMegabytes(displayFrames, (frame) => {
-        const explicitTotal = ensureFiniteNumber(frame.totalRenderTextureBytes, Number.NaN);
-        if (Number.isFinite(explicitTotal) && explicitTotal >= 0) {
-          return explicitTotal;
-        }
-        return (frame.renderTextures ?? []).reduce(
-          (sum, renderTexture) => sum + ensureFiniteNumber(renderTexture?.EstimatedBytes, 0),
-          0
-        );
-      }),
-    [displayFrames]
-  );
+    const seriesList = [
+      { name: '纹理 (MB)', data: mapSeriesData(seriesData.memory.textures) },
+      { name: '网格 (MB)', data: mapSeriesData(seriesData.memory.meshes) },
+      { name: 'RenderTexture (MB)', data: mapSeriesData(seriesData.memory.renderTextures) },
+      { name: 'Shader (MB)', data: mapSeriesData(seriesData.memory.shaders) },
+      { name: '材质 (MB)', data: mapSeriesData(seriesData.memory.materials) },
+      { name: 'Unity 堆 (MB)', data: mapSeriesData(seriesData.memory.unityHeap) },
+      { name: 'Native 内存 (MB)', data: mapSeriesData(seriesData.memory.nativeMemory) },
+      { name: 'GPU 显存 (MB)', data: mapSeriesData(seriesData.memory.gpuMemory) },
+      { name: '纹理池 (MB)', data: mapSeriesData(seriesData.memory.texturePool) },
+      { name: '网格池 (MB)', data: mapSeriesData(seriesData.memory.meshPool) },
+      { name: '其他内存 (MB)', data: mapSeriesData(seriesData.memory.otherMemory) },
+      { name: '托管堆 (MB)', data: mapSeriesData(seriesData.memory.managedHeap) },
+    ];
 
-  const shaderValues = useMemo(
-    () =>
-      mapFramesToMegabytes(displayFrames, (frame) => {
-        const explicitBytes = ensureFiniteNumber(frame.totalShaderBytes ?? frame.shaderMemoryBytes, Number.NaN);
-        if (Number.isFinite(explicitBytes) && explicitBytes > 0) {
-          return explicitBytes;
-        }
-        const aggregatedBytes =
-          frame.shaders?.reduce((sum, shader) => sum + ensureFiniteNumber(shader?.memoryBytes, 0), 0) ?? 0;
-        return aggregatedBytes > 0 ? aggregatedBytes : Number.NaN;
-      }),
-    [displayFrames]
-  );
+    return seriesList.filter((item) => hasSeriesData(item.data));
+  }, [seriesData, mapSeriesData]);
 
-  const materialValues = useMemo(
-    () =>
-      mapFramesToMegabytes(displayFrames, (frame) => {
-        const explicitTotal = ensureFiniteNumber(frame.totalMaterialBytes, Number.NaN);
-        if (Number.isFinite(explicitTotal) && explicitTotal > 0) {
-          return explicitTotal;
-        }
-        const aggregated =
-          (frame.materials ?? []).reduce(
-            (sum, material) => sum + ensureFiniteNumber(material?.memoryBytes, 0),
-            0
-          ) ?? 0;
-        return aggregated > 0 ? aggregated : Number.NaN;
-      }),
-    [displayFrames]
-  );
+  const frameTimeSeries = useMemo(() => {
+    if (!seriesData) {
+      return [] as Array<{ name: string; data: Array<number | null> }>;
+    }
 
-  const unityHeapValues = useMemo(
-    () => mapFramesToMegabytes(displayFrames, (frame) => frame.memoryStats?.unityHeapBytes),
-    [displayFrames]
-  );
+    const seriesList = [
+      { name: 'CPU 帧耗时 (ms)', data: mapSeriesData(seriesData.frameTiming.cpu) },
+      { name: 'GPU 帧耗时 (ms)', data: mapSeriesData(seriesData.frameTiming.gpu) },
+      { name: '主线程耗时 (ms)', data: mapSeriesData(seriesData.frameTiming.mainThread) },
+      { name: '渲染线程耗时 (ms)', data: mapSeriesData(seriesData.frameTiming.renderThread) },
+    ];
 
-  const nativeMemoryValues = useMemo(
-    () => mapFramesToMegabytes(displayFrames, (frame) => frame.memoryStats?.nativeMemoryBytes),
-    [displayFrames]
-  );
+    return seriesList.filter((item) => hasSeriesData(item.data));
+  }, [seriesData, mapSeriesData]);
 
-  const gpuMemoryValues = useMemo(
-    () => mapFramesToMegabytes(displayFrames, (frame) => frame.memoryStats?.gpuMemoryBytes),
-    [displayFrames]
-  );
+  const utilizationSeries = useMemo(() => {
+    if (!seriesData) {
+      return [] as Array<{ name: string; data: Array<number | null> }>;
+    }
 
-  const texturePoolValues = useMemo(
-    () => mapFramesToMegabytes(displayFrames, (frame) => frame.memoryStats?.texturePoolBytes),
-    [displayFrames]
-  );
+    const seriesList = [
+      { name: '主线程利用率 (%)', data: mapSeriesData(seriesData.threadUtilization.mainThread) },
+      { name: '渲染线程利用率 (%)', data: mapSeriesData(seriesData.threadUtilization.renderThread) },
+      { name: 'Job Worker 利用率 (%)', data: mapSeriesData(seriesData.threadUtilization.jobWorker) },
+    ];
 
-  const meshPoolValues = useMemo(
-    () => mapFramesToMegabytes(displayFrames, (frame) => frame.memoryStats?.meshPoolBytes),
-    [displayFrames]
-  );
-
-  const otherMemoryValues = useMemo(
-    () => mapFramesToMegabytes(displayFrames, (frame) => frame.memoryStats?.otherMemoryBytes),
-    [displayFrames]
-  );
-
-  const managedHeapValues = useMemo(
-    () => mapFramesToMegabytes(displayFrames, (frame) => frame.memoryStats?.gc?.managedHeapSizeBytes),
-    [displayFrames]
-  );
-
-  const cpuFrameTimeValues = useMemo(
-    () => mapFramesToMilliseconds(displayFrames, (frame) => frame.frameTiming?.cpuFrameTimeMs),
-    [displayFrames]
-  );
-
-  const gpuFrameTimeValues = useMemo(
-    () => mapFramesToMilliseconds(displayFrames, (frame) => frame.frameTiming?.gpuFrameTimeMs),
-    [displayFrames]
-  );
-
-  const mainThreadFrameTimeValues = useMemo(
-    () => mapFramesToMilliseconds(displayFrames, (frame) => frame.frameTiming?.cpuMainThreadTimeMs),
-    [displayFrames]
-  );
-
-  const renderThreadFrameTimeValues = useMemo(
-    () => mapFramesToMilliseconds(displayFrames, (frame) => frame.frameTiming?.cpuRenderThreadTimeMs),
-    [displayFrames]
-  );
-
-  const mainThreadUtilizationValues = useMemo(
-    () => mapFramesToPercentage(displayFrames, (frame) => frame.threadStats?.mainThreadPercent),
-    [displayFrames]
-  );
-
-  const renderThreadUtilizationValues = useMemo(
-    () => mapFramesToPercentage(displayFrames, (frame) => frame.threadStats?.renderThreadPercent),
-    [displayFrames]
-  );
-
-  const jobWorkerUtilizationValues = useMemo(
-    () => mapFramesToPercentage(displayFrames, (frame) => frame.threadStats?.jobWorkerPercent),
-    [displayFrames]
-  );
+    return seriesList.filter((item) => hasSeriesData(item.data));
+  }, [seriesData, mapSeriesData]);
 
   const frameTimeAxisExtent = useMemo(
     () =>
       computeNonNegativeAxisExtent(
-        [cpuFrameTimeValues, gpuFrameTimeValues, mainThreadFrameTimeValues, renderThreadFrameTimeValues],
+        frameTimeSeries.map((item) => item.data),
         50
       ),
-    [cpuFrameTimeValues, gpuFrameTimeValues, mainThreadFrameTimeValues, renderThreadFrameTimeValues]
+    [frameTimeSeries]
   );
 
   const utilizationAxisExtent = useMemo(
     () =>
       computeNonNegativeAxisExtent(
-        [mainThreadUtilizationValues, renderThreadUtilizationValues, jobWorkerUtilizationValues],
+        utilizationSeries.map((item) => item.data),
         100
       ),
-    [jobWorkerUtilizationValues, mainThreadUtilizationValues, renderThreadUtilizationValues]
-  );
-
-  const memorySeries = useMemo(
-    () =>
-      [
-        { name: '纹理 (MB)', data: textureValues },
-        { name: '网格 (MB)', data: meshValues },
-        { name: 'RenderTexture (MB)', data: renderTextureValues },
-        { name: 'Shader (MB)', data: shaderValues },
-        { name: '材质 (MB)', data: materialValues },
-        { name: 'Unity 堆 (MB)', data: unityHeapValues },
-        { name: 'Native 内存 (MB)', data: nativeMemoryValues },
-        { name: 'GPU 显存 (MB)', data: gpuMemoryValues },
-        { name: '纹理池 (MB)', data: texturePoolValues },
-        { name: '网格池 (MB)', data: meshPoolValues },
-        { name: '其他内存 (MB)', data: otherMemoryValues },
-        { name: '托管堆 (MB)', data: managedHeapValues },
-      ].filter((series) => hasSeriesData(series.data)),
-    [
-      gpuMemoryValues,
-      managedHeapValues,
-      materialValues,
-      meshPoolValues,
-      meshValues,
-      nativeMemoryValues,
-      otherMemoryValues,
-      renderTextureValues,
-      shaderValues,
-      texturePoolValues,
-      textureValues,
-      unityHeapValues,
-    ]
-  );
-
-  const frameTimeSeries = useMemo(
-    () =>
-      [
-        { name: 'CPU 帧耗时 (ms)', data: cpuFrameTimeValues },
-        { name: 'GPU 帧耗时 (ms)', data: gpuFrameTimeValues },
-        { name: '主线程耗时 (ms)', data: mainThreadFrameTimeValues },
-        { name: '渲染线程耗时 (ms)', data: renderThreadFrameTimeValues },
-      ].filter((series) => hasSeriesData(series.data)),
-    [cpuFrameTimeValues, gpuFrameTimeValues, mainThreadFrameTimeValues, renderThreadFrameTimeValues]
-  );
-
-  const utilizationSeries = useMemo(
-    () =>
-      [
-        { name: '主线程利用率 (%)', data: mainThreadUtilizationValues },
-        { name: '渲染线程利用率 (%)', data: renderThreadUtilizationValues },
-        { name: 'Job Worker 利用率 (%)', data: jobWorkerUtilizationValues },
-      ].filter((series) => hasSeriesData(series.data)),
-    [jobWorkerUtilizationValues, mainThreadUtilizationValues, renderThreadUtilizationValues]
+    [utilizationSeries]
   );
 
   const option = useMemo<EChartsOption>(() => {
-    const latestFrameNumber = frameNumbers[frameNumbers.length - 1];
+    const latestFrameNumber = visibleFrameNumbers[visibleFrameNumbers.length - 1];
     const tooltipSeriesNames = [
       'FPS',
       ...memorySeries.map((series) => series.name),
@@ -692,8 +514,8 @@ export default function PerformanceChart({
           }
 
           const index = params[0]?.dataIndex ?? 0;
-          const frameNumber = frameNumbers[index];
-          const timestamp = timestamps[index];
+          const frameNumber = visibleFrameNumbers[index];
+          const timestamp = visibleTimestamps[index];
           const date = timestamp ? new Date(timestamp) : null;
           const header = [`#${frameNumber ?? '-'}${date ? ` · ${date.toLocaleTimeString()}` : ''}`];
 
@@ -744,7 +566,7 @@ export default function PerformanceChart({
         nameLocation: 'middle',
         nameGap: 35,
         axisLabel: { formatter: (value: number | string) => `#${value}` },
-        data: frameNumbers,
+        data: visibleFrameNumbers,
         triggerEvent: true,
       },
       yAxis: [
@@ -859,8 +681,8 @@ export default function PerformanceChart({
       ],
     } satisfies EChartsOption;
   }, [
-    frameNumbers,
-    timestamps,
+    visibleFrameNumbers,
+    visibleTimestamps,
     fpsValues,
     fpsAxisExtent,
     frameTimeAxisExtent,
@@ -912,7 +734,9 @@ export default function PerformanceChart({
 
     if (!selectedFrame) return;
 
-    const targetIndex = frameNumbers.findIndex((frameNumber) => frameNumber === selectedFrame.frameNumber);
+    const targetIndex = visibleFrameNumbers.findIndex(
+      (frameNumber) => frameNumber === selectedFrame.frameNumber
+    );
     if (targetIndex === -1) {
       return;
     }
@@ -925,10 +749,10 @@ export default function PerformanceChart({
     safelyDispatch(instance, {
       type: 'updateAxisPointer',
       seriesIndex: 0,
-      value: frameNumbers[targetIndex],
+      value: visibleFrameNumbers[targetIndex],
     });
   }, [
-    frameNumbers,
+    visibleFrameNumbers,
     safelyDispatch,
     selectedFrame,
     totalSeriesCount,
@@ -944,13 +768,13 @@ export default function PerformanceChart({
           ? Number(rawValue)
           : Number.NaN;
 
-      if (Number.isFinite(numericValue) && frameNumbers.includes(numericValue)) {
+      if (Number.isFinite(numericValue) && visibleFrameNumbers.includes(numericValue)) {
         hoveredFrameNumberRef.current = numericValue;
       } else {
         hoveredFrameNumberRef.current = null;
       }
     },
-    [frameNumbers]
+    [visibleFrameNumbers]
   );
 
   const handleChartClick = useCallback(
@@ -993,7 +817,7 @@ export default function PerformanceChart({
       let frameNumber: number | null = null;
 
       if (typeof params.dataIndex === 'number') {
-        frameNumber = frameNumbers[params.dataIndex] ?? null;
+        frameNumber = visibleFrameNumbers[params.dataIndex] ?? null;
       }
 
       if (frameNumber == null) {
@@ -1031,7 +855,7 @@ export default function PerformanceChart({
 
       onSelectFrame(frame, { userInitiated: true });
     },
-    [frameNumbers, frames, onSelectFrame]
+    [visibleFrameNumbers, frames, onSelectFrame]
   );
 
   const handleGlobalOut = useCallback(() => {
@@ -1072,7 +896,7 @@ export default function PerformanceChart({
         return;
       }
 
-      const nearestFrameNumber = findNearestFrameNumber(numericValue, frameNumbers);
+      const nearestFrameNumber = findNearestFrameNumber(numericValue, visibleFrameNumbers);
       if (nearestFrameNumber == null) {
         return;
       }
@@ -1089,7 +913,7 @@ export default function PerformanceChart({
     return () => {
       zr.off('click', handleZrClick);
     };
-  }, [frameNumbers, frames, onSelectFrame]);
+  }, [visibleFrameNumbers, frames, onSelectFrame]);
 
   const latestFrameNumberForTitle =
     frames.length > 0 ? frames[frames.length - 1]?.frameNumber ?? '-' : '-';
