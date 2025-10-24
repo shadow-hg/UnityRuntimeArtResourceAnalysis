@@ -5,6 +5,7 @@ import CollapsibleCard from './CollapsibleCard';
 
 interface EnvironmentPanelProps {
   frame: TelemetrySnapshot | null;
+  onCollapseChange?: (collapsed: boolean) => void;
 }
 
 function formatPosition(position: EnvironmentInfo['playerPosition']): string | null {
@@ -38,7 +39,7 @@ function normalizeExtra(extra: EnvironmentInfo['extra']) {
   return [];
 }
 
-export default function EnvironmentPanel({ frame }: EnvironmentPanelProps) {
+export default function EnvironmentPanel({ frame, onCollapseChange }: EnvironmentPanelProps) {
   const environment = frame?.environment ?? null;
   const extraEntries = normalizeExtra(environment?.extra);
 
@@ -60,6 +61,7 @@ export default function EnvironmentPanel({ frame }: EnvironmentPanelProps) {
       style={{ flex: 1, minWidth: 320 }}
       bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 16 }}
       collapseMode="compact"
+      onCollapseChange={onCollapseChange}
     >
       {!hasAnyData ? (
         <Empty description="暂无环境信息" image={Empty.PRESENTED_IMAGE_SIMPLE} />

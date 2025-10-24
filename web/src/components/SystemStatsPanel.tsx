@@ -6,6 +6,7 @@ import CollapsibleCard from './CollapsibleCard';
 
 interface SystemStatsPanelProps {
   frame: TelemetrySnapshot | null;
+  onCollapseChange?: (collapsed: boolean) => void;
 }
 
 function normalizePercent(value: number | null | undefined): number | null {
@@ -46,7 +47,7 @@ function normalizeThreadSamples(samples: ThreadUtilizationSample[] | null | unde
     }));
 }
 
-export default function SystemStatsPanel({ frame }: SystemStatsPanelProps) {
+export default function SystemStatsPanel({ frame, onCollapseChange }: SystemStatsPanelProps) {
   const memory = frame?.memoryStats ?? null;
   const threadStats = frame?.threadStats ?? null;
 
@@ -97,6 +98,7 @@ export default function SystemStatsPanel({ frame }: SystemStatsPanelProps) {
       style={{ flex: 1, minWidth: 320 }}
       bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 16 }}
       collapseMode="compact"
+      onCollapseChange={onCollapseChange}
     >
       {!hasAnyData ? (
         <Empty description="暂无系统占用数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />

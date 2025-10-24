@@ -6,6 +6,7 @@ import CollapsibleCard from './CollapsibleCard';
 
 interface AssetIoPanelProps {
   frame: TelemetrySnapshot | null;
+  onCollapseChange?: (collapsed: boolean) => void;
 }
 
 function normalizeRatio(value: number | null | undefined): number | null {
@@ -46,7 +47,7 @@ function normalizeResourceInstances(instances: ResourceInstanceStats[] | null | 
   return instances.filter((instance) => Boolean(instance && (instance.resourceType || instance.activeCount != null)));
 }
 
-export default function AssetIoPanel({ frame }: AssetIoPanelProps) {
+export default function AssetIoPanel({ frame, onCollapseChange }: AssetIoPanelProps) {
   const assetIo = frame?.assetIo ?? null;
 
   const hasPrimaryMetrics =
@@ -78,6 +79,7 @@ export default function AssetIoPanel({ frame }: AssetIoPanelProps) {
       style={{ flex: 1, minWidth: 320 }}
       bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 16 }}
       collapseMode="compact"
+      onCollapseChange={onCollapseChange}
     >
       {!hasAnyData ? (
         <Empty description="暂无资产 IO 数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />

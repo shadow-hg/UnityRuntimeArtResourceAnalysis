@@ -1,4 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  type CSSProperties,
+  type ComponentType,
+  type LazyExoticComponent,
+  type ReactNode,
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   Badge,
   Button,
@@ -7,6 +19,7 @@ import {
   Input,
   Layout,
   Space,
+  Skeleton,
   Switch,
   Tag,
   Tooltip,
@@ -40,10 +53,7 @@ import SessionSidebar from './components/SessionSidebar';
 import ResourceExplorer from './components/ResourceExplorer';
 import PerformanceChart from './components/PerformanceChart';
 import ServerSettingsModal from './components/ServerSettingsModal';
-import FrameInsightsPanel from './components/FrameInsightsPanel';
-import SystemStatsPanel from './components/SystemStatsPanel';
-import AssetIoPanel from './components/AssetIoPanel';
-import EnvironmentPanel from './components/EnvironmentPanel';
+import CollapsibleCard from './components/CollapsibleCard';
 import { formatBytes, formatFps } from './utils/format';
 import { buildGlobalReport } from './utils/report';
 import { resolveSessionIp, UNKNOWN_IP_LABEL } from './utils/session';
@@ -53,6 +63,11 @@ const { Header, Sider, Content } = Layout;
 
 const DEFAULT_SERVER_PORT = 48080;
 const DEFAULT_SERVER_IP = '0.0.0.0';
+
+const FrameInsightsPanelLazy = lazy(() => import('./components/FrameInsightsPanel'));
+const SystemStatsPanelLazy = lazy(() => import('./components/SystemStatsPanel'));
+const AssetIoPanelLazy = lazy(() => import('./components/AssetIoPanel'));
+const EnvironmentPanelLazy = lazy(() => import('./components/EnvironmentPanel'));
 
 function stripTrailingSlash(value: string): string {
   if (value.endsWith('/')) {
@@ -196,6 +211,132 @@ function matchesSessionSearch(session: TelemetrySession, query: string): boolean
     }
     return raw.toLowerCase().includes(normalized);
   });
+}
+
+type LazyPanelComponent = LazyExoticComponent<
+  ComponentType<{ frame: TelemetrySnapshot | null; onCollapseChange?: (collapsed: boolean) => void }>
+>;
+
+function usePanelLoadTrigger(defaultExpanded: boolean) {
+  const [shouldLoad, setShouldLoad] = useState(defaultExpanded);
+
+  const ensureLoad = useCallback(() => {
+    setShouldLoad(true);
+  }, []);
+
+  const handleCollapseChange = useCallback(
+    (collapsed: boolean) => {
+      if (!collapsed) {
+        ensureLoad();
+      }
+    },
+    [ensureLoad]
+  );
+
+  return {
+    shouldLoad,
+    ensureLoad,
+    handleCollapseChange,
+    defaultCollapsed: !defaultExpanded,
+  };
+}
+
+interface CollapsiblePanelSkeletonProps {
+  title: ReactNode;
+  style?: CSSProperties;
+  bodyStyle?: CSSProperties;
+  collapseMode?: 'hidden' | 'compact';
+  defaultCollapsed?: boolean;
+  paragraphRows?: number;
+  onExpand: () => void;
+}
+
+function CollapsiblePanelSkeleton({
+  title,
+  style,
+  bodyStyle,
+  collapseMode = 'compact',
+  defaultCollapsed = false,
+  paragraphRows = 6,
+  onExpand,
+}: CollapsiblePanelSkeletonProps) {
+  const hasTriggeredRef = useRef(false);
+
+  useEffect(() => {
+    if (!defaultCollapsed && !hasTriggeredRef.current) {
+      hasTriggeredRef.current = true;
+      onExpand();
+    }
+  }, [defaultCollapsed, onExpand]);
+
+  const handleCollapseChange = useCallback(
+    (collapsed: boolean) => {
+      if (!collapsed && !hasTriggeredRef.current) {
+        hasTriggeredRef.current = true;
+        onExpand();
+      }
+    },
+    [onExpand]
+  );
+
+  return (
+    <CollapsibleCard
+      title={title}
+      style={style}
+      bodyStyle={bodyStyle}
+      collapseMode={collapseMode}
+      defaultCollapsed={defaultCollapsed}
+      onCollapseChange={handleCollapseChange}
+    >
+      <Skeleton active title={false} paragraph={{ rows: paragraphRows }} />
+    </CollapsibleCard>
+  );
+}
+
+interface TelemetryPanelLoaderProps {
+  Component: LazyPanelComponent;
+  frame: TelemetrySnapshot | null;
+  title: ReactNode;
+  style?: CSSProperties;
+  bodyStyle?: CSSProperties;
+  collapseMode?: 'hidden' | 'compact';
+  defaultExpanded?: boolean;
+  skeletonRows?: number;
+}
+
+function TelemetryPanelLoader({
+  Component,
+  frame,
+  title,
+  style,
+  bodyStyle,
+  collapseMode,
+  defaultExpanded = true,
+  skeletonRows,
+}: TelemetryPanelLoaderProps) {
+  const { shouldLoad, ensureLoad, handleCollapseChange, defaultCollapsed } = usePanelLoadTrigger(defaultExpanded);
+
+  const skeleton = (
+    <CollapsiblePanelSkeleton
+      title={title}
+      style={style}
+      bodyStyle={bodyStyle}
+      collapseMode={collapseMode}
+      defaultCollapsed={defaultCollapsed}
+      paragraphRows={skeletonRows}
+      onExpand={ensureLoad}
+    />
+  );
+
+  if (!shouldLoad) {
+    return skeleton;
+  }
+
+  return (
+    <Suspense fallback={skeleton}>
+      <Component frame={frame} onCollapseChange={handleCollapseChange} />
+    </Suspense>
+  );
 }
 
 const connectionBadgeMeta: Record<
@@ -703,12 +844,40 @@ function AppShell({
               serverBaseUrl={serverBaseUrl}
             />
             <Flex gap={16} wrap style={{ width: '100%' }}>
-              <FrameInsightsPanel frame={selectedFrame} />
-              <SystemStatsPanel frame={selectedFrame} />
+              <TelemetryPanelLoader
+                Component={FrameInsightsPanelLazy}
+                frame={selectedFrame}
+                title={<Typography.Text strong>帧执行明细</Typography.Text>}
+                style={{ flex: 1, minWidth: 320 }}
+                bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 16 }}
+                collapseMode="compact"
+              />
+              <TelemetryPanelLoader
+                Component={SystemStatsPanelLazy}
+                frame={selectedFrame}
+                title={<Typography.Text strong>系统与资源占用</Typography.Text>}
+                style={{ flex: 1, minWidth: 320 }}
+                bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 16 }}
+                collapseMode="compact"
+              />
             </Flex>
             <Flex gap={16} wrap style={{ width: '100%' }}>
-              <AssetIoPanel frame={selectedFrame} />
-              <EnvironmentPanel frame={selectedFrame} />
+              <TelemetryPanelLoader
+                Component={AssetIoPanelLazy}
+                frame={selectedFrame}
+                title={<Typography.Text strong>资产生命周期与 IO</Typography.Text>}
+                style={{ flex: 1, minWidth: 320 }}
+                bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 16 }}
+                collapseMode="compact"
+              />
+              <TelemetryPanelLoader
+                Component={EnvironmentPanelLazy}
+                frame={selectedFrame}
+                title={<Typography.Text strong>运行环境指标</Typography.Text>}
+                style={{ flex: 1, minWidth: 320 }}
+                bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 16 }}
+                collapseMode="compact"
+              />
             </Flex>
             <ResourceExplorer
               frame={selectedFrame}
