@@ -236,6 +236,7 @@ interface AppShellProps {
   onToggleConnection: () => void;
   onExportGlobalReport: () => void;
   onLoadSessionDetails: (sessionId: string) => void;
+  ensureSessionTextures?: (sessionId: string, textureIds: string[]) => Promise<void>;
 }
 
 function AppShell({
@@ -255,6 +256,7 @@ function AppShell({
   onToggleConnection,
   onExportGlobalReport,
   onLoadSessionDetails,
+  ensureSessionTextures,
 }: AppShellProps) {
   const serverDisplayUrl = useMemo(
     () => (serverBaseUrl ? deriveDisplayServerUrl(networkInfo, serverBaseUrl) : '未连接'),
@@ -940,6 +942,7 @@ export default function App() {
         onToggleConnection={handleToggleConnection}
         onExportGlobalReport={handleExportGlobalReport}
         onLoadSessionDetails={handleLoadSessionDetails}
+        ensureSessionTextures={ensureSessionTextures}
       />
       <ServerSettingsModal
         open={isSettingsOpen}
