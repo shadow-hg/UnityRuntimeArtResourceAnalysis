@@ -89,10 +89,12 @@ namespace UnityProfileV2.Telemetry
             internal Dictionary<int, RenderTextureInfo> RenderTextures { get; } = new();
             internal Dictionary<int, MaterialInfo> Materials { get; } = new();
             internal Dictionary<int, ShaderInfo> Shaders { get; } = new();
+            internal Dictionary<string, int> StableTextureInstanceIds { get; } = new(StringComparer.Ordinal);
             internal Dictionary<string, ResourceTracker> ResourceTrackers { get; } = new();
             internal Queue<AssetLoadSample> RecentLoads { get; } = new();
             internal List<ResourceUnloadEvent> RecentUnloads { get; } = new();
             internal bool HasBaseline { get; set; }
+            internal int NextStableTextureInstanceId { get; set; } = -1;
 
             public void Reset()
             {
@@ -101,6 +103,7 @@ namespace UnityProfileV2.Telemetry
                 RenderTextures.Clear();
                 Materials.Clear();
                 Shaders.Clear();
+                StableTextureInstanceIds.Clear();
                 foreach (var tracker in ResourceTrackers.Values)
                 {
                     tracker.Reset();
@@ -109,6 +112,19 @@ namespace UnityProfileV2.Telemetry
                 RecentLoads.Clear();
                 RecentUnloads.Clear();
                 HasBaseline = false;
+                NextStableTextureInstanceId = -1;
+            }
+
+            internal int AllocateStableTextureInstanceId()
+            {
+                if (NextStableTextureInstanceId == int.MinValue)
+                {
+                    NextStableTextureInstanceId = -1;
+                }
+
+                var value = NextStableTextureInstanceId;
+                NextStableTextureInstanceId -= 1;
+                return value;
             }
         }
 
@@ -363,6 +379,64 @@ namespace UnityProfileV2.Telemetry
             };
         }
 
+        private static void NormalizeTextureInstanceIds(
+            TelemetryCollectionState state,
+            TextureInfo[] textures)
+        {
+            if (state == null || textures == null || textures.Length == 0)
+            {
+                return;
+            }
+
+            for (var index = 0; index < textures.Length; index += 1)
+            {
+                var info = textures[index];
+                var stableKey = GetStableTextureKey(info);
+
+                if (!string.IsNullOrEmpty(stableKey))
+                {
+                    if (!state.StableTextureInstanceIds.TryGetValue(stableKey, out var stableInstanceId))
+                    {
+                        var instanceId = info.instanceId != 0 ? info.instanceId : state.AllocateStableTextureInstanceId();
+                        state.StableTextureInstanceIds[stableKey] = instanceId;
+                        stableInstanceId = instanceId;
+                    }
+
+                    if (info.instanceId != stableInstanceId)
+                    {
+                        info.instanceId = stableInstanceId;
+                    }
+                }
+                else if (info.instanceId == 0)
+                {
+                    info.instanceId = state.AllocateStableTextureInstanceId();
+                }
+
+                textures[index] = info;
+            }
+        }
+
+        private static string GetStableTextureKey(TextureInfo info)
+        {
+            if (!string.IsNullOrEmpty(info.textureId))
+            {
+                return info.textureId;
+            }
+
+            if (!string.IsNullOrEmpty(info.path))
+            {
+                var normalizedPath = info.path.Replace('\\', '/').ToLowerInvariant();
+                return $"path:{normalizedPath}";
+            }
+
+            if (info.instanceId != 0)
+            {
+                return $"instance:{info.instanceId.ToString(CultureInfo.InvariantCulture)}";
+            }
+
+            return null;
+        }
+
         private static CategoryDiff<TInfo> ComputeCategoryDiff<TInfo>(
             Dictionary<int, TInfo> state,
             IReadOnlyList<TInfo> next,
@@ -422,6 +496,11 @@ namespace UnityProfileV2.Telemetry
                     .Take(maxPerCategory)
                     .ToArray()
                 : Array.Empty<TextureInfo>();
+
+            if (textures.Length > 0)
+            {
+                NormalizeTextureInstanceIds(state, textures);
+            }
 
             var meshes = options.includeMeshes
                 ? snapshotData.meshes
