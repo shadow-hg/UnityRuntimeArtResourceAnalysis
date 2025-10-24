@@ -346,6 +346,8 @@ export interface ServerConfigSnapshot {
   framePreviewScale: number;
   disableFramePreview: boolean;
   maxAssetsPerCategory: number;
+  resourceHotspotTopCount: number;
+  lifecycleTopCount: number;
   autoManageSession: boolean;
   assetCategoryVersion: number;
   assetCategories: AssetCategoryConfig;
@@ -365,6 +367,8 @@ function buildServerConfigSnapshot(config: ServerConfig | null | undefined): Ser
     framePreviewScale: config.clientDefaults.framePreviewScale,
     disableFramePreview: config.clientDefaults.disableFramePreview,
     maxAssetsPerCategory: config.clientDefaults.maxAssetsPerCategory,
+    resourceHotspotTopCount: config.clientDefaults.resourceHotspotTopCount,
+    lifecycleTopCount: config.clientDefaults.lifecycleTopCount,
     autoManageSession: config.clientDefaults.autoManageSession,
     assetCategoryVersion: config.clientDefaults.assetCategoryVersion,
     assetCategories: { ...config.clientDefaults.assetCategories },

@@ -39,6 +39,8 @@ interface ServerSettingsFormValues {
   framePreviewScale: number;
   disableFramePreview: boolean;
   maxAssetsPerCategory: number;
+  resourceHotspotTopCount: number;
+  lifecycleTopCount: number;
   autoManageSession: boolean;
   includeTextures: boolean;
   includeMeshes: boolean;
@@ -57,6 +59,8 @@ const DEFAULT_FORM_VALUES: ServerSettingsFormValues = {
   framePreviewScale: 0.2,
   disableFramePreview: false,
   maxAssetsPerCategory: 200,
+  resourceHotspotTopCount: 10,
+  lifecycleTopCount: 10,
   autoManageSession: true,
   includeTextures: true,
   includeMeshes: true,
@@ -82,6 +86,10 @@ function buildInitialValues(config: ServerConfig | null): ServerSettingsFormValu
     disableFramePreview: config.clientDefaults?.disableFramePreview ?? DEFAULT_FORM_VALUES.disableFramePreview,
     maxAssetsPerCategory:
       config.clientDefaults?.maxAssetsPerCategory ?? DEFAULT_FORM_VALUES.maxAssetsPerCategory,
+    resourceHotspotTopCount:
+      config.clientDefaults?.resourceHotspotTopCount ?? DEFAULT_FORM_VALUES.resourceHotspotTopCount,
+    lifecycleTopCount:
+      config.clientDefaults?.lifecycleTopCount ?? DEFAULT_FORM_VALUES.lifecycleTopCount,
     autoManageSession: config.clientDefaults?.autoManageSession ?? DEFAULT_FORM_VALUES.autoManageSession,
     includeTextures: categories?.includeTextures ?? DEFAULT_FORM_VALUES.includeTextures,
     includeMeshes: categories?.includeMeshes ?? DEFAULT_FORM_VALUES.includeMeshes,
@@ -108,6 +116,8 @@ async function submitForm(
       framePreviewScale: values.framePreviewScale,
       disableFramePreview: values.disableFramePreview,
       maxAssetsPerCategory: values.maxAssetsPerCategory,
+      resourceHotspotTopCount: values.resourceHotspotTopCount,
+      lifecycleTopCount: values.lifecycleTopCount,
       autoManageSession: values.autoManageSession,
       assetCategoryVersion: currentConfig?.clientDefaults?.assetCategoryVersion ?? 1,
       assetCategories: {
@@ -291,6 +301,22 @@ export default function ServerSettingsModal({
                         rules={[{ required: true, type: 'number', min: 1 }]}
                       >
                         <InputNumber min={1} step={1} precision={0} style={{ width: '100%' }} />
+                      </Form.Item>
+                      <Form.Item
+                        label="资源热点榜单 Top 数"
+                        name="resourceHotspotTopCount"
+                        tooltip="资源热点榜单显示的最大条目数量"
+                        rules={[{ required: true, type: 'number', min: 1, max: 50 }]}
+                      >
+                        <InputNumber min={1} max={50} step={1} precision={0} style={{ width: '100%' }} />
+                      </Form.Item>
+                      <Form.Item
+                        label="生命周期洞察 Top 数"
+                        name="lifecycleTopCount"
+                        tooltip="生命周期洞察显示的最大条目数量"
+                        rules={[{ required: true, type: 'number', min: 1, max: 50 }]}
+                      >
+                        <InputNumber min={1} max={50} step={1} precision={0} style={{ width: '100%' }} />
                       </Form.Item>
                       <Form.Item
                         label="自动管理会话"

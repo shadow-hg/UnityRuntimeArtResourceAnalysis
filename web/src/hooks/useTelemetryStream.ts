@@ -18,6 +18,8 @@ const DEFAULT_SERVER_CONFIG: ServerConfig = {
     framePreviewScale: 0.2,
     disableFramePreview: false,
     maxAssetsPerCategory: 200,
+    resourceHotspotTopCount: 10,
+    lifecycleTopCount: 10,
     autoManageSession: true,
     assetCategoryVersion: 1,
     assetCategories: {
@@ -187,6 +189,16 @@ function sanitizeServerConfig(rawConfig: Partial<ServerConfig> | null | undefine
       clientDefaults.maxAssetsPerCategory,
       base.clientDefaults.maxAssetsPerCategory,
       { min: 1, integer: true }
+    );
+    base.clientDefaults.resourceHotspotTopCount = ensureNumber(
+      clientDefaults.resourceHotspotTopCount,
+      base.clientDefaults.resourceHotspotTopCount,
+      { min: 1, max: 50, integer: true }
+    );
+    base.clientDefaults.lifecycleTopCount = ensureNumber(
+      clientDefaults.lifecycleTopCount,
+      base.clientDefaults.lifecycleTopCount,
+      { min: 1, max: 50, integer: true }
     );
     base.clientDefaults.autoManageSession = ensureBoolean(
       clientDefaults.autoManageSession,

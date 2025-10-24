@@ -715,6 +715,7 @@ function AppShell({
               serverBaseUrl={serverBaseUrl}
               sessionId={selectedSession?.id ?? null}
               ensureTextures={ensureSessionTextures}
+              serverConfig={serverConfig}
             />
           </Flex>
         </Content>

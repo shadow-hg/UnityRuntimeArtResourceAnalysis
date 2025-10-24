@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { CSSProperties, useEffect, useMemo, useState } from 'react';
 import {
   Card,
   Collapse,
@@ -19,6 +19,7 @@ import type {
   RenderTextureInfo,
   ShaderInfo,
   ShaderVariantStats,
+  ServerConfig,
   TelemetrySnapshot,
   TextureInfo,
 } from '../types';
@@ -32,7 +33,22 @@ interface ResourceExplorerProps {
   serverBaseUrl: string;
   sessionId: string | null;
   ensureTextures?: (sessionId: string, textureIds: string[]) => Promise<void>;
+  serverConfig?: ServerConfig | null;
 }
+
+const hotspotGridStyle: CSSProperties = {
+  display: 'grid',
+  gap: 12,
+  width: '100%',
+  gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+};
+
+const lifecycleGridStyle: CSSProperties = {
+  display: 'grid',
+  gap: 12,
+  width: '100%',
+  gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+};
 
 const unityWrapModeLabels: Record<number, string> = {
   0: 'Repeat',
@@ -456,26 +472,35 @@ function HotspotList({ title, items }: { title: string; items: HotspotEntry[] })
       size="small"
       type="inner"
       title={title}
-      style={{ flex: 1, minWidth: 260 }}
-      bodyStyle={{ paddingTop: 12, paddingBottom: 0 }}
+      style={{ minWidth: 0 }}
+      bodyStyle={{ padding: '12px 12px 8px' }}
     >
       <List
         size="small"
         dataSource={items}
+        split={false}
         locale={{ emptyText: '暂无数据' }}
         renderItem={(item, index) => (
-          <List.Item style={{ paddingInline: 0 }}>
-            <Space align="start" style={{ width: '100%', justifyContent: 'space-between' }}>
-              <Space align="start">
+          <List.Item style={{ padding: '6px 0' }}>
+            <Space
+              align="start"
+              style={{ width: '100%', justifyContent: 'space-between', gap: 12 }}
+              wrap
+            >
+              <Space align="start" style={{ flex: '1 1 0', minWidth: 0 }}>
                 <Tag color="processing">{index + 1}</Tag>
-                <Space direction="vertical" size={2}>
-                  <Typography.Text strong>{item.name}</Typography.Text>
+                <Space direction="vertical" size={2} style={{ minWidth: 0 }}>
+                  <Typography.Text strong ellipsis>
+                    {item.name}
+                  </Typography.Text>
                   {item.description ? (
-                    <Typography.Text type="secondary">{item.description}</Typography.Text>
+                    <Typography.Text type="secondary" ellipsis={{ tooltip: item.description }}>
+                      {item.description}
+                    </Typography.Text>
                   ) : null}
                 </Space>
               </Space>
-              <Typography.Text>{formatBytes(item.bytes)}</Typography.Text>
+              <Typography.Text strong>{formatBytes(item.bytes)}</Typography.Text>
             </Space>
           </List.Item>
         )}
@@ -491,7 +516,7 @@ function computeLifecycleEntries<T extends { instanceId?: number | null | undefi
   getBytes: (item: T) => number,
   options: { getDescription?: (item: T) => string | undefined; limit?: number } = {}
 ): LifecycleEntry[] {
-  const { getDescription, limit = 5 } = options;
+  const { getDescription, limit = 10 } = options;
   if (!items.length) {
     return [];
   }
@@ -544,12 +569,13 @@ function LifecycleList({ title, items }: { title: string; items: LifecycleEntry[
       size="small"
       type="inner"
       title={title}
-      style={{ flex: 1, minWidth: 260 }}
-      bodyStyle={{ paddingTop: 12, paddingBottom: 0 }}
+      style={{ minWidth: 0 }}
+      bodyStyle={{ padding: '12px 12px 8px' }}
     >
       <List
         size="small"
         dataSource={items}
+        split={false}
         locale={{ emptyText: '暂无数据' }}
         renderItem={(item, index) => {
           const percent = Math.round(Math.max(0, Math.min(1, item.agePercent)) * 100);
@@ -562,14 +588,20 @@ function LifecycleList({ title, items }: { title: string; items: LifecycleEntry[
                 }`
               : undefined;
           return (
-            <List.Item style={{ paddingInline: 0 }}>
+            <List.Item style={{ padding: '6px 0' }}>
               <Space direction="vertical" size={6} style={{ width: '100%' }}>
-                <Space align="start" style={{ width: '100%', justifyContent: 'space-between' }}>
-                  <Space align="start">
+                <Space
+                  align="start"
+                  style={{ width: '100%', justifyContent: 'space-between', gap: 12 }}
+                  wrap
+                >
+                  <Space align="start" style={{ flex: '1 1 0', minWidth: 0 }}>
                     <Tag color="blue">{index + 1}</Tag>
-                    <Space direction="vertical" size={2}>
-                      <Typography.Text strong>{item.name}</Typography.Text>
-                      <Typography.Text type="secondary">
+                    <Space direction="vertical" size={2} style={{ minWidth: 0 }}>
+                      <Typography.Text strong ellipsis>
+                        {item.name}
+                      </Typography.Text>
+                      <Typography.Text type="secondary" ellipsis={{ tooltip: item.description }}>
                         内存 {formatBytes(item.bytes)}
                         {orderLabel ? ` · ${orderLabel}` : ''}
                         {item.description ? ` · ${item.description}` : ''}
@@ -578,7 +610,14 @@ function LifecycleList({ title, items }: { title: string; items: LifecycleEntry[
                   </Space>
                   <Typography.Text type="secondary">生命周期 {percent}%</Typography.Text>
                 </Space>
-                <Progress percent={percent} size="small" showInfo={false} strokeColor="#52c41a" />
+                <Progress
+                  percent={percent}
+                  size="small"
+                  showInfo={false}
+                  strokeColor="#52c41a"
+                  strokeWidth={8}
+                  style={{ marginBottom: 0 }}
+                />
               </Space>
             </List.Item>
           );
@@ -940,6 +979,7 @@ export default function ResourceExplorer({
   serverBaseUrl,
   sessionId,
   ensureTextures,
+  serverConfig,
 }: ResourceExplorerProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [isTextureLoading, setIsTextureLoading] = useState(false);
@@ -948,6 +988,22 @@ export default function ResourceExplorer({
     'renderTextures',
     'materials',
   ]);
+
+  const hotspotLimit = useMemo(() => {
+    const raw = serverConfig?.clientDefaults?.resourceHotspotTopCount;
+    if (typeof raw === 'number' && Number.isFinite(raw)) {
+      return Math.min(Math.max(Math.round(raw), 1), 50);
+    }
+    return 10;
+  }, [serverConfig]);
+
+  const lifecycleLimit = useMemo(() => {
+    const raw = serverConfig?.clientDefaults?.lifecycleTopCount;
+    if (typeof raw === 'number' && Number.isFinite(raw)) {
+      return Math.min(Math.max(Math.round(raw), 1), 50);
+    }
+    return 10;
+  }, [serverConfig]);
 
   useEffect(() => {
     if (!frame || !sessionId || !ensureTextures) {
@@ -1075,53 +1131,53 @@ export default function ResourceExplorer({
       .map((texture) => ({ texture, bytes: getTextureEstimatedBytes(texture) }))
       .filter((entry) => entry.bytes > 0)
       .sort((a, b) => b.bytes - a.bytes)
-      .slice(0, 5)
+      .slice(0, hotspotLimit)
       .map(({ texture, bytes }) => ({
         key: `${texture.instanceId ?? texture.textureId ?? texture.name}-${texture.width ?? 0}-${texture.height ?? 0}`,
         name: getTextureDisplayName(texture),
         description: `${texture.width ?? 0} × ${texture.height ?? 0}`,
         bytes,
       }));
-  }, [allTextures]);
+  }, [allTextures, hotspotLimit]);
 
   const topRenderTextureHotspots = useMemo<HotspotEntry[]>(() => {
     return [...allRenderTextures]
       .filter((rt) => Number.isFinite(rt.EstimatedBytes) && rt.EstimatedBytes > 0)
       .sort((a, b) => b.EstimatedBytes - a.EstimatedBytes)
-      .slice(0, 5)
+      .slice(0, hotspotLimit)
       .map((rt) => ({
         key: `${rt.instanceId ?? rt.name}-${rt.width}-${rt.height}-${rt.format}`,
         name: rt.name || '未命名 RenderTexture',
         description: `${rt.width} × ${rt.height} · ${rt.format}`,
         bytes: rt.EstimatedBytes,
       }));
-  }, [allRenderTextures]);
+  }, [allRenderTextures, hotspotLimit]);
 
   const topMaterialHotspots = useMemo<HotspotEntry[]>(() => {
     return [...allMaterials]
       .filter((material) => Number.isFinite(material.memoryBytes) && (material.memoryBytes ?? 0) > 0)
       .sort((a, b) => (b.memoryBytes ?? 0) - (a.memoryBytes ?? 0))
-      .slice(0, 5)
+      .slice(0, hotspotLimit)
       .map((material) => ({
         key: `${material.instanceId ?? material.name}-${material.shaderName ?? 'shader'}`,
         name: material.name || '未命名材质',
         description: material.shaderName ? `Shader ${material.shaderName}` : undefined,
         bytes: material.memoryBytes ?? 0,
       }));
-  }, [allMaterials]);
+  }, [allMaterials, hotspotLimit]);
 
   const topMeshHotspots = useMemo<HotspotEntry[]>(() => {
     return [...allMeshes]
       .filter((mesh) => Number.isFinite(mesh.EstimatedBytes) && mesh.EstimatedBytes > 0)
       .sort((a, b) => b.EstimatedBytes - a.EstimatedBytes)
-      .slice(0, 5)
+      .slice(0, hotspotLimit)
       .map((mesh) => ({
         key: `${mesh.instanceId ?? mesh.name}-${mesh.vertexCount}-${mesh.subMeshCount}`,
         name: mesh.name || '未命名网格',
         description: `${formatInteger(mesh.vertexCount)} 顶点 · 子网格 ${mesh.subMeshCount}`,
         bytes: mesh.EstimatedBytes,
       }));
-  }, [allMeshes]);
+  }, [allMeshes, hotspotLimit]);
 
   const lifecycleTextures = useMemo(
     () =>
@@ -1132,9 +1188,10 @@ export default function ResourceExplorer({
         (texture) => getTextureEstimatedBytes(texture),
         {
           getDescription: (texture) => `${texture.width ?? 0} × ${texture.height ?? 0}`,
+          limit: lifecycleLimit,
         }
       ),
-    [allTextures, textureOrderMap]
+    [allTextures, textureOrderMap, lifecycleLimit]
   );
 
   const lifecycleRenderTextures = useMemo(
@@ -1146,9 +1203,10 @@ export default function ResourceExplorer({
         (rt) => rt.EstimatedBytes,
         {
           getDescription: (rt) => `${rt.width} × ${rt.height} · ${rt.format}`,
+          limit: lifecycleLimit,
         }
       ),
-    [allRenderTextures, renderTextureOrderMap]
+    [allRenderTextures, renderTextureOrderMap, lifecycleLimit]
   );
 
   const lifecycleMaterials = useMemo(
@@ -1161,9 +1219,10 @@ export default function ResourceExplorer({
         {
           getDescription: (material) =>
             material.shaderName ? `Shader ${material.shaderName}` : undefined,
+          limit: lifecycleLimit,
         }
       ),
-    [allMaterials, materialOrderMap]
+    [allMaterials, materialOrderMap, lifecycleLimit]
   );
 
   const lifecycleMeshes = useMemo(
@@ -1175,9 +1234,10 @@ export default function ResourceExplorer({
         (mesh) => mesh.EstimatedBytes,
         {
           getDescription: (mesh) => `${formatInteger(mesh.vertexCount)} 顶点`,
+          limit: lifecycleLimit,
         }
       ),
-    [allMeshes, meshOrderMap]
+    [allMeshes, meshOrderMap, lifecycleLimit]
   );
 
   const hasHotspotData =
@@ -1609,38 +1669,44 @@ export default function ResourceExplorer({
         ) : null}
         {hasHotspotData ? (
           <CollapsibleSection title="资源热点榜单" contentStyle={{ width: '100%' }}>
-            <Space wrap size={16} style={{ width: '100%' }}>
+            <div style={hotspotGridStyle}>
               {topTextureHotspots.length ? (
-                <HotspotList title="纹理内存 Top 5" items={topTextureHotspots} />
+                <HotspotList title={`纹理内存 Top ${hotspotLimit}`} items={topTextureHotspots} />
               ) : null}
               {topRenderTextureHotspots.length ? (
-                <HotspotList title="RenderTexture Top 5" items={topRenderTextureHotspots} />
+                <HotspotList
+                  title={`RenderTexture Top ${hotspotLimit}`}
+                  items={topRenderTextureHotspots}
+                />
               ) : null}
               {topMaterialHotspots.length ? (
-                <HotspotList title="材质内存 Top 5" items={topMaterialHotspots} />
+                <HotspotList title={`材质内存 Top ${hotspotLimit}`} items={topMaterialHotspots} />
               ) : null}
               {topMeshHotspots.length ? (
-                <HotspotList title="网格内存 Top 5" items={topMeshHotspots} />
+                <HotspotList title={`网格内存 Top ${hotspotLimit}`} items={topMeshHotspots} />
               ) : null}
-            </Space>
+            </div>
           </CollapsibleSection>
         ) : null}
         {hasLifecycleInsights ? (
           <CollapsibleSection title="生命周期洞察" contentStyle={{ width: '100%' }}>
-            <Space wrap size={16} style={{ width: '100%' }}>
+            <div style={lifecycleGridStyle}>
               {lifecycleTextures.length ? (
-                <LifecycleList title="长驻纹理" items={lifecycleTextures} />
+                <LifecycleList title={`长驻纹理 Top ${lifecycleLimit}`} items={lifecycleTextures} />
               ) : null}
               {lifecycleRenderTextures.length ? (
-                <LifecycleList title="长驻 RenderTexture" items={lifecycleRenderTextures} />
+                <LifecycleList
+                  title={`长驻 RenderTexture Top ${lifecycleLimit}`}
+                  items={lifecycleRenderTextures}
+                />
               ) : null}
               {lifecycleMaterials.length ? (
-                <LifecycleList title="长驻材质" items={lifecycleMaterials} />
+                <LifecycleList title={`长驻材质 Top ${lifecycleLimit}`} items={lifecycleMaterials} />
               ) : null}
               {lifecycleMeshes.length ? (
-                <LifecycleList title="长驻网格" items={lifecycleMeshes} />
+                <LifecycleList title={`长驻网格 Top ${lifecycleLimit}`} items={lifecycleMeshes} />
               ) : null}
-            </Space>
+            </div>
           </CollapsibleSection>
         ) : null}
         <Collapse

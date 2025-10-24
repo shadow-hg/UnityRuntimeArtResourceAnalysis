@@ -4,6 +4,8 @@
     "framePreviewScale": 0.08,
     "disableFramePreview": false,
     "maxAssetsPerCategory": 2000,
+    "resourceHotspotTopCount": 10,
+    "lifecycleTopCount": 10,
     "autoManageSession": true,
     "assetCategoryVersion": 1,
     "assetCategories": {
