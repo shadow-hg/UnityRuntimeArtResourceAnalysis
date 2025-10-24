@@ -11,12 +11,12 @@ import type {
 import { resolveSessionGroupingValue, SESSION_GROUPINGS } from '../utils/sessionGrouping';
 import { buildSessionSearchTokens } from '../utils/sessionSearch';
 import {
-  createPerformanceSeries,
-  rebuildSeries,
+  createPerformanceSeriesStore,
+  rebuildSeriesStore,
   trimSeries,
   updateSeriesWithFrame,
-  type PerformanceSeriesMutable,
   type PerformanceSeriesSnapshot,
+  type PerformanceSeriesStore,
 } from '../utils/performanceSeries';
 
 interface UseTelemetryStreamOptions {
@@ -386,7 +386,8 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
   const [isConfigLoading, setIsConfigLoading] = useState(false);
   const [isSessionsLoading, setIsSessionsLoading] = useState(false);
 
-  const performanceSeriesRef = useRef<Map<string, PerformanceSeriesMutable>>(new Map());
+  const performanceSeriesStoreRef = useRef<Map<string, PerformanceSeriesStore>>(new Map());
+  const performanceSeriesSnapshotRef = useRef<Map<string, PerformanceSeriesSnapshot>>(new Map());
   const [performanceSeriesVersion, setPerformanceSeriesVersion] = useState(0);
 
   const sessions = useMemo(() => Array.from(sessionsMap.values()), [sessionsMap]);
@@ -400,8 +401,9 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
       if (!sessionId) {
         return;
       }
-      const series = rebuildSeries(frames);
-      performanceSeriesRef.current.set(sessionId, series);
+      const store = rebuildSeriesStore(frames);
+      performanceSeriesStoreRef.current.set(sessionId, store);
+      performanceSeriesSnapshotRef.current.set(sessionId, store.snapshot);
       notifyPerformanceSeriesUpdate();
     },
     [notifyPerformanceSeriesUpdate]
@@ -412,25 +414,31 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
       if (!sessionId) {
         return;
       }
-      let series = performanceSeriesRef.current.get(sessionId);
-      if (!series) {
-        series = createPerformanceSeries();
-        performanceSeriesRef.current.set(sessionId, series);
+      let store = performanceSeriesStoreRef.current.get(sessionId);
+      if (!store) {
+        store = createPerformanceSeriesStore();
+        performanceSeriesStoreRef.current.set(sessionId, store);
+        performanceSeriesSnapshotRef.current.set(sessionId, store.snapshot);
       }
+      const { mutable } = store;
       if (trimmedCount > 0) {
-        trimSeries(series, trimmedCount);
+        trimSeries(mutable, trimmedCount);
       }
-      updateSeriesWithFrame(series, frame);
+      updateSeriesWithFrame(mutable, frame);
       notifyPerformanceSeriesUpdate();
     },
     [notifyPerformanceSeriesUpdate]
   );
 
   const clearPerformanceSeries = useCallback(() => {
-    if (performanceSeriesRef.current.size === 0) {
+    if (
+      performanceSeriesStoreRef.current.size === 0 &&
+      performanceSeriesSnapshotRef.current.size === 0
+    ) {
       return;
     }
-    performanceSeriesRef.current.clear();
+    performanceSeriesStoreRef.current.clear();
+    performanceSeriesSnapshotRef.current.clear();
     notifyPerformanceSeriesUpdate();
   }, [notifyPerformanceSeriesUpdate]);
 
@@ -439,7 +447,9 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
       if (!sessionId) {
         return;
       }
-      if (performanceSeriesRef.current.delete(sessionId)) {
+      const deletedStore = performanceSeriesStoreRef.current.delete(sessionId);
+      const deletedSnapshot = performanceSeriesSnapshotRef.current.delete(sessionId);
+      if (deletedStore || deletedSnapshot) {
         notifyPerformanceSeriesUpdate();
       }
     },
@@ -1087,7 +1097,10 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
     refreshServerConfig,
     loadSessionDetails,
     ensureSessionTextures,
-    performanceSeries: performanceSeriesRef.current as ReadonlyMap<string, PerformanceSeriesSnapshot>,
+    performanceSeries: performanceSeriesSnapshotRef.current as ReadonlyMap<
+      string,
+      PerformanceSeriesSnapshot
+    >,
     performanceSeriesVersion,
   };
 }
