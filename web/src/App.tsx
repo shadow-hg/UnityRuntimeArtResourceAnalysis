@@ -6,6 +6,7 @@ import {
   Suspense,
   lazy,
   useCallback,
+  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
@@ -425,13 +426,14 @@ function AppShell({
   }, [serverConfig]);
 
   const normalizedSearchValue = sessionSearchValue.trim();
+  const deferredSearchValue = useDeferredValue(normalizedSearchValue);
 
   const searchFilteredSessions = useMemo(() => {
-    if (!normalizedSearchValue) {
+    if (!deferredSearchValue) {
       return sidebarSessions;
     }
-    return sidebarSessions.filter((session) => matchesSessionSearch(session, normalizedSearchValue));
-  }, [sidebarSessions, normalizedSearchValue]);
+    return sidebarSessions.filter((session) => matchesSessionSearch(session, deferredSearchValue));
+  }, [sidebarSessions, deferredSearchValue]);
 
   const groupingOptions = useMemo<SessionGroupingItem[]>(() => {
     const map = new Map<string, SessionGroupingItem>();
@@ -534,6 +536,14 @@ function AppShell({
     return list;
   }, [statusFilteredSessions, sessionSortOrder]);
 
+  const visibleSessionsMap = useMemo(() => {
+    const map = new Map<string, TelemetrySession>();
+    visibleSessions.forEach((session) => {
+      map.set(session.id, session);
+    });
+    return map;
+  }, [visibleSessions]);
+
   useEffect(() => {
     if (selectedGroupingValue === null) {
       return;
@@ -554,14 +564,14 @@ function AppShell({
       return;
     }
 
-    if (!selectedSessionId || !visibleSessions.some((session) => session.id === selectedSessionId)) {
+    if (!selectedSessionId || !visibleSessionsMap.has(selectedSessionId)) {
       const newest = visibleSessions[0];
       setSelectedSessionId(newest.id);
       const newestFrames = Array.isArray(newest.frames) ? newest.frames : [];
       setSelectedFrame(newestFrames[newestFrames.length - 1] ?? null);
       setIsAutoFollowLatest(true);
     }
-  }, [visibleSessions, selectedSessionId]);
+  }, [visibleSessions, visibleSessionsMap, selectedSessionId]);
 
   useEffect(() => {
     if (selectedSessionId) {
@@ -571,8 +581,8 @@ function AppShell({
 
   const selectedSession = useMemo<TelemetrySession | null>(() => {
     if (!selectedSessionId) return visibleSessions[0] ?? null;
-    return visibleSessions.find((session) => session.id === selectedSessionId) ?? visibleSessions[0] ?? null;
-  }, [visibleSessions, selectedSessionId]);
+    return visibleSessionsMap.get(selectedSessionId) ?? visibleSessions[0] ?? null;
+  }, [visibleSessions, visibleSessionsMap, selectedSessionId]);
 
   const selectedSessionKey = selectedSession?.id ?? null;
 
@@ -619,7 +629,7 @@ function AppShell({
 
   const handleSessionChange = useCallback(
     (sessionId: string) => {
-      const session = visibleSessions.find((s) => s.id === sessionId);
+      const session = visibleSessionsMap.get(sessionId);
       if (!session) {
         return;
       }
@@ -628,7 +638,7 @@ function AppShell({
       setSelectedFrame(lastFrame ?? null);
       setIsAutoFollowLatest(true);
     },
-    [visibleSessions]
+    [visibleSessionsMap]
   );
 
   const handleFrameSelect = useCallback(

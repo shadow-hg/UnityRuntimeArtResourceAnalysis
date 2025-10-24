@@ -448,7 +448,21 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
 
   const maxSessionFrames = resolveFrameLimit(serverConfig?.history?.maxSessionFrames);
   const loadedSessionIdsRef = useRef<Set<string>>(new Set());
+  const pendingSessionRequestsRef = useRef<Map<string, AbortController>>(new Map());
   const sessionTextureCacheRef = useRef<Map<string, Map<string, TextureInfo>>>(new Map());
+
+  const abortSessionRequest = useCallback((sessionId?: string) => {
+    if (typeof sessionId === 'string') {
+      const controller = pendingSessionRequestsRef.current.get(sessionId);
+      if (controller) {
+        controller.abort();
+        pendingSessionRequestsRef.current.delete(sessionId);
+      }
+      return;
+    }
+    pendingSessionRequestsRef.current.forEach((controller) => controller.abort());
+    pendingSessionRequestsRef.current.clear();
+  }, []);
 
   const getSessionTextureCache = useCallback(
     (sessionId: string): Map<string, TextureInfo> => {
@@ -464,6 +478,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
 
   useEffect(() => {
     if (!serverBaseUrl) {
+      abortSessionRequest();
       setSessionsMap(() => new Map());
       setNetworkInfo(null);
       setConnectionState('disconnected');
@@ -471,7 +486,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
       sessionTextureCacheRef.current.clear();
       clearPerformanceSeries();
     }
-  }, [serverBaseUrl, clearPerformanceSeries]);
+  }, [serverBaseUrl, clearPerformanceSeries, abortSessionRequest]);
 
   const socket = useMemo<Socket | null>(() => {
     if (!serverBaseUrl) return null;
@@ -551,9 +566,14 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
         return null;
       }
 
+      abortSessionRequest(sessionId);
+      const controller = new AbortController();
+      pendingSessionRequestsRef.current.set(sessionId, controller);
+
       try {
         const response = await fetch(
-          `${serverBaseUrl}/sessions/${encodeURIComponent(sessionId)}?hydrateTextures=false`
+          `${serverBaseUrl}/sessions/${encodeURIComponent(sessionId)}?hydrateTextures=false`,
+          { signal: controller.signal }
         );
         if (response.status === 404) {
           loadedSessionIdsRef.current.delete(sessionId);
@@ -563,6 +583,9 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
           throw new Error(`Failed to fetch session ${sessionId}: ${response.statusText}`);
         }
         const payload = (await response.json()) as TelemetrySession;
+        if (controller.signal.aborted) {
+          return null;
+        }
         const normalized = normalizeSession(payload, maxSessionFrames);
         const cache = getSessionTextureCache(sessionId);
         const frames = Array.isArray(normalized.frames) ? normalized.frames : [];
@@ -571,14 +594,15 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
         const nextSession = shouldReplaceFrames
           ? attachSessionComputedFields({ ...normalized, frames: hydratedFrames })
           : normalized;
-        loadedSessionIdsRef.current.add(sessionId);
-        let storedSession: TelemetrySession = nextSession;
+        let storedSession: TelemetrySession | null = nextSession;
+        let didUpdate = false;
         setSessionsMap((prev) => {
           const current = prev.get(nextSession.id);
           if (!current) {
             const next = new Map(prev);
             next.set(nextSession.id, nextSession);
             storedSession = nextSession;
+            didUpdate = true;
             return next;
           }
           const merged = mergeSessionWithUpdates(current, nextSession);
@@ -594,16 +618,38 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
           const next = new Map(prev);
           next.set(nextSession.id, merged);
           storedSession = merged;
+          didUpdate = true;
           return next;
         });
-        setPerformanceSeriesForSession(sessionId, storedSession.frames ?? []);
+        if (controller.signal.aborted) {
+          return null;
+        }
+        if (storedSession) {
+          loadedSessionIdsRef.current.add(sessionId);
+          if (didUpdate) {
+            setPerformanceSeriesForSession(sessionId, storedSession.frames ?? []);
+          }
+        }
         return storedSession;
       } catch (error) {
-        console.error(error);
+        if ((error as Error)?.name !== 'AbortError') {
+          console.error(error);
+        }
         return null;
+      } finally {
+        const current = pendingSessionRequestsRef.current.get(sessionId);
+        if (current === controller) {
+          pendingSessionRequestsRef.current.delete(sessionId);
+        }
       }
     },
-    [serverBaseUrl, maxSessionFrames, getSessionTextureCache, setPerformanceSeriesForSession]
+    [
+      serverBaseUrl,
+      maxSessionFrames,
+      getSessionTextureCache,
+      setPerformanceSeriesForSession,
+      abortSessionRequest,
+    ]
   );
 
   useEffect(() => {
@@ -617,6 +663,9 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
     let cancelled = false;
 
     async function bootstrapSessions() {
+      if (!cancelled) {
+        abortSessionRequest();
+      }
       if (!cancelled) {
         setSessionsMap(() => new Map());
         setIsSessionsLoading(true);
@@ -672,6 +721,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
     loadSessionDetails,
     clearPerformanceSeries,
     setPerformanceSeriesForSession,
+    abortSessionRequest,
   ]);
 
   useEffect(() => {
@@ -824,6 +874,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
     }
 
     function handleHistoryCleared() {
+      abortSessionRequest();
       setSessionsMap(() => new Map());
       loadedSessionIdsRef.current.clear();
       sessionTextureCacheRef.current.clear();
@@ -835,6 +886,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
       if (!sessionId) {
         return;
       }
+      abortSessionRequest(sessionId);
       setSessionsMap((prev) => {
         if (!prev.has(sessionId)) {
           return prev;
@@ -879,6 +931,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
     updatePerformanceSeriesForFrame,
     clearPerformanceSeries,
     deletePerformanceSeries,
+    abortSessionRequest,
   ]);
 
   const ensureSessionTextures = useCallback(
@@ -979,11 +1032,12 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
       throw new Error(`Failed to clear telemetry history: ${response.statusText}`);
     }
 
+    abortSessionRequest();
     setSessionsMap(() => new Map());
     loadedSessionIdsRef.current.clear();
     sessionTextureCacheRef.current.clear();
     clearPerformanceSeries();
-  }, [serverBaseUrl, clearPerformanceSeries]);
+  }, [serverBaseUrl, clearPerformanceSeries, abortSessionRequest]);
 
   const deleteServerSession = useCallback(
     async (sessionId: string) => {
@@ -1003,6 +1057,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
         throw new Error(`Failed to delete telemetry session: ${response.statusText}`);
       }
 
+      abortSessionRequest(sessionId);
       setSessionsMap((prev) => {
         if (!prev.has(sessionId)) {
           return prev;
@@ -1015,7 +1070,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
       sessionTextureCacheRef.current.delete(sessionId);
       deletePerformanceSeries(sessionId);
     },
-    [serverBaseUrl, deletePerformanceSeries]
+    [serverBaseUrl, deletePerformanceSeries, abortSessionRequest]
   );
 
   return {
