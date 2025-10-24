@@ -308,6 +308,84 @@ namespace UnityProfileV2.Telemetry
             return "127.0.0.1";
         }
 
+        private static bool IsPrivateIpv4(string ipAddress)
+        {
+            if (string.IsNullOrWhiteSpace(ipAddress))
+            {
+                return false;
+            }
+
+            if (!IPAddress.TryParse(ipAddress, out var address))
+            {
+                return false;
+            }
+
+            if (address.AddressFamily != AddressFamily.InterNetwork)
+            {
+                return false;
+            }
+
+            if (IPAddress.IsLoopback(address))
+            {
+                return false;
+            }
+
+            var bytes = address.GetAddressBytes();
+
+            if (bytes[0] == 10)
+            {
+                return true;
+            }
+
+            if (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31)
+            {
+                return true;
+            }
+
+            if (bytes[0] == 192 && bytes[1] == 168)
+            {
+                return true;
+            }
+
+            if (bytes[0] == 169 && bytes[1] == 254)
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        private static IEnumerable<string> EnumerateLocalSubnetEndpointCandidates(string localIpAddress)
+        {
+            if (string.IsNullOrWhiteSpace(localIpAddress))
+            {
+                yield break;
+            }
+
+            if (!IPAddress.TryParse(localIpAddress, out var address))
+            {
+                yield break;
+            }
+
+            if (address.AddressFamily != AddressFamily.InterNetwork)
+            {
+                yield break;
+            }
+
+            var addressBytes = address.GetAddressBytes();
+            var prefix = $"{addressBytes[0]}.{addressBytes[1]}.{addressBytes[2]}";
+
+            for (var host = 1; host < 255; host++)
+            {
+                if (host == addressBytes[3])
+                {
+                    continue;
+                }
+
+                yield return BuildEndpointFromHost($"{prefix}.{host}");
+            }
+        }
+
         private static string SanitizeEndpoint(string endpoint)
         {
             if (string.IsNullOrWhiteSpace(endpoint))
@@ -349,14 +427,22 @@ namespace UnityProfileV2.Telemetry
 
         private IEnumerable<string> EnumerateServerEndpointCandidates()
         {
+            var localIpAddress = ResolveLocalIpAddress();
+            var isPrivateNetwork = IsPrivateIpv4(localIpAddress);
+
             var candidates = new List<string>
             {
                 _serverEndpointOverride,
                 _serverEndpoint,
-                BuildEndpointFromHost(ResolveLocalIpAddress()),
+                BuildEndpointFromHost(localIpAddress),
                 BuildEndpointFromHost("127.0.0.1"),
                 BuildEndpointFromHost("localhost")
             };
+
+            if (isPrivateNetwork)
+            {
+                candidates.AddRange(EnumerateLocalSubnetEndpointCandidates(localIpAddress));
+            }
 
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
