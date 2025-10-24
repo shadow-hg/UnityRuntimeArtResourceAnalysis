@@ -1046,13 +1046,25 @@ namespace UnityProfileV2.Telemetry
                 {
                     signature.format = tex2D.format;
                     signature.mipCount = tex2D.mipmapCount;
-#if UNITY_2018_2_OR_NEWER
-                    signature.contentHash = tex2D.imageContentsHash.ToString();
-#endif
+                    signature.contentHash = GetTextureContentHash(tex2D);
                 }
 
                 return signature;
             }
+
+#if UNITY_EDITOR && UNITY_2018_2_OR_NEWER
+            private static string GetTextureContentHash(Texture2D texture)
+            {
+                return texture != null ? texture.imageContentsHash.ToString() : string.Empty;
+            }
+#else
+            private static string GetTextureContentHash(Texture2D texture)
+            {
+                // Texture2D.imageContentsHash is not available in player builds, so we keep
+                // the runtime behaviour unchanged by omitting the hash outside of the editor.
+                return string.Empty;
+            }
+#endif
 
             public bool Equals(TextureSignature other)
             {
