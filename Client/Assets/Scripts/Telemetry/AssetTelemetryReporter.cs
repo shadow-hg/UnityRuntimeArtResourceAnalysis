@@ -1,10 +1,15 @@
 using System;
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Networking;
 
@@ -50,7 +55,19 @@ namespace UnityProfileV2.Telemetry
         private AssetTelemetryUtility.TelemetryCollectionState _collectionState = new();
         private ClientDefaultsPayload? _lastAppliedClientDefaults;
 
+        private readonly ConcurrentQueue<PendingSnapshotUpload> _snapshotUploadQueue = new();
+        private readonly ConcurrentDictionary<int, PendingSnapshotStatus> _pendingSnapshots = new();
+        private readonly ConcurrentQueue<Action> _mainThreadActions = new();
+        private readonly object _snapshotUploadLock = new();
+        private CancellationTokenSource _snapshotUploadCts;
+        private Task _snapshotUploadTask;
+        private int _pendingSnapshotSequence;
+        private const float SnapshotUploadThrottleSeconds = 0.1f;
+        private static readonly HttpClientWrapper SnapshotHttpClient = new();
+
         private static CoroutineRunner _coroutineRunner;
+
+        public IEnumerable<PendingSnapshotStatus> PendingSnapshots => _pendingSnapshots.Values;
 
         public string ServerEndpointOverride => _serverEndpointOverride;
 
@@ -124,6 +141,8 @@ namespace UnityProfileV2.Telemetry
             }
 
             StopConfigPolling();
+            StopSnapshotUploadLoop();
+            ProcessMainThreadActions();
 
             if (!string.IsNullOrEmpty(_sessionId))
             {
@@ -485,6 +504,9 @@ namespace UnityProfileV2.Telemetry
 
         private void OnDisable()
         {
+            StopSnapshotUploadLoop();
+            ProcessMainThreadActions();
+
             if (_initializationCoroutine != null)
             {
                 StopCoroutine(_initializationCoroutine);
@@ -526,6 +548,16 @@ namespace UnityProfileV2.Telemetry
             }
 
             _initializationCoroutine = null;
+        }
+
+        private void Update()
+        {
+            if (_mainThreadActions.IsEmpty)
+            {
+                return;
+            }
+
+            ProcessMainThreadActions();
         }
 
         private void StartConfigPolling()
@@ -909,13 +941,311 @@ namespace UnityProfileV2.Telemetry
             _lastFrameCount = currentFrameCount;
             _lastSampleRealtime = nowRealtime;
 
-            using var request = BuildJsonRequest($"/sessions/{_sessionId}/frames", UnityWebRequest.kHttpVerbPOST, snapshot);
-            yield return request.SendWebRequest();
-
-            if (request.result != UnityWebRequest.Result.Success)
+            if (!SubmitTelemetryUpdates(snapshot))
             {
-                Debug.LogWarning($"[UnityProfileV2] Failed to send telemetry frame: {request.error}");
+                AssetTelemetryUtility.ReleaseSnapshot(snapshot);
             }
+        }
+
+        private bool SubmitTelemetryUpdates(TelemetrySnapshot snapshot)
+        {
+            if (snapshot == null)
+            {
+                return false;
+            }
+
+            var sessionId = _sessionId;
+            if (string.IsNullOrEmpty(sessionId))
+            {
+                return false;
+            }
+
+            var endpoint = _serverEndpoint;
+            if (string.IsNullOrEmpty(endpoint))
+            {
+                return false;
+            }
+
+            var uploadId = Interlocked.Increment(ref _pendingSnapshotSequence);
+
+            var status = new PendingSnapshotStatus
+            {
+                Id = uploadId,
+                State = SnapshotUploadState.Queued,
+                EnqueuedAtUtc = DateTime.UtcNow
+            };
+
+            _pendingSnapshots[uploadId] = status;
+
+            void Completion(bool succeeded, string error)
+            {
+                status.CompletedAtUtc = DateTime.UtcNow;
+                status.Error = error;
+                status.State = succeeded ? SnapshotUploadState.Completed : SnapshotUploadState.Failed;
+
+                if (!succeeded && !string.IsNullOrEmpty(error) && !string.Equals(error, "Upload canceled", StringComparison.Ordinal))
+                {
+                    Debug.LogWarning($"[UnityProfileV2] Failed to send telemetry frame: {error}");
+                }
+
+                _pendingSnapshots.TryRemove(uploadId, out _);
+            }
+
+            var pending = new PendingSnapshotUpload(uploadId, sessionId, endpoint, snapshot, Completion);
+            _snapshotUploadQueue.Enqueue(pending);
+            EnsureSnapshotUploadLoop();
+
+            return true;
+        }
+
+        private void EnsureSnapshotUploadLoop()
+        {
+            lock (_snapshotUploadLock)
+            {
+                if (_snapshotUploadTask != null && !_snapshotUploadTask.IsCompleted)
+                {
+                    return;
+                }
+
+                _snapshotUploadCts?.Dispose();
+                _snapshotUploadCts = new CancellationTokenSource();
+
+                var token = _snapshotUploadCts.Token;
+                _snapshotUploadTask = Task.Run(() => SnapshotUploadLoopAsync(token), token);
+                _snapshotUploadTask.ContinueWith(t =>
+                {
+                    if (t.Exception == null)
+                    {
+                        return;
+                    }
+
+                    var flattened = t.Exception.Flatten();
+                    foreach (var exception in flattened.InnerExceptions)
+                    {
+                        EnqueueMainThreadAction(() => Debug.LogException(exception));
+                    }
+                }, CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
+            }
+        }
+
+        private async Task SnapshotUploadLoopAsync(CancellationToken token)
+        {
+            try
+            {
+                while (!token.IsCancellationRequested)
+                {
+                    if (!_snapshotUploadQueue.TryDequeue(out var pending))
+                    {
+                        try
+                        {
+                            await Task.Delay(TimeSpan.FromMilliseconds(50), token).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            break;
+                        }
+
+                        continue;
+                    }
+
+                    NotifySnapshotUploadStarted(pending);
+
+                    var throttleDelay = Task.Delay(TimeSpan.FromSeconds(Mathf.Max(SnapshotUploadThrottleSeconds, 0f)), token);
+
+                    try
+                    {
+                        await UploadSnapshotAsync(pending, token).ConfigureAwait(false);
+                        NotifySnapshotUploadResult(pending, true, null);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        NotifySnapshotUploadResult(pending, false, "Upload canceled");
+                        break;
+                    }
+                    catch (Exception exception)
+                    {
+                        NotifySnapshotUploadResult(pending, false, exception.Message);
+                    }
+
+                    try
+                    {
+                        await throttleDelay.ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
+                }
+            }
+            finally
+            {
+                while (_snapshotUploadQueue.TryDequeue(out var remaining))
+                {
+                    AssetTelemetryUtility.ReleaseSnapshot(remaining.Snapshot);
+                    NotifySnapshotUploadResult(remaining, false, "Upload canceled");
+                }
+            }
+        }
+
+        private async Task UploadSnapshotAsync(PendingSnapshotUpload pending, CancellationToken token)
+        {
+            if (pending == null)
+            {
+                return;
+            }
+
+            string json;
+            try
+            {
+                json = JsonUtility.ToJson(pending.Snapshot);
+            }
+            finally
+            {
+                AssetTelemetryUtility.ReleaseSnapshot(pending.Snapshot);
+            }
+
+            var bytes = Encoding.UTF8.GetBytes(json);
+            var url = BuildSnapshotUrl(pending.Endpoint, pending.SessionId);
+
+            using var content = new ByteArrayContent(bytes);
+            content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+            using var response = await SnapshotHttpClient.PostAsync(url, content, token).ConfigureAwait(false);
+            if (response.IsSuccessStatusCode)
+            {
+                return;
+            }
+
+            var reason = response.ReasonPhrase;
+            string body = null;
+            try
+            {
+                body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            }
+            catch
+            {
+                // Ignored: best effort diagnostics.
+            }
+
+            var message = new StringBuilder();
+            message.Append($"HTTP {(int)response.StatusCode} {reason}");
+            if (!string.IsNullOrEmpty(body))
+            {
+                message.Append($": {body}");
+            }
+
+            throw new HttpRequestException(message.ToString());
+        }
+
+        private static string BuildSnapshotUrl(string endpoint, string sessionId)
+        {
+            var sanitizedEndpoint = string.IsNullOrEmpty(endpoint) ? string.Empty : endpoint.TrimEnd('/');
+            var sanitizedSession = string.IsNullOrEmpty(sessionId) ? string.Empty : sessionId.Trim();
+            return $"{sanitizedEndpoint}/sessions/{sanitizedSession}/frames";
+        }
+
+        private void NotifySnapshotUploadStarted(PendingSnapshotUpload pending)
+        {
+            if (pending == null)
+            {
+                return;
+            }
+
+            EnqueueMainThreadAction(() =>
+            {
+                if (_pendingSnapshots.TryGetValue(pending.Id, out var status))
+                {
+                    status.State = SnapshotUploadState.Uploading;
+                }
+            });
+        }
+
+        private void NotifySnapshotUploadResult(PendingSnapshotUpload pending, bool succeeded, string error)
+        {
+            if (pending == null)
+            {
+                return;
+            }
+
+            EnqueueMainThreadAction(() => pending.InvokeCompletion(succeeded, error));
+        }
+
+        private void StopSnapshotUploadLoop()
+        {
+            Task uploadTask;
+            CancellationTokenSource cts;
+
+            lock (_snapshotUploadLock)
+            {
+                uploadTask = _snapshotUploadTask;
+                cts = _snapshotUploadCts;
+                _snapshotUploadTask = null;
+                _snapshotUploadCts = null;
+            }
+
+            if (cts != null)
+            {
+                try
+                {
+                    cts.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Ignore: shutting down.
+                }
+            }
+
+            if (uploadTask != null)
+            {
+                try
+                {
+                    uploadTask.Wait(TimeSpan.FromSeconds(2));
+                }
+                catch (AggregateException exception)
+                {
+                    foreach (var inner in exception.Flatten().InnerExceptions)
+                    {
+                        Debug.LogException(inner);
+                    }
+                }
+                catch (Exception exception)
+                {
+                    Debug.LogException(exception);
+                }
+            }
+
+            cts?.Dispose();
+
+            while (_snapshotUploadQueue.TryDequeue(out var pending))
+            {
+                AssetTelemetryUtility.ReleaseSnapshot(pending.Snapshot);
+                NotifySnapshotUploadResult(pending, false, "Upload canceled");
+            }
+        }
+
+        private void ProcessMainThreadActions()
+        {
+            while (_mainThreadActions.TryDequeue(out var action))
+            {
+                try
+                {
+                    action?.Invoke();
+                }
+                catch (Exception exception)
+                {
+                    Debug.LogException(exception);
+                }
+            }
+        }
+
+        private void EnqueueMainThreadAction(Action action)
+        {
+            if (action == null)
+            {
+                return;
+            }
+
+            _mainThreadActions.Enqueue(action);
         }
 
         private UnityWebRequest BuildJsonRequest(string path, string method, object payload)
@@ -1041,6 +1371,72 @@ namespace UnityProfileV2.Telemetry
 
         private sealed class CoroutineRunner : MonoBehaviour
         {
+        }
+
+        private sealed class PendingSnapshotUpload
+        {
+            private readonly Action<bool, string> _completion;
+
+            public PendingSnapshotUpload(int id, string sessionId, string endpoint, TelemetrySnapshot snapshot, Action<bool, string> completion)
+            {
+                Id = id;
+                SessionId = sessionId;
+                Endpoint = endpoint;
+                Snapshot = snapshot;
+                _completion = completion;
+            }
+
+            public int Id { get; }
+
+            public string SessionId { get; }
+
+            public string Endpoint { get; }
+
+            public TelemetrySnapshot Snapshot { get; }
+
+            public void InvokeCompletion(bool succeeded, string error)
+            {
+                _completion?.Invoke(succeeded, error);
+            }
+        }
+
+        private sealed class PendingSnapshotStatus
+        {
+            public int Id { get; set; }
+
+            public SnapshotUploadState State { get; set; }
+
+            public DateTime EnqueuedAtUtc { get; set; }
+
+            public DateTime? CompletedAtUtc { get; set; }
+
+            public string Error { get; set; }
+        }
+
+        private enum SnapshotUploadState
+        {
+            Queued,
+            Uploading,
+            Completed,
+            Failed
+        }
+
+        private sealed class HttpClientWrapper
+        {
+            private readonly HttpClient _client;
+
+            public HttpClientWrapper()
+            {
+                _client = new HttpClient(new HttpClientHandler
+                {
+                    AutomaticDecompression = DecompressionMethods.Deflate | DecompressionMethods.GZip
+                });
+            }
+
+            public Task<HttpResponseMessage> PostAsync(string url, HttpContent content, CancellationToken token)
+            {
+                return _client.PostAsync(url, content, token);
+            }
         }
     }
 }
