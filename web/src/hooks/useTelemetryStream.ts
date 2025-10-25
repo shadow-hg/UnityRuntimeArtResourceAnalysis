@@ -52,6 +52,9 @@ const DEFAULT_SERVER_CONFIG: ServerConfig = {
   },
 };
 
+// Limit the number of texture identifiers in a single request to avoid exceeding URL length limits.
+const TEXTURE_REQUEST_BATCH_SIZE = 25;
+
 function ensureNumber(
   value: unknown,
   fallback: number,
@@ -989,22 +992,28 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
       const missing = normalizedIds.filter((id) => !cache.has(id));
 
       if (missing.length > 0) {
-        const query = missing.map((id) => encodeURIComponent(id)).join(',');
-        const response = await fetch(
-          `${serverBaseUrl}/sessions/${encodeURIComponent(sessionId)}/textures?ids=${query}`
-        );
-        if (!response.ok) {
-          throw new Error(`Failed to load textures for session ${sessionId}: ${response.statusText}`);
-        }
-        const payload = (await response.json()) as { textures?: TextureInfo[] };
-        const textures = Array.isArray(payload?.textures) ? payload.textures : [];
-        textures.forEach((texture) => {
-          const id = getTextureId(texture);
-          if (!id) {
-            return;
+        for (let index = 0; index < missing.length; index += TEXTURE_REQUEST_BATCH_SIZE) {
+          const batch = missing.slice(index, index + TEXTURE_REQUEST_BATCH_SIZE);
+          if (batch.length === 0) {
+            continue;
           }
-          cache.set(id, { ...texture, textureId: texture.textureId ?? id });
-        });
+          const query = batch.map((id) => encodeURIComponent(id)).join(',');
+          const response = await fetch(
+            `${serverBaseUrl}/sessions/${encodeURIComponent(sessionId)}/textures?ids=${query}`
+          );
+          if (!response.ok) {
+            throw new Error(`Failed to load textures for session ${sessionId}: ${response.statusText}`);
+          }
+          const payload = (await response.json()) as { textures?: TextureInfo[] };
+          const textures = Array.isArray(payload?.textures) ? payload.textures : [];
+          textures.forEach((texture) => {
+            const id = getTextureId(texture);
+            if (!id) {
+              return;
+            }
+            cache.set(id, { ...texture, textureId: texture.textureId ?? id });
+          });
+        }
       }
 
       setSessionsMap((prev) => {
