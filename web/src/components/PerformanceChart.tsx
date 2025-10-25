@@ -144,6 +144,11 @@ export default function PerformanceChart({
 
   const allFrameNumbers = seriesData?.frameNumbers ?? [];
   const allTimestamps = seriesData?.timestamps ?? [];
+  const frameCount = allFrameNumbers.length;
+  const firstFrameNumber = frameCount > 0 ? allFrameNumbers[0] ?? null : null;
+  const lastFrameNumber = frameCount > 0 ? allFrameNumbers[frameCount - 1] ?? null : null;
+  const timestampCount = allTimestamps.length;
+  const lastTimestamp = timestampCount > 0 ? allTimestamps[timestampCount - 1] ?? null : null;
 
   const sampledIndices = useMemo(() => {
     if (!seriesData || allFrameNumbers.length === 0) {
@@ -180,16 +185,29 @@ export default function PerformanceChart({
     if (latestIndex >= 0 && !result.includes(latestIndex)) {
       result.push(latestIndex);
     }
-
     return result.sort((a, b) => allFrameNumbers[a] - allFrameNumbers[b]);
-  }, [seriesData, allFrameNumbers, allTimestamps, samplingIntervalMs]);
+  }, [
+    seriesData,
+    samplingIntervalMs,
+    frameCount,
+    firstFrameNumber,
+    lastFrameNumber,
+    timestampCount,
+    lastTimestamp,
+  ]);
 
   const selectedIndex = useMemo(() => {
     if (!seriesData || !selectedFrame) {
       return -1;
     }
     return allFrameNumbers.findIndex((frameNumber) => frameNumber === selectedFrame.frameNumber);
-  }, [seriesData, allFrameNumbers, selectedFrame]);
+  }, [
+    seriesData,
+    selectedFrame,
+    frameCount,
+    firstFrameNumber,
+    lastFrameNumber,
+  ]);
 
   const visibleIndices = useMemo(() => {
     if (!seriesData) {
@@ -201,14 +219,27 @@ export default function PerformanceChart({
       );
     }
     return sampledIndices;
-  }, [seriesData, sampledIndices, selectedIndex, allFrameNumbers]);
+  }, [
+    seriesData,
+    sampledIndices,
+    selectedIndex,
+    frameCount,
+    firstFrameNumber,
+    lastFrameNumber,
+  ]);
 
   const visibleFrameNumbers = useMemo(() => {
     if (!seriesData) {
       return [] as number[];
     }
     return visibleIndices.map((index) => allFrameNumbers[index]);
-  }, [seriesData, visibleIndices, allFrameNumbers]);
+  }, [
+    seriesData,
+    visibleIndices,
+    frameCount,
+    firstFrameNumber,
+    lastFrameNumber,
+  ]);
 
   const visibleTimestamps = useMemo(() => {
     if (!seriesData) {
@@ -218,7 +249,12 @@ export default function PerformanceChart({
       const value = allTimestamps[index];
       return typeof value === 'string' ? value : value ?? null;
     });
-  }, [seriesData, visibleIndices, allTimestamps]);
+  }, [
+    seriesData,
+    visibleIndices,
+    timestampCount,
+    lastTimestamp,
+  ]);
 
   const previewSrc = useMemo(
     () => resolvePreviewSource(selectedFrame?.framePreview ?? null, serverBaseUrl),
@@ -311,7 +347,12 @@ export default function PerformanceChart({
       return [] as Array<number | null>;
     }
     return visibleIndices.map((index) => seriesData.fps[index] ?? null);
-  }, [seriesData, visibleIndices]);
+  }, [
+    seriesData,
+    visibleIndices,
+    frameCount,
+    lastFrameNumber,
+  ]);
 
   const fpsAxisExtent = useMemo(() => {
     const numericValues = fpsValues.filter(
@@ -383,7 +424,7 @@ export default function PerformanceChart({
     ];
 
     return seriesList.filter((item) => hasSeriesData(item.data));
-  }, [seriesData, mapSeriesData]);
+  }, [seriesData, mapSeriesData, frameCount, lastFrameNumber]);
 
   const frameTimeSeries = useMemo(() => {
     if (!seriesData) {
@@ -398,7 +439,7 @@ export default function PerformanceChart({
     ];
 
     return seriesList.filter((item) => hasSeriesData(item.data));
-  }, [seriesData, mapSeriesData]);
+  }, [seriesData, mapSeriesData, frameCount, lastFrameNumber]);
 
   const utilizationSeries = useMemo(() => {
     if (!seriesData) {
@@ -412,7 +453,7 @@ export default function PerformanceChart({
     ];
 
     return seriesList.filter((item) => hasSeriesData(item.data));
-  }, [seriesData, mapSeriesData]);
+  }, [seriesData, mapSeriesData, frameCount, lastFrameNumber]);
 
   const frameTimeAxisExtent = useMemo(
     () =>
