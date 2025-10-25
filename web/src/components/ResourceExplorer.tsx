@@ -1146,7 +1146,7 @@ export default function ResourceExplorer({
       .sort((a, b) => b.EstimatedBytes - a.EstimatedBytes)
       .slice(0, hotspotLimit)
       .map((rt) => ({
-        key: `${rt.instanceId ?? rt.name}-${rt.width}-${rt.height}-${rt.format}`,
+        key: `${rt.textureId ?? rt.instanceId ?? rt.name}-${rt.width}-${rt.height}-${rt.format}`,
         name: rt.name || '未命名 RenderTexture',
         description: `${rt.width} × ${rt.height} · ${rt.format}`,
         bytes: rt.EstimatedBytes,
