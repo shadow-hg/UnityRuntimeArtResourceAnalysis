@@ -524,16 +524,21 @@ async function expandIncrementalFrame(sessionId, frame) {
 }
 
 function extractBase64Components(value) {
-  if (typeof value !== 'string' || value.length === 0) {
+  if (typeof value !== 'string') {
     return { payload: null, contentType: null };
   }
 
-  let payload = value;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return { payload: null, contentType: null };
+  }
+
+  let payload = trimmed;
   let contentType = null;
 
-  const commaIndex = value.indexOf(',');
+  const commaIndex = trimmed.indexOf(',');
   if (commaIndex !== -1) {
-    const prefix = value.slice(0, commaIndex);
+    const prefix = trimmed.slice(0, commaIndex);
     if (prefix.startsWith('data:')) {
       const metadata = prefix.slice('data:'.length);
       const separatorIndex = metadata.indexOf(';');
@@ -542,11 +547,13 @@ function extractBase64Components(value) {
       } else if (metadata) {
         contentType = metadata;
       }
-      payload = value.slice(commaIndex + 1);
+      payload = trimmed.slice(commaIndex + 1);
     }
   }
 
-  return { payload, contentType };
+  const normalizedPayload = payload.replace(/\s+/g, '');
+
+  return { payload: normalizedPayload.length > 0 ? normalizedPayload : null, contentType };
 }
 
 function extractBase64Payload(value) {
@@ -568,7 +575,7 @@ async function persistTexturePreview(sessionId, texture) {
     broadcastTexture.textureId = textureId;
   }
 
-  const payload = extractBase64Payload(previewBase64 ?? '');
+  const { payload, contentType } = extractBase64Components(previewBase64 ?? '');
   if (!payload) {
     return { stored: storedTexture, broadcast: broadcastTexture };
   }
@@ -586,7 +593,7 @@ async function persistTexturePreview(sessionId, texture) {
         width: texture.width ?? null,
         height: texture.height ?? null,
         format: texture.formatName ?? texture.format ?? '',
-        mimeType: texture.previewMimeType ?? 'image/png',
+        mimeType: texture.previewMimeType ?? contentType ?? 'image/png',
       },
     });
 
@@ -612,7 +619,7 @@ async function persistFramePreview(sessionId, frameNumber, framePreview) {
   const broadcastPreview = { ...framePreview };
   const storedPreview = { ...rest };
 
-  const { payload } = extractBase64Components(previewBase64 ?? imageBase64 ?? '');
+  const { payload, contentType } = extractBase64Components(previewBase64 ?? imageBase64 ?? '');
   if (!payload) {
     return { stored: storedPreview, broadcast: broadcastPreview };
   }
@@ -629,7 +636,7 @@ async function persistFramePreview(sessionId, frameNumber, framePreview) {
       metadata: {
         width: storedPreview.width ?? null,
         height: storedPreview.height ?? null,
-        mimeType: storedPreview.mimeType ?? 'image/png',
+        mimeType: storedPreview.mimeType ?? contentType ?? 'image/png',
       },
     });
 
