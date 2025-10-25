@@ -1907,7 +1907,7 @@ namespace UnityProfileV2.Telemetry
             }
         }
 
-        private sealed class PendingSnapshotStatus
+        public sealed class PendingSnapshotStatus
         {
             public int Id { get; set; }
 

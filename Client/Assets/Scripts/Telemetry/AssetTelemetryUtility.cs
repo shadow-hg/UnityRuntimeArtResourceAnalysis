@@ -161,7 +161,7 @@ namespace UnityProfileV2.Telemetry
 
         private delegate bool TryBuildInfo<in TResource, TInfo>(TResource resource, out TInfo info);
 
-        private sealed class ResourceSnapshotCache<TResource, TInfo>
+        internal sealed class ResourceSnapshotCache<TResource, TInfo>
             where TResource : UnityEngine.Object
         {
             private readonly Dictionary<int, TInfo> _entries = new();
@@ -955,7 +955,7 @@ namespace UnityProfileV2.Telemetry
                 var textureSource = snapshotData.textures;
                 if (textureSource.Length > 1)
                 {
-                    Array.Sort(textureSource, 0, textureSource.Length, TextureSizeComparer);
+                    Array.Sort(textureSource, TextureSizeComparer);
                 }
 
                 TextureNameSet.Clear();
@@ -993,7 +993,7 @@ namespace UnityProfileV2.Telemetry
                 var meshSource = snapshotData.meshes;
                 if (meshSource.Length > 1)
                 {
-                    Array.Sort(meshSource, 0, meshSource.Length, MeshSizeComparer);
+                    Array.Sort(meshSource, MeshSizeComparer);
                 }
 
                 var meshCount = Math.Min(maxPerCategory, meshSource.Length);
@@ -1010,7 +1010,7 @@ namespace UnityProfileV2.Telemetry
                 var renderTextureSource = snapshotData.renderTextures;
                 if (renderTextureSource.Length > 1)
                 {
-                    Array.Sort(renderTextureSource, 0, renderTextureSource.Length, RenderTextureSizeComparer);
+                    Array.Sort(renderTextureSource, RenderTextureSizeComparer);
                 }
 
                 RenderTextureNameSet.Clear();
@@ -1043,7 +1043,7 @@ namespace UnityProfileV2.Telemetry
                 var materialSource = snapshotData.materials;
                 if (materialSource.Length > 1)
                 {
-                    Array.Sort(materialSource, 0, materialSource.Length, MaterialSizeComparer);
+                    Array.Sort(materialSource, MaterialSizeComparer);
                 }
 
                 MaterialNameSet.Clear();
