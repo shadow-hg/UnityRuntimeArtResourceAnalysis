@@ -50,10 +50,14 @@ namespace UnityProfileV2.Telemetry
     public static partial class AssetTelemetryUtility
     {
         private static int s_mainThreadId = -1;
+        private static SynchronizationContext s_mainThreadContext;
+        private static TelemetryCollectionState s_sharedCollectionState;
+        private static FrameSchedulerBehaviour s_frameScheduler;
 
         internal static void MarkMainThread()
         {
-            if (SynchronizationContext.Current == null)
+            var context = SynchronizationContext.Current;
+            if (context == null)
             {
                 return;
             }
@@ -62,6 +66,7 @@ namespace UnityProfileV2.Telemetry
             if (s_mainThreadId == -1 || s_mainThreadId == currentId)
             {
                 s_mainThreadId = currentId;
+                s_mainThreadContext = context;
             }
         }
 
@@ -432,8 +437,9 @@ namespace UnityProfileV2.Telemetry
         public static TelemetrySnapshot CreateSnapshot(int maxAssetsPerCategory, TelemetrySnapshotOptions options, TelemetryCollectionState state = null)
         {
             var normalizedOptions = NormalizeOptions(options);
-            var snapshotData = CaptureSnapshotData(normalizedOptions, state);
-            return BuildSnapshot(state, maxAssetsPerCategory, normalizedOptions, snapshotData);
+            var resolvedState = ResolveCollectionState(state);
+            var snapshotData = CaptureSnapshotData(normalizedOptions, resolvedState);
+            return BuildSnapshot(resolvedState, maxAssetsPerCategory, normalizedOptions, snapshotData);
         }
 
         public static Task<TelemetrySnapshot> CreateSnapshotAsync(int maxAssetsPerCategory)
@@ -441,11 +447,169 @@ namespace UnityProfileV2.Telemetry
             return CreateSnapshotAsync(maxAssetsPerCategory, TelemetrySnapshotOptions.Default);
         }
 
-        public static Task<TelemetrySnapshot> CreateSnapshotAsync(int maxAssetsPerCategory, TelemetrySnapshotOptions options, TelemetryCollectionState state = null)
+        public static async Task<TelemetrySnapshot> CreateSnapshotAsync(int maxAssetsPerCategory, TelemetrySnapshotOptions options, TelemetryCollectionState state = null)
         {
             var normalizedOptions = NormalizeOptions(options);
-            var snapshotData = CaptureSnapshotData(normalizedOptions, state);
-            return Task.Run(() => BuildSnapshot(state, maxAssetsPerCategory, normalizedOptions, snapshotData));
+            var resolvedState = ResolveCollectionState(state);
+            var snapshotData = await CaptureSnapshotDataAsync(normalizedOptions, resolvedState).ConfigureAwait(false);
+            return await Task.Run(() => BuildSnapshot(resolvedState, maxAssetsPerCategory, normalizedOptions, snapshotData)).ConfigureAwait(false);
+        }
+
+        private static TelemetryCollectionState ResolveCollectionState(TelemetryCollectionState state)
+        {
+            MarkMainThread();
+
+            if (state != null)
+            {
+                return state;
+            }
+
+            if (s_sharedCollectionState == null)
+            {
+                s_sharedCollectionState = new TelemetryCollectionState();
+            }
+
+            return s_sharedCollectionState;
+        }
+
+        private static async Task<SnapshotData> CaptureSnapshotDataAsync(TelemetrySnapshotOptions options, TelemetryCollectionState state)
+        {
+            if (!IsMainThread())
+            {
+                if (s_mainThreadContext == null)
+                {
+                    throw new InvalidOperationException("Telemetry snapshot capture requires a valid main thread context.");
+                }
+
+                await SwitchToMainThread();
+            }
+
+            var data = new SnapshotData();
+            var hasCapturedCategory = false;
+
+            if (options.includeTextures)
+            {
+                if (hasCapturedCategory)
+                {
+                    await WaitForNextFrame();
+                }
+                data.textures = CaptureTextureInfos(state);
+                hasCapturedCategory = true;
+            }
+
+            if (options.includeMeshes)
+            {
+                if (hasCapturedCategory)
+                {
+                    await WaitForNextFrame();
+                }
+                data.meshes = CaptureMeshInfos(state);
+                hasCapturedCategory = true;
+            }
+
+            if (options.includeRenderTextures)
+            {
+                if (hasCapturedCategory)
+                {
+                    await WaitForNextFrame();
+                }
+                data.renderTextures = CaptureRenderTextureInfos(state);
+                hasCapturedCategory = true;
+            }
+
+            if (options.includeMaterials)
+            {
+                if (hasCapturedCategory)
+                {
+                    await WaitForNextFrame();
+                }
+                data.materials = CaptureMaterialInfos(state);
+                hasCapturedCategory = true;
+            }
+
+            if (options.includeShaders)
+            {
+                if (hasCapturedCategory)
+                {
+                    await WaitForNextFrame();
+                }
+                data.shaders = CaptureShaderInfos(state);
+                hasCapturedCategory = true;
+            }
+
+            if (options.includeFrameInsights)
+            {
+                if (hasCapturedCategory)
+                {
+                    await WaitForNextFrame();
+                }
+                data.frameTiming = CaptureFrameTimingInfo();
+                hasCapturedCategory = true;
+            }
+
+            if (options.includeSystemStats)
+            {
+                if (hasCapturedCategory)
+                {
+                    await WaitForNextFrame();
+                }
+                data.memoryStats = CaptureMemoryStats(data);
+                data.threadStats = CaptureThreadStats(data.frameTiming);
+                hasCapturedCategory = true;
+            }
+
+            if (options.includeAssetIo)
+            {
+                if (hasCapturedCategory)
+                {
+                    await WaitForNextFrame();
+                }
+                data.assetIo = CaptureAssetIoStats(state, data);
+                hasCapturedCategory = true;
+            }
+
+            if (options.includeEnvironment)
+            {
+                if (hasCapturedCategory)
+                {
+                    await WaitForNextFrame();
+                }
+                data.environment = CaptureEnvironmentInfo();
+            }
+
+            return data;
+        }
+
+        private static Task SwitchToMainThread()
+        {
+            var context = s_mainThreadContext;
+            if (context == null)
+            {
+                return Task.CompletedTask;
+            }
+
+            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            context.Post(_ => { tcs.TrySetResult(true); }, null);
+            return tcs.Task;
+        }
+
+        private static Task WaitForNextFrame()
+        {
+#if UNITY_EDITOR
+            if (!Application.isPlaying)
+            {
+                var editorTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                EditorApplication.delayCall += () => editorTcs.TrySetResult(true);
+                return editorTcs.Task;
+            }
+#endif
+
+            if (!IsMainThread())
+            {
+                return SwitchToMainThread();
+            }
+
+            return EnsureFrameScheduler().NextFrameAsync();
         }
 
         private static TelemetrySnapshotOptions NormalizeOptions(TelemetrySnapshotOptions options)
@@ -1092,6 +1256,36 @@ namespace UnityProfileV2.Telemetry
             return data;
         }
 
+        private static FrameSchedulerBehaviour EnsureFrameScheduler()
+        {
+            if (s_frameScheduler != null)
+            {
+                return s_frameScheduler;
+            }
+
+            if (!IsMainThread())
+            {
+                throw new InvalidOperationException("Frame scheduler can only be created from the main thread.");
+            }
+
+            var schedulerGameObject = new GameObject("AssetTelemetryFrameScheduler")
+            {
+                hideFlags = HideFlags.HideAndDontSave
+            };
+
+#if UNITY_EDITOR
+            if (Application.isPlaying)
+            {
+                UnityEngine.Object.DontDestroyOnLoad(schedulerGameObject);
+            }
+#else
+            UnityEngine.Object.DontDestroyOnLoad(schedulerGameObject);
+#endif
+
+            s_frameScheduler = schedulerGameObject.AddComponent<FrameSchedulerBehaviour>();
+            return s_frameScheduler;
+        }
+
         internal static void MarkResourceCacheDirty(TelemetryCollectionState state)
         {
             state?.MarkResourceCacheDirty();
@@ -1604,6 +1798,30 @@ namespace UnityProfileV2.Telemetry
         {
             public TInfo Info;
             public TSignature Signature;
+        }
+
+        private sealed class FrameSchedulerBehaviour : MonoBehaviour
+        {
+            public Task NextFrameAsync()
+            {
+                var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                StartCoroutine(CompleteNextFrame(tcs));
+                return tcs.Task;
+            }
+
+            private IEnumerator CompleteNextFrame(TaskCompletionSource<bool> tcs)
+            {
+                yield return null;
+                tcs.TrySetResult(true);
+            }
+
+            private void OnDestroy()
+            {
+                if (s_frameScheduler == this)
+                {
+                    s_frameScheduler = null;
+                }
+            }
         }
 
         private struct TextureSignature : IEquatable<TextureSignature>
