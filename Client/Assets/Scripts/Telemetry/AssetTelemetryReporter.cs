@@ -1920,7 +1920,7 @@ namespace UnityProfileV2.Telemetry
             public string Error { get; set; }
         }
 
-        private enum SnapshotUploadState
+        public enum SnapshotUploadState
         {
             Queued,
             Uploading,

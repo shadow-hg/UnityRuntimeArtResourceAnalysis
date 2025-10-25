@@ -159,7 +159,7 @@ namespace UnityProfileV2.Telemetry
             }
         }
 
-        private delegate bool TryBuildInfo<in TResource, TInfo>(TResource resource, out TInfo info);
+        public delegate bool TryBuildInfo<in TResource, TInfo>(TResource resource, out TInfo info);
 
         internal sealed class ResourceSnapshotCache<TResource, TInfo>
             where TResource : UnityEngine.Object
