@@ -16,7 +16,7 @@ import { LineChart } from 'echarts/charts';
 import type { LineSeriesOption } from 'echarts';
 import { CanvasRenderer } from 'echarts/renderers';
 import type { TelemetrySnapshot } from '../types';
-import type { PerformanceSeriesSnapshot } from '../utils/performanceSeries';
+import { MAX_TIMELINE_FRAME_COUNT, type PerformanceSeriesSnapshot } from '../utils/performanceSeries';
 import { formatFps } from '../utils/format';
 import { resolvePreviewSource } from '../utils/preview';
 import CollapsibleCard from './CollapsibleCard';
@@ -191,17 +191,63 @@ export default function PerformanceChart({
     return allFrameNumbers.findIndex((frameNumber) => frameNumber === selectedFrame.frameNumber);
   }, [seriesData, allFrameNumbers, selectedFrame]);
 
+  const visibleFrameNumberSet = useMemo(() => {
+    if (frames.length === 0) {
+      return null;
+    }
+    const set = new Set<number>();
+    frames.forEach((frame) => {
+      if (typeof frame.frameNumber === 'number' && Number.isFinite(frame.frameNumber)) {
+        set.add(frame.frameNumber);
+      }
+    });
+    return set;
+  }, [frames]);
+
   const visibleIndices = useMemo(() => {
     if (!seriesData) {
       return [] as number[];
     }
-    if (selectedIndex >= 0 && !sampledIndices.includes(selectedIndex)) {
-      return [...sampledIndices, selectedIndex].sort(
-        (a, b) => allFrameNumbers[a] - allFrameNumbers[b]
-      );
+
+    const combined =
+      selectedIndex >= 0 && !sampledIndices.includes(selectedIndex)
+        ? [...sampledIndices, selectedIndex]
+        : [...sampledIndices];
+
+    combined.sort((a, b) => allFrameNumbers[a] - allFrameNumbers[b]);
+
+    const uniqueCombined = combined.filter((index, position, array) => array.indexOf(index) === position);
+
+    const aligned =
+      visibleFrameNumberSet && visibleFrameNumberSet.size > 0
+        ? uniqueCombined.filter((index) => visibleFrameNumberSet.has(allFrameNumbers[index]))
+        : uniqueCombined;
+
+    const basis = aligned.length > 0 ? aligned : uniqueCombined;
+
+    const ensureSelectedIncluded = (source: number[]) => {
+      if (selectedIndex < 0 || source.includes(selectedIndex)) {
+        return source;
+      }
+      const next = [...source, selectedIndex];
+      next.sort((a, b) => allFrameNumbers[a] - allFrameNumbers[b]);
+      return next.filter((index, position, array) => array.indexOf(index) === position);
+    };
+
+    const prepared = ensureSelectedIncluded(basis);
+
+    if (prepared.length <= MAX_TIMELINE_FRAME_COUNT) {
+      return prepared;
     }
-    return sampledIndices;
-  }, [seriesData, sampledIndices, selectedIndex, allFrameNumbers]);
+
+    return prepared.slice(-MAX_TIMELINE_FRAME_COUNT);
+  }, [
+    seriesData,
+    sampledIndices,
+    selectedIndex,
+    allFrameNumbers,
+    visibleFrameNumberSet,
+  ]);
 
   const visibleFrameNumbers = useMemo(() => {
     if (!seriesData) {

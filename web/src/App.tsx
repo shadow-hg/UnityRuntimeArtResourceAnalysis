@@ -50,7 +50,7 @@ import type {
   SessionGrouping,
   SessionGroupingItem,
 } from './types';
-import type { PerformanceSeriesSnapshot } from './utils/performanceSeries';
+import { MAX_TIMELINE_FRAME_COUNT, type PerformanceSeriesSnapshot } from './utils/performanceSeries';
 import SessionSidebar from './components/SessionSidebar';
 import ResourceExplorer from './components/ResourceExplorer';
 import PerformanceChart from './components/PerformanceChart';
@@ -600,7 +600,12 @@ function AppShell({
       deduped.set(frame.frameNumber, frame);
     }
 
-    return Array.from(deduped.values()).sort((a, b) => a.frameNumber - b.frameNumber);
+    const ordered = Array.from(deduped.values()).sort((a, b) => a.frameNumber - b.frameNumber);
+    if (ordered.length <= MAX_TIMELINE_FRAME_COUNT) {
+      return ordered;
+    }
+
+    return ordered.slice(-MAX_TIMELINE_FRAME_COUNT);
   }, [selectedSession]);
 
   useEffect(() => {

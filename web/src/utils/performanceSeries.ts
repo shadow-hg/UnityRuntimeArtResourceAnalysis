@@ -1,5 +1,7 @@
 import type { TelemetrySnapshot } from '../types';
 
+export const MAX_TIMELINE_FRAME_COUNT = 100;
+
 function ensureFiniteNumber(value: unknown, fallback = 0): number {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return value;
