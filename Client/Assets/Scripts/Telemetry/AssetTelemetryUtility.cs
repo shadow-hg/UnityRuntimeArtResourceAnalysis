@@ -929,7 +929,7 @@ namespace UnityProfileV2.Telemetry
             return string.Empty;
         }
 
-        private static string BuildStableTextureId(Texture texture)
+        public static string BuildStableTextureId(Texture texture)
         {
             if (texture == null)
             {
@@ -3541,7 +3541,7 @@ namespace UnityProfileV2.Telemetry
             var typeName = texture != null ? texture.GetType().Name : string.Empty;
             var isRenderTexture = AssetTelemetryUtility.IsRenderTextureLike(texture);
             var assetPath = AssetTelemetryUtility.GetAssetPath(texture);
-            var stableId = BuildStableTextureId(texture);
+            var stableId = AssetTelemetryUtility.BuildStableTextureId(texture);
             var width = texture != null ? texture.width : 0;
             var height = texture != null ? texture.height : 0;
             var wrapMode = texture != null ? texture.wrapMode : TextureWrapMode.Clamp;
@@ -3703,7 +3703,7 @@ namespace UnityProfileV2.Telemetry
             return new RenderTextureInfo
             {
                 instanceId = renderTexture != null ? renderTexture.GetInstanceID() : 0,
-                textureId = BuildStableTextureId(renderTexture),
+                textureId = AssetTelemetryUtility.BuildStableTextureId(renderTexture),
                 name = renderTexture != null ? renderTexture.name : string.Empty,
                 width = width,
                 height = height,
