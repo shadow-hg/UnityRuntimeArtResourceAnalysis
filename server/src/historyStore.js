@@ -165,6 +165,7 @@ function parseSessionDbPart(sessionId, filename) {
 export class HistoryStore {
   constructor(options = {}) {
     this.configStore = options.configStore ?? null;
+    this.configSnapshot = options.configSnapshot ?? null;
     this.initialized = false;
     this.db = null;
     this.statements = null;
@@ -174,7 +175,17 @@ export class HistoryStore {
     this.sessionTextureCache = new Map();
   }
 
+  setConfigSnapshot(config) {
+    this.configSnapshot = config ? JSON.parse(JSON.stringify(config)) : null;
+  }
+
   getConfigOptions() {
+    if (this.configSnapshot && typeof this.configSnapshot === 'object') {
+      return {
+        maxSessionFrames:
+          this.configSnapshot?.history?.maxSessionFrames ?? DEFAULT_MAX_SESSION_FRAMES,
+      };
+    }
     const historyConfig = this.configStore?.getHistoryConfig?.();
     return { maxSessionFrames: historyConfig?.maxSessionFrames ?? DEFAULT_MAX_SESSION_FRAMES };
   }
@@ -1237,6 +1248,9 @@ export class HistoryStore {
 
   async applyConfig(config) {
     await this.init();
+    if (config && typeof config === 'object') {
+      this.setConfigSnapshot(config);
+    }
     const currentOptions = this.getConfigOptions();
     const limit = getFrameLimit({
       maxSessionFrames: config?.history?.maxSessionFrames ?? currentOptions.maxSessionFrames,
