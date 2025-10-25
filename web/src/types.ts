@@ -17,6 +17,7 @@ export interface TextureInfo {
   EstimatedBytes?: number;
   previewUrl?: string;
   previewBase64?: string;
+  previewMimeType?: string;
   isRenderTexture?: boolean;
   textureClass?: string;
 }
@@ -50,12 +51,15 @@ export interface RenderTextureInfo {
   EstimatedBytes: number;
   previewUrl?: string;
   previewBase64?: string;
+  previewMimeType?: string;
 }
 
 export interface FramePreviewInfo {
   previewUrl?: string;
   previewBase64?: string;
   imageBase64?: string;
+  previewMimeType?: string;
+  mimeType?: string;
   width?: number;
   height?: number;
   captureTimestampUtc?: string;
