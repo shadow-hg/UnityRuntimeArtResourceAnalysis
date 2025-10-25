@@ -17,6 +17,7 @@ const PREVIEW_ROOT = path.join(moduleDir, '..', 'data', 'previews');
 const FRAME_PREVIEW_DIR = 'frames';
 const NETWORK_INFO_TTL_MS = 30_000;
 const app = express();
+app.set('trust proxy', true);
 const server = http.createServer(app);
 const io = new SocketIOServer(server, {
   cors: {
@@ -774,9 +775,10 @@ app.post('/sessions', async (req, res) => {
   }
 });
 
-app.get('/sessions', async (_req, res) => {
+app.get('/sessions', async (req, res) => {
   const sessions = await historyStore.listSessions();
-  res.json(sessions);
+  const enhanced = sessions.map((session) => withAbsolutePreviewUrls(req, session));
+  res.json(enhanced);
 });
 
 app.get('/network-info', (_req, res) => {
@@ -815,7 +817,7 @@ app.get('/sessions/:sessionId', async (req, res) => {
   if (!session) {
     return res.status(404).json({ message: 'Session not found' });
   }
-  res.json(session);
+  res.json(withAbsolutePreviewUrls(req, session));
 });
 
 function parseTextureIds(queryValue) {
@@ -853,7 +855,8 @@ app.get('/sessions/:sessionId/textures', async (req, res) => {
 
   try {
     const textures = await historyStore.getSessionTextures(sessionId, ids);
-    res.json({ textures });
+    const enhanced = textures.map((texture) => withAbsolutePreviewUrls(req, texture));
+    res.json({ textures: enhanced });
   } catch (err) {
     console.error(`Failed to load textures for session ${sessionId}`, err);
     res.status(500).json({ message: 'Unable to load textures' });
@@ -1001,3 +1004,80 @@ startServer().catch((err) => {
   console.error('Failed to start server', err);
   process.exit(1);
 });
+function isAbsoluteUrl(value) {
+  return typeof value === 'string' && /^https?:\/\//i.test(value);
+}
+
+function resolveAbsoluteUrl(req, value) {
+  if (typeof value !== 'string') {
+    return value;
+  }
+
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+
+  if (isAbsoluteUrl(trimmed)) {
+    return trimmed;
+  }
+
+  const forwardedHost = req.get('x-forwarded-host');
+  const host = (forwardedHost ?? req.get('host') ?? '').trim();
+  if (!host) {
+    return trimmed;
+  }
+
+  const forwardedProto = req.get('x-forwarded-proto');
+  const protocolCandidate = (forwardedProto ?? req.protocol ?? 'http').split(',')[0]?.trim();
+  const protocol = protocolCandidate && protocolCandidate.length > 0 ? protocolCandidate : 'http';
+
+  const normalizedRelative = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+  return `${protocol}://${host}${normalizedRelative}`;
+}
+
+function withAbsolutePreviewUrls(req, resource) {
+  if (!resource || typeof resource !== 'object') {
+    return resource;
+  }
+
+  let changed = false;
+  const next = { ...resource };
+
+  if (typeof resource.previewUrl === 'string') {
+    const absolute = resolveAbsoluteUrl(req, resource.previewUrl);
+    if (absolute && absolute !== resource.previewUrl) {
+      next.previewUrl = absolute;
+      changed = true;
+    }
+  }
+
+  if (Array.isArray(resource.textures)) {
+    const transformed = resource.textures.map((texture) => withAbsolutePreviewUrls(req, texture));
+    const mutated = transformed.some((entry, index) => entry !== resource.textures[index]);
+    if (mutated) {
+      next.textures = transformed;
+      changed = true;
+    }
+  }
+
+  if (Array.isArray(resource.renderTextures)) {
+    const transformed = resource.renderTextures.map((renderTexture) => withAbsolutePreviewUrls(req, renderTexture));
+    const mutated = transformed.some((entry, index) => entry !== resource.renderTextures[index]);
+    if (mutated) {
+      next.renderTextures = transformed;
+      changed = true;
+    }
+  }
+
+  if (resource.framePreview && typeof resource.framePreview === 'object') {
+    const transformed = withAbsolutePreviewUrls(req, resource.framePreview);
+    if (transformed !== resource.framePreview) {
+      next.framePreview = transformed;
+      changed = true;
+    }
+  }
+
+  return changed ? next : resource;
+}
+
