@@ -2,9 +2,14 @@ import type { FramePreviewInfo } from '../types';
 
 export type PreviewSourceLike =
   | FramePreviewInfo
-  | { previewBase64?: string | null; imageBase64?: string | null; previewUrl?: string | null };
+  | {
+      previewBase64?: string | null;
+      imageBase64?: string | null;
+      previewUrl?: string | null;
+      previewMimeType?: string | null;
+    };
 
-function normalizeBase64(data: string): string {
+function normalizeBase64(data: string, mimeType = 'image/png'): string {
   const trimmed = data.trim();
   if (trimmed.length === 0) {
     return trimmed;
@@ -12,7 +17,8 @@ function normalizeBase64(data: string): string {
   if (trimmed.startsWith('data:')) {
     return trimmed;
   }
-  return `data:image/png;base64,${trimmed}`;
+  const normalizedMime = typeof mimeType === 'string' && mimeType.trim().length > 0 ? mimeType.trim() : 'image/png';
+  return `data:${normalizedMime};base64,${trimmed}`;
 }
 
 function joinUrl(base: string, relative: string): string {
@@ -29,12 +35,17 @@ export function resolvePreviewSource(
     return null;
   }
 
+  const previewMimeType =
+    typeof resource === 'object' && resource !== null && 'previewMimeType' in resource
+      ? (resource as { previewMimeType?: string | null }).previewMimeType ?? undefined
+      : undefined;
+
   if (typeof resource.previewBase64 === 'string' && resource.previewBase64.trim().length > 0) {
-    return normalizeBase64(resource.previewBase64);
+    return normalizeBase64(resource.previewBase64, previewMimeType ?? undefined);
   }
 
   if (typeof resource.imageBase64 === 'string' && resource.imageBase64.trim().length > 0) {
-    return normalizeBase64(resource.imageBase64);
+    return normalizeBase64(resource.imageBase64, previewMimeType ?? undefined);
   }
 
   if (typeof resource.previewUrl === 'string' && resource.previewUrl.trim().length > 0) {

@@ -871,7 +871,7 @@ namespace UnityProfileV2.Telemetry
             }
         }
 
-        private static string GetStableTextureKey(TextureInfo info)
+        internal static string GetStableTextureKey(TextureInfo info)
         {
             if (!string.IsNullOrEmpty(info.textureId))
             {
@@ -890,6 +890,64 @@ namespace UnityProfileV2.Telemetry
             }
 
             return null;
+        }
+
+        private static string GetTextureDedupKey(TextureInfo info)
+        {
+            var stableKey = GetStableTextureKey(info);
+            if (!string.IsNullOrEmpty(stableKey))
+            {
+                return stableKey;
+            }
+
+            if (!string.IsNullOrEmpty(info.name))
+            {
+                return $"name:{info.name}";
+            }
+
+            return string.Empty;
+        }
+
+        private static string GetRenderTextureDedupKey(RenderTextureInfo info)
+        {
+            if (!string.IsNullOrEmpty(info.textureId))
+            {
+                return info.textureId;
+            }
+
+            if (info.instanceId != 0)
+            {
+                return $"instance:{info.instanceId.ToString(CultureInfo.InvariantCulture)}";
+            }
+
+            if (!string.IsNullOrEmpty(info.name))
+            {
+                return $"name:{info.name}";
+            }
+
+            return string.Empty;
+        }
+
+        private static string BuildStableTextureId(Texture texture)
+        {
+            if (texture == null)
+            {
+                return "instance:0";
+            }
+
+            var assetPath = GetAssetPath(texture);
+            if (!string.IsNullOrEmpty(assetPath))
+            {
+                return $"path:{assetPath.Replace('\\', '/').ToLowerInvariant()}";
+            }
+
+            var instanceId = texture.GetInstanceID();
+            if (instanceId != 0)
+            {
+                return $"instance:{instanceId.ToString(CultureInfo.InvariantCulture)}";
+            }
+
+            return "instance:0";
         }
 
         private static CategoryDiff<TInfo> ComputeCategoryDiff<TInfo>(
@@ -958,14 +1016,19 @@ namespace UnityProfileV2.Telemetry
                     Array.Sort(textureSource, TextureSizeComparer);
                 }
 
-                TextureNameSet.Clear();
+                TextureIdentifierSet.Clear();
                 TextureInfoBuffer.Clear();
 
                 for (var index = 0; index < textureSource.Length && TextureInfoBuffer.Count < maxPerCategory; index += 1)
                 {
                     var info = textureSource[index];
-                    var name = info.name ?? string.Empty;
-                    if (!TextureNameSet.Add(name))
+                    var identifier = GetTextureDedupKey(info);
+                    if (string.IsNullOrEmpty(identifier))
+                    {
+                        identifier = $"fallback:{info.name ?? string.Empty}:{info.width}x{info.height}:{info.formatName ?? info.format.ToString()}";
+                    }
+
+                    if (!TextureIdentifierSet.Add(identifier))
                     {
                         continue;
                     }
@@ -975,7 +1038,7 @@ namespace UnityProfileV2.Telemetry
 
                 textures = ArrayPoolUtility<TextureInfo>.FromList(TextureInfoBuffer);
                 TextureInfoBuffer.Clear();
-                TextureNameSet.Clear();
+                TextureIdentifierSet.Clear();
             }
             else
             {
@@ -1013,14 +1076,19 @@ namespace UnityProfileV2.Telemetry
                     Array.Sort(renderTextureSource, RenderTextureSizeComparer);
                 }
 
-                RenderTextureNameSet.Clear();
+                RenderTextureIdentifierSet.Clear();
                 RenderTextureInfoBuffer.Clear();
 
                 for (var index = 0; index < renderTextureSource.Length && RenderTextureInfoBuffer.Count < maxPerCategory; index += 1)
                 {
                     var info = renderTextureSource[index];
-                    var name = info.name ?? string.Empty;
-                    if (!RenderTextureNameSet.Add(name))
+                    var identifier = GetRenderTextureDedupKey(info);
+                    if (string.IsNullOrEmpty(identifier))
+                    {
+                        identifier = $"fallback:{info.name ?? string.Empty}:{info.width}x{info.height}:{info.format}";
+                    }
+
+                    if (!RenderTextureIdentifierSet.Add(identifier))
                     {
                         continue;
                     }
@@ -1030,7 +1098,7 @@ namespace UnityProfileV2.Telemetry
 
                 renderTextures = ArrayPoolUtility<RenderTextureInfo>.FromList(RenderTextureInfoBuffer);
                 RenderTextureInfoBuffer.Clear();
-                RenderTextureNameSet.Clear();
+                RenderTextureIdentifierSet.Clear();
             }
             else
             {
@@ -2208,8 +2276,8 @@ namespace UnityProfileV2.Telemetry
         private static readonly List<MaterialInfo> MaterialInfoBuffer = new();
         private static readonly List<ShaderInfo> ShaderInfoBuffer = new();
 
-        private static readonly HashSet<string> TextureNameSet = new(StringComparer.OrdinalIgnoreCase);
-        private static readonly HashSet<string> RenderTextureNameSet = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly HashSet<string> TextureIdentifierSet = new(StringComparer.Ordinal);
+        private static readonly HashSet<string> RenderTextureIdentifierSet = new(StringComparer.Ordinal);
         private static readonly HashSet<string> MaterialNameSet = new(StringComparer.OrdinalIgnoreCase);
 
         private static readonly Comparison<TextureInfo> TextureSizeComparer = (a, b) =>
@@ -3312,6 +3380,7 @@ namespace UnityProfileV2.Telemetry
         public long originalBytes;
         public long EstimatedBytes;
         public string previewBase64;
+        public string previewMimeType;
         public bool isRenderTexture;
         public string textureClass;
         public bool IsValid => width > 0 && height > 0;
@@ -3326,31 +3395,31 @@ namespace UnityProfileV2.Telemetry
             AssetTelemetryUtility.TryCaptureTexturePreview(texture, out var previewBase64);
 
             var assetPath = AssetTelemetryUtility.GetAssetPath(texture);
-            var normalizedPath = string.IsNullOrEmpty(assetPath)
-                ? string.Empty
-                : assetPath.Replace('\\', '/');
-            var stableId = !string.IsNullOrEmpty(normalizedPath)
-                ? $"path:{normalizedPath.ToLowerInvariant()}"
-                : $"instance:{(texture != null ? texture.GetInstanceID().ToString(CultureInfo.InvariantCulture) : "0")}";
+            var stableId = BuildStableTextureId(texture);
+            var width = texture != null ? texture.width : 0;
+            var height = texture != null ? texture.height : 0;
+            var wrapMode = texture != null ? texture.wrapMode : TextureWrapMode.Clamp;
+            var filterMode = texture != null ? texture.filterMode : FilterMode.Bilinear;
 
             return new TextureInfo
             {
                 instanceId = texture != null ? texture.GetInstanceID() : 0,
-                name = texture.name,
+                name = texture != null ? texture.name : string.Empty,
                 path = assetPath,
                 textureId = stableId,
-                width = texture.width,
-                height = texture.height,
-                wrapMode = texture.wrapMode,
-                filterMode = texture.filterMode,
+                width = width,
+                height = height,
+                wrapMode = wrapMode,
+                filterMode = filterMode,
                 format = format,
                 formatName = format.ToString(),
                 graphicsFormat = tex2D != null ? tex2D.graphicsFormat.ToString() : string.Empty,
                 compressionFormat = format.ToString(),
                 mipCount = mipCount,
                 originalBytes = AssetTelemetryUtility.GetTextureOriginalBytes(tex2D),
-                EstimatedBytes = AssetTelemetryUtility.GetTextureCompressedBytes(texture, format, texture.width, texture.height, mipCount),
+                EstimatedBytes = AssetTelemetryUtility.GetTextureCompressedBytes(texture, format, width, height, mipCount),
                 previewBase64 = previewBase64,
+                previewMimeType = !string.IsNullOrEmpty(previewBase64) ? "image/png" : null,
                 isRenderTexture = isRenderTexture,
                 textureClass = typeName,
             };
@@ -3465,6 +3534,7 @@ namespace UnityProfileV2.Telemetry
     public struct RenderTextureInfo
     {
         public int instanceId;
+        public string textureId;
         public string name;
         public int width;
         public int height;
@@ -3477,28 +3547,36 @@ namespace UnityProfileV2.Telemetry
         public int antiAliasing;
         public long EstimatedBytes;
         public string previewBase64;
+        public string previewMimeType;
         public string previewUrl;
         public bool IsValid => width > 0 && height > 0;
 
         public static RenderTextureInfo FromRenderTexture(RenderTexture renderTexture)
         {
             AssetTelemetryUtility.TryCaptureRenderTexturePreview(renderTexture, out var previewBase64);
+            var width = renderTexture != null ? renderTexture.width : 0;
+            var height = renderTexture != null ? renderTexture.height : 0;
+            var depth = renderTexture != null ? renderTexture.depth : 0;
+            var useMipMap = renderTexture != null && renderTexture.useMipMap;
+            var mipCount = useMipMap ? renderTexture.mipmapCount : 1;
 
             return new RenderTextureInfo
             {
                 instanceId = renderTexture != null ? renderTexture.GetInstanceID() : 0,
-                name = renderTexture.name,
-                width = renderTexture.width,
-                height = renderTexture.height,
-                depth = renderTexture.depth,
-                mipCount = renderTexture.useMipMap ? renderTexture.mipmapCount : 1,
-                useMipMap = renderTexture.useMipMap,
-                dimension = renderTexture.dimension.ToString(),
-                format = renderTexture.format.ToString(),
-                graphicsFormat = renderTexture.graphicsFormat.ToString(),
-                antiAliasing = renderTexture.antiAliasing,
-                EstimatedBytes = UnityEngine.Profiling.Profiler.GetRuntimeMemorySizeLong(renderTexture),
+                textureId = BuildStableTextureId(renderTexture),
+                name = renderTexture != null ? renderTexture.name : string.Empty,
+                width = width,
+                height = height,
+                depth = depth,
+                mipCount = mipCount,
+                useMipMap = useMipMap,
+                dimension = renderTexture != null ? renderTexture.dimension.ToString() : string.Empty,
+                format = renderTexture != null ? renderTexture.format.ToString() : string.Empty,
+                graphicsFormat = renderTexture != null ? renderTexture.graphicsFormat.ToString() : string.Empty,
+                antiAliasing = renderTexture != null ? renderTexture.antiAliasing : 1,
+                EstimatedBytes = renderTexture != null ? UnityEngine.Profiling.Profiler.GetRuntimeMemorySizeLong(renderTexture) : 0,
                 previewBase64 = previewBase64,
+                previewMimeType = !string.IsNullOrEmpty(previewBase64) ? "image/png" : null,
             };
         }
     }
