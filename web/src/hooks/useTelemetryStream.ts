@@ -460,6 +460,8 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
   const loadedSessionIdsRef = useRef<Set<string>>(new Set());
   const pendingSessionRequestsRef = useRef<Map<string, AbortController>>(new Map());
   const sessionTextureCacheRef = useRef<Map<string, Map<string, TextureInfo>>>(new Map());
+  const cachedConfigRef = useRef<ServerConfig | null>(null);
+  const hasLoadedConfigRef = useRef(false);
 
   const abortSessionRequest = useCallback((sessionId?: string) => {
     if (typeof sessionId === 'string') {
@@ -495,6 +497,11 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
       setIsSessionsLoading(false);
       sessionTextureCacheRef.current.clear();
       clearPerformanceSeries();
+      cachedConfigRef.current = sanitizeServerConfig(DEFAULT_SERVER_CONFIG);
+      hasLoadedConfigRef.current = false;
+    } else {
+      cachedConfigRef.current = null;
+      hasLoadedConfigRef.current = false;
     }
   }, [serverBaseUrl, clearPerformanceSeries, abortSessionRequest]);
 
@@ -538,22 +545,36 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
 
   const fetchServerConfig = useCallback(async (): Promise<ServerConfig | null> => {
     if (!serverBaseUrl) {
-      return sanitizeServerConfig(DEFAULT_SERVER_CONFIG);
+      const sanitized = sanitizeServerConfig(DEFAULT_SERVER_CONFIG);
+      cachedConfigRef.current = sanitized;
+      hasLoadedConfigRef.current = true;
+      return sanitized;
     }
 
-    setIsConfigLoading(true);
+    const shouldToggleLoading = !hasLoadedConfigRef.current;
+    if (shouldToggleLoading) {
+      setIsConfigLoading(true);
+    }
     try {
       const response = await fetch(`${serverBaseUrl}/config`);
       if (!response.ok) {
         throw new Error(`Failed to fetch server config: ${response.statusText}`);
       }
       const payload = (await response.json()) as Partial<ServerConfig>;
-      return sanitizeServerConfig(payload);
+      const sanitized = sanitizeServerConfig(payload);
+      cachedConfigRef.current = sanitized;
+      hasLoadedConfigRef.current = true;
+      return sanitized;
     } catch (error) {
       console.error(error);
+      if (cachedConfigRef.current) {
+        return cachedConfigRef.current;
+      }
       return null;
     } finally {
-      setIsConfigLoading(false);
+      if (shouldToggleLoading) {
+        setIsConfigLoading(false);
+      }
     }
   }, [serverBaseUrl]);
 
@@ -831,7 +852,7 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
         processedFrame = incomingFrame;
         const previousTrimmed = session.trimmedFrameCount ?? 0;
         const previousFrames = session.frames ?? [];
-        let frames = [...previousFrames, incomingFrame];
+        const previousLength = previousFrames.length;
         let removed = payload.removedFrameCount;
         let nextTrimmed = payload.trimmedFrameCount ?? previousTrimmed;
 
@@ -841,18 +862,24 @@ export function useTelemetryStream({ serverBaseUrl }: UseTelemetryStreamOptions)
 
         removed = Math.max(0, removed ?? 0);
 
-        if (removed > 0) {
-          frames = frames.slice(removed);
-          if (payload.trimmedFrameCount === undefined) {
-            nextTrimmed = previousTrimmed + removed;
-          }
+        if (payload.trimmedFrameCount === undefined) {
+          nextTrimmed = previousTrimmed + removed;
         }
 
-        if (frames.length > limit) {
-          const overflow = frames.length - limit;
-          frames = frames.slice(overflow);
-          nextTrimmed += overflow;
+        const maxStored = Math.max(0, limit - 1);
+        const startIndex = Math.min(
+          previousLength,
+          Math.max(previousLength - maxStored, removed)
+        );
+        const copyCount = Math.max(0, previousLength - startIndex);
+        const frames = new Array<TelemetrySnapshot>(copyCount + 1);
+        for (let index = 0; index < copyCount; index += 1) {
+          frames[index] = previousFrames[startIndex + index];
         }
+        frames[copyCount] = incomingFrame;
+
+        const extraTrimmed = Math.max(0, startIndex - removed);
+        nextTrimmed += extraTrimmed;
 
         const totalFrameCount =
           payload.totalFrameCount ??

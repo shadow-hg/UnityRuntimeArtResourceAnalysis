@@ -8,13 +8,14 @@ import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { Server as SocketIOServer } from 'socket.io';
 import { v4 as uuidv4 } from 'uuid';
-import { HistoryStore } from './historyStore.js';
+import { createHistoryStoreClient } from './historyStoreClient.js';
 import { createConfigStore } from './configStore.js';
 
 const PORT = process.env.PORT || 48080;
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const PREVIEW_ROOT = path.join(moduleDir, '..', 'data', 'previews');
 const FRAME_PREVIEW_DIR = 'frames';
+const NETWORK_INFO_TTL_MS = 30_000;
 const app = express();
 const server = http.createServer(app);
 const io = new SocketIOServer(server, {
@@ -27,13 +28,16 @@ app.use(cors());
 app.use(express.json({ limit: '30mb' }));
 
 const configStore = createConfigStore();
-const historyStore = new HistoryStore({ configStore });
+const historyStore = createHistoryStoreClient({ configStore });
 
 configStore.onChange((config) => {
   historyStore.applyConfig(config).catch((err) => {
     console.warn('Failed to apply config change', err);
   });
 });
+
+let cachedNetworkInfo = null;
+let lastNetworkInfoUpdate = 0;
 
 function listLanAddresses(port) {
   const interfaces = os.networkInterfaces();
@@ -50,6 +54,20 @@ function listLanAddresses(port) {
       });
   });
   return addresses;
+}
+
+function getNetworkInfo() {
+  const now = Date.now();
+  if (cachedNetworkInfo && now - lastNetworkInfoUpdate < NETWORK_INFO_TTL_MS) {
+    return cachedNetworkInfo;
+  }
+  cachedNetworkInfo = {
+    hostname: os.hostname(),
+    port: Number(PORT),
+    addresses: listLanAddresses(PORT),
+  };
+  lastNetworkInfoUpdate = now;
+  return cachedNetworkInfo;
 }
 
 function normalizeIp(value) {
@@ -100,6 +118,26 @@ function cloneArray(items) {
     }
     return { ...item };
   });
+}
+
+function shallowEqual(a, b) {
+  if (a === b) {
+    return true;
+  }
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') {
+    return false;
+  }
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) {
+    return false;
+  }
+  for (const key of aKeys) {
+    if (a[key] !== b[key]) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function deepClone(value) {
@@ -277,53 +315,95 @@ function applyCategoryDelta(previousItems, updates, orderIds) {
   const baseItems = Array.isArray(previousItems) ? previousItems : [];
   const deltaItems = Array.isArray(updates) ? updates : [];
   const hasExplicitOrder = Array.isArray(orderIds);
-  const finalOrder = resolveOrder(hasExplicitOrder ? orderIds : undefined, deltaItems, hasExplicitOrder ? [] : baseItems);
+  const desiredOrder = resolveOrder(
+    hasExplicitOrder ? orderIds : undefined,
+    deltaItems,
+    hasExplicitOrder ? [] : baseItems
+  );
 
-  const map = new Map();
+  const previousMap = new Map();
   baseItems.forEach((item) => {
     const id = normalizeInstanceId(item?.instanceId);
-    if (id == null) {
+    if (id == null || previousMap.has(id)) {
       return;
     }
-    map.set(id, { ...item });
+    previousMap.set(id, item);
   });
 
+  let didMutate = false;
+  const nextMap = new Map(previousMap);
   deltaItems.forEach((item) => {
     const id = normalizeInstanceId(item?.instanceId);
     if (id == null) {
       return;
     }
-    map.set(id, { ...item });
+    const nextItem = item && typeof item === 'object' ? { ...item } : item;
+    const existing = nextMap.get(id);
+    if (!existing || !shallowEqual(existing, nextItem)) {
+      didMutate = true;
+      nextMap.set(id, nextItem);
+    }
   });
 
   if (hasExplicitOrder) {
-    const activeSet = new Set(finalOrder);
-    for (const key of Array.from(map.keys())) {
+    const activeSet = new Set(desiredOrder);
+    for (const key of Array.from(nextMap.keys())) {
       if (!activeSet.has(key)) {
-        map.delete(key);
+        nextMap.delete(key);
+        didMutate = true;
       }
     }
   }
 
-  const ordered = [];
+  const resultOrder = [];
   const seen = new Set();
-  finalOrder.forEach((id) => {
-    if (id == null || seen.has(id) || !map.has(id)) {
+  desiredOrder.forEach((id) => {
+    if (id == null || seen.has(id)) {
       return;
     }
-    ordered.push(map.get(id));
+    const item = nextMap.get(id);
+    if (!item) {
+      return;
+    }
+    resultOrder.push(id);
     seen.add(id);
   });
 
-  for (const [id, item] of map.entries()) {
+  for (const [id] of nextMap.entries()) {
     if (!seen.has(id)) {
-      ordered.push(item);
-      finalOrder.push(id);
+      resultOrder.push(id);
       seen.add(id);
     }
   }
 
-  return { items: ordered, order: finalOrder };
+  const orderedItems = resultOrder.map((id) => nextMap.get(id)).filter((item) => item != null);
+  const previousOrder = baseItems
+    .map((item) => normalizeInstanceId(item?.instanceId))
+    .filter((id) => id != null);
+
+  if (!didMutate && orderedItems.length === baseItems.length && resultOrder.length === previousOrder.length) {
+    let identical = true;
+    for (let index = 0; index < orderedItems.length; index += 1) {
+      if (orderedItems[index] !== baseItems[index]) {
+        identical = false;
+        break;
+      }
+    }
+    if (identical) {
+      let orderMatches = true;
+      for (let index = 0; index < resultOrder.length; index += 1) {
+        if (resultOrder[index] !== previousOrder[index]) {
+          orderMatches = false;
+          break;
+        }
+      }
+      if (orderMatches) {
+        return { items: baseItems, order: previousOrder };
+      }
+    }
+  }
+
+  return { items: orderedItems, order: resultOrder };
 }
 
 async function expandIncrementalFrame(sessionId, frame) {
@@ -493,27 +573,25 @@ async function persistTexturePreview(sessionId, texture) {
   }
 
   try {
-    const buffer = Buffer.from(payload, 'base64');
-    if (!buffer || buffer.length === 0) {
-      return { stored: storedTexture, broadcast: broadcastTexture };
-    }
-
-    const identifierSeed = textureId
-      ? `${textureId}|${texture.width ?? 0}|${texture.height ?? 0}|${texture.formatName ?? texture.format ?? ''}`
-      : `${texture.name ?? 'unknown'}|${texture.width ?? 0}|${texture.height ?? 0}|${texture.formatName ?? texture.format ?? ''}`;
-    const previewId = crypto.createHash('md5').update(identifierSeed).digest('hex');
-    const previewUrl = `/sessions/${sessionId}/textures/${previewId}/preview`;
-
-    const saved = await historyStore.savePreview(sessionId, {
-      previewId,
-      kind: 'texture',
-      mimeType: 'image/png',
-      data: buffer,
+    const previewSeed = `${
+      textureId ?? `anonymous:${texture.name ?? 'unknown'}`
+    }|${texture.width ?? 0}|${texture.height ?? 0}|${texture.formatName ?? texture.format ?? ''}`;
+    const previewResult = await historyStore.persistTexturePreview({
+      sessionId,
+      textureId: textureId ?? null,
+      identifierSeed: previewSeed,
+      base64: payload,
+      metadata: {
+        width: texture.width ?? null,
+        height: texture.height ?? null,
+        format: texture.formatName ?? texture.format ?? '',
+        mimeType: texture.previewMimeType ?? 'image/png',
+      },
     });
 
-    if (saved) {
-      storedTexture.previewUrl = previewUrl;
-      broadcastTexture.previewUrl = previewUrl;
+    if (previewResult?.saved && previewResult.previewUrl) {
+      storedTexture.previewUrl = previewResult.previewUrl;
+      broadcastTexture.previewUrl = previewResult.previewUrl;
     }
   } catch (err) {
     console.warn('Failed to persist texture preview', err);
@@ -539,26 +617,24 @@ async function persistFramePreview(sessionId, frameNumber, framePreview) {
   }
 
   try {
-    const buffer = Buffer.from(payload, 'base64');
-    if (!buffer || buffer.length === 0) {
-      return { stored: storedPreview, broadcast: broadcastPreview };
-    }
-
-    const identifier = `${frameNumber ?? 'unknown'}|${storedPreview.width ?? 0}|${storedPreview.height ?? 0}|${buffer.length}`;
-    const previewId = crypto.createHash('md5').update(identifier).digest('hex');
-    const previewUrl = `/sessions/${sessionId}/frames/${previewId}/preview`;
-
-    const saved = await historyStore.savePreview(sessionId, {
-      previewId,
-      kind: 'frame',
-      mimeType: 'image/png',
-      frameIndex: typeof frameNumber === 'number' ? frameNumber : null,
-      data: buffer,
+    const identifierSeed = `${frameNumber ?? 'unknown'}|${storedPreview.width ?? 0}|${
+      storedPreview.height ?? 0
+    }`;
+    const previewResult = await historyStore.persistFramePreview({
+      sessionId,
+      frameNumber,
+      identifierSeed,
+      base64: payload,
+      metadata: {
+        width: storedPreview.width ?? null,
+        height: storedPreview.height ?? null,
+        mimeType: storedPreview.mimeType ?? 'image/png',
+      },
     });
 
-    if (saved) {
-      storedPreview.previewUrl = previewUrl;
-      broadcastPreview.previewUrl = previewUrl;
+    if (previewResult?.saved && previewResult.previewUrl) {
+      storedPreview.previewUrl = previewResult.previewUrl;
+      broadcastPreview.previewUrl = previewResult.previewUrl;
     }
   } catch (err) {
     console.warn('Failed to persist frame preview', err);
@@ -704,11 +780,7 @@ app.get('/sessions', async (_req, res) => {
 });
 
 app.get('/network-info', (_req, res) => {
-  res.json({
-    hostname: os.hostname(),
-    port: Number(PORT),
-    addresses: listLanAddresses(PORT),
-  });
+  res.json(getNetworkInfo());
 });
 
 app.get('/config', async (_req, res) => {
@@ -896,12 +968,14 @@ function closeServer(callback) {
       if (err) {
         console.error('Failed to close server gracefully', err);
       }
-      try {
-        historyStore.close();
-      } catch (dbErr) {
-        console.warn('Failed to close history store', dbErr);
-      }
-      callback();
+      Promise.resolve()
+        .then(() => historyStore.close())
+        .catch((dbErr) => {
+          console.warn('Failed to close history store', dbErr);
+        })
+        .finally(() => {
+          callback();
+        });
     });
   });
 }
