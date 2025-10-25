@@ -615,10 +615,15 @@ function AppShell({
       return;
     }
 
-    const stillExists = frames.some((frame) => frame.frameNumber === selectedFrame.frameNumber);
-    if (!stillExists) {
+    const matchedFrame = frames.find((frame) => frame.frameNumber === selectedFrame.frameNumber) ?? null;
+    if (!matchedFrame) {
       setSelectedFrame(latest);
       setIsAutoFollowLatest(true);
+      return;
+    }
+
+    if (matchedFrame !== selectedFrame) {
+      setSelectedFrame(matchedFrame);
       return;
     }
 
