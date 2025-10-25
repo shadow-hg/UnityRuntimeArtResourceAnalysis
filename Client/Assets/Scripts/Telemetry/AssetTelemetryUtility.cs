@@ -135,6 +135,7 @@ namespace UnityProfileV2.Telemetry
                 RenderTextureSnapshots.Clear();
                 MaterialSnapshots.Clear();
                 ShaderSnapshots.Clear();
+                ClearTextureThumbnailCache();
             }
 
             internal int AllocateStableTextureInstanceId()
@@ -1429,6 +1430,28 @@ namespace UnityProfileV2.Telemetry
             RenderTextureCache.Remove(instanceId);
             MaterialCache.Remove(instanceId);
             ShaderCache.Remove(instanceId);
+
+            if (TextureThumbnailInstanceMap.TryGetValue(instanceId, out var thumbnailKey))
+            {
+                TextureThumbnailInstanceMap.Remove(instanceId);
+                if (!string.IsNullOrEmpty(thumbnailKey))
+                {
+                    var stillReferenced = false;
+                    foreach (var entry in TextureThumbnailInstanceMap)
+                    {
+                        if (string.Equals(entry.Value, thumbnailKey, StringComparison.Ordinal))
+                        {
+                            stillReferenced = true;
+                            break;
+                        }
+                    }
+
+                    if (!stillReferenced)
+                    {
+                        TextureThumbnailCache.Remove(thumbnailKey);
+                    }
+                }
+            }
         }
 
         private static TextureInfo[] CaptureTextureInfos(TelemetryCollectionState state)
@@ -1448,6 +1471,7 @@ namespace UnityProfileV2.Telemetry
         {
             TextureInfoBuffer.Clear();
             TextureSeenIds.Clear();
+            TextureThumbnailSeenKeys.Clear();
 
             foreach (var texture in EnumerateRuntimeObjects<Texture>())
             {
@@ -1460,6 +1484,7 @@ namespace UnityProfileV2.Telemetry
                 TextureSeenIds.Add(info.instanceId);
             }
 
+            PruneTextureThumbnailCache(TextureThumbnailSeenKeys);
             PruneCache(TextureCache, TextureSeenIds);
 
             var result = ArrayPoolUtility<TextureInfo>.FromList(TextureInfoBuffer);
@@ -1640,6 +1665,8 @@ namespace UnityProfileV2.Telemetry
             {
                 return false;
             }
+
+            AttachTextureThumbnail(texture, ref info);
 
             return true;
         }
@@ -1826,6 +1853,216 @@ namespace UnityProfileV2.Telemetry
             };
 
             return info;
+        }
+
+        private static void ClearTextureThumbnailCache()
+        {
+            TextureThumbnailCache.Clear();
+            TextureThumbnailInstanceMap.Clear();
+            TextureThumbnailSeenKeys.Clear();
+            ThumbnailRemovalBuffer.Clear();
+            ThumbnailInstanceRemovalBuffer.Clear();
+        }
+
+        private static string ResolveTextureThumbnailIdentifier(TextureInfo info)
+        {
+            if (!string.IsNullOrEmpty(info.textureId))
+            {
+                return info.textureId;
+            }
+
+            if (!string.IsNullOrEmpty(info.path))
+            {
+                return $"path:{info.path.Replace('\\', '/').ToLowerInvariant()}";
+            }
+
+            if (!string.IsNullOrEmpty(info.name))
+            {
+                return $"name:{info.name}";
+            }
+
+            if (info.instanceId != 0)
+            {
+                return $"instance:{info.instanceId.ToString(CultureInfo.InvariantCulture)}";
+            }
+
+            return string.Empty;
+        }
+
+        private static TextureThumbnailCacheEntry TryCaptureTextureThumbnail(Texture texture, int width, int height)
+        {
+            if (texture == null || width <= 0 || height <= 0)
+            {
+                return null;
+            }
+
+            var maxDimension = Mathf.Max(width, height);
+            var scale = 1f;
+            if (TextureThumbnailMaxDimension > 0 && maxDimension > TextureThumbnailMaxDimension)
+            {
+                scale = Mathf.Clamp01(TextureThumbnailMaxDimension / (float)maxDimension);
+            }
+
+            var targetWidth = Mathf.Max(1, Mathf.RoundToInt(width * scale));
+            var targetHeight = Mathf.Max(1, Mathf.RoundToInt(height * scale));
+
+            RenderTexture temporary = null;
+            Texture2D readable = null;
+            var previousActive = RenderTexture.active;
+
+            try
+            {
+                temporary = RenderTexture.GetTemporary(targetWidth, targetHeight, 0, RenderTextureFormat.ARGB32);
+                Graphics.Blit(texture, temporary);
+                RenderTexture.active = temporary;
+                readable = new Texture2D(targetWidth, targetHeight, TextureFormat.RGBA32, false)
+                {
+                    hideFlags = HideFlags.HideAndDontSave
+                };
+                readable.ReadPixels(new Rect(0f, 0f, targetWidth, targetHeight), 0, 0);
+                readable.Apply(false, false);
+
+                var pngData = ImageConversion.EncodeToPNG(readable);
+                if (pngData == null || pngData.Length == 0)
+                {
+                    return null;
+                }
+
+                return new TextureThumbnailCacheEntry
+                {
+                    Base64 = Convert.ToBase64String(pngData),
+                    MimeType = "image/png",
+                    Width = targetWidth,
+                    Height = targetHeight,
+                    UploadPending = true
+                };
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[UnityProfileV2] Failed to capture texture thumbnail for {texture?.name ?? "unknown"}: {ex.Message}\n{ex.StackTrace}");
+                return null;
+            }
+            finally
+            {
+                RenderTexture.active = previousActive;
+                if (temporary != null)
+                {
+                    RenderTexture.ReleaseTemporary(temporary);
+                }
+
+                if (readable != null)
+                {
+                    UnityEngine.Object.Destroy(readable);
+                }
+            }
+        }
+
+        private static void AttachTextureThumbnail(Texture texture, ref TextureInfo info)
+        {
+            info.previewBase64 = null;
+            info.previewIdentifier = string.Empty;
+            info.previewMimeType = string.Empty;
+            info.previewWidth = 0;
+            info.previewHeight = 0;
+            info.previewUrl = null;
+
+            if (texture == null || !info.IsValid)
+            {
+                return;
+            }
+
+            var identifier = ResolveTextureThumbnailIdentifier(info);
+            if (string.IsNullOrEmpty(identifier))
+            {
+                return;
+            }
+
+            TextureThumbnailSeenKeys.Add(identifier);
+
+            if (info.instanceId != 0)
+            {
+                TextureThumbnailInstanceMap[info.instanceId] = identifier;
+            }
+
+            if (!TextureThumbnailCache.TryGetValue(identifier, out var entry))
+            {
+                entry = TryCaptureTextureThumbnail(texture, info.width, info.height);
+                if (entry != null)
+                {
+                    entry.Identifier = identifier;
+                    TextureThumbnailCache[identifier] = entry;
+                }
+            }
+            else if (entry.Width != info.width || entry.Height != info.height)
+            {
+                var updated = TryCaptureTextureThumbnail(texture, info.width, info.height);
+                if (updated != null)
+                {
+                    updated.Identifier = identifier;
+                    TextureThumbnailCache[identifier] = updated;
+                    entry = updated;
+                }
+            }
+
+            if (entry == null)
+            {
+                info.previewIdentifier = identifier;
+                info.previewMimeType = string.Empty;
+                return;
+            }
+
+            entry.Identifier ??= identifier;
+
+            info.previewIdentifier = entry.Identifier;
+            info.previewMimeType = string.IsNullOrEmpty(entry.MimeType) ? "image/png" : entry.MimeType;
+            info.previewWidth = entry.Width;
+            info.previewHeight = entry.Height;
+
+            if (entry.UploadPending && !string.IsNullOrEmpty(entry.Base64))
+            {
+                info.previewBase64 = $"data:{info.previewMimeType};base64,{entry.Base64}";
+                entry.UploadPending = false;
+            }
+        }
+
+        private static void PruneTextureThumbnailCache(HashSet<string> seenKeys)
+        {
+            if (seenKeys == null)
+            {
+                return;
+            }
+
+            ThumbnailRemovalBuffer.Clear();
+            foreach (var key in TextureThumbnailCache.Keys)
+            {
+                if (!seenKeys.Contains(key))
+                {
+                    ThumbnailRemovalBuffer.Add(key);
+                }
+            }
+
+            foreach (var key in ThumbnailRemovalBuffer)
+            {
+                TextureThumbnailCache.Remove(key);
+            }
+
+            ThumbnailInstanceRemovalBuffer.Clear();
+            foreach (var pair in TextureThumbnailInstanceMap)
+            {
+                if (!seenKeys.Contains(pair.Value))
+                {
+                    ThumbnailInstanceRemovalBuffer.Add(pair.Key);
+                }
+            }
+
+            foreach (var instanceId in ThumbnailInstanceRemovalBuffer)
+            {
+                TextureThumbnailInstanceMap.Remove(instanceId);
+            }
+
+            ThumbnailRemovalBuffer.Clear();
+            ThumbnailInstanceRemovalBuffer.Clear();
+            seenKeys.Clear();
         }
 
         private static void PruneCache<TInfo, TSignature>(Dictionary<int, CachedEntry<TInfo, TSignature>> cache, HashSet<int> seenIds)
@@ -2262,6 +2499,22 @@ namespace UnityProfileV2.Telemetry
         private static readonly Dictionary<int, CachedEntry<MaterialInfo, MaterialSignature>> MaterialCache = new();
         private static readonly Dictionary<int, CachedEntry<ShaderInfo, ShaderSignature>> ShaderCache = new();
 
+        private sealed class TextureThumbnailCacheEntry
+        {
+            public string Identifier;
+            public string Base64;
+            public string MimeType;
+            public int Width;
+            public int Height;
+            public bool UploadPending;
+        }
+
+        private static readonly Dictionary<string, TextureThumbnailCacheEntry> TextureThumbnailCache =
+            new(StringComparer.Ordinal);
+
+        private static readonly Dictionary<int, string> TextureThumbnailInstanceMap = new();
+        private static readonly HashSet<string> TextureThumbnailSeenKeys = new(StringComparer.Ordinal);
+
         private static readonly HashSet<int> TextureSeenIds = new();
         private static readonly HashSet<int> MeshSeenIds = new();
         private static readonly HashSet<int> RenderTextureSeenIds = new();
@@ -2269,6 +2522,10 @@ namespace UnityProfileV2.Telemetry
         private static readonly HashSet<int> ShaderSeenIds = new();
 
         private static readonly List<int> RemovalBuffer = new();
+        private static readonly List<string> ThumbnailRemovalBuffer = new();
+        private static readonly List<int> ThumbnailInstanceRemovalBuffer = new();
+
+        private const int TextureThumbnailMaxDimension = 256;
 
         private static readonly List<TextureInfo> TextureInfoBuffer = new();
         private static readonly List<MeshInfo> MeshInfoBuffer = new();
@@ -3268,6 +3525,12 @@ namespace UnityProfileV2.Telemetry
         public long EstimatedBytes;
         public bool isRenderTexture;
         public string textureClass;
+        public string previewIdentifier;
+        public string previewBase64;
+        public string previewMimeType;
+        public int previewWidth;
+        public int previewHeight;
+        public string previewUrl;
         public bool IsValid => width > 0 && height > 0;
 
         public static TextureInfo FromTexture(Texture texture)

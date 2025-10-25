@@ -561,7 +561,22 @@ function extractBase64Payload(value) {
   return payload;
 }
 
-async function persistTexturePreview(sessionId, texture) {
+function normalizePreviewDimension(value) {
+  if (value == null) {
+    return null;
+  }
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+  const rounded = Math.round(numeric);
+  if (!Number.isFinite(rounded) || rounded <= 0) {
+    return null;
+  }
+  return rounded;
+}
+
+async function persistTexturePreview(sessionId, texture, existingTextureMap = new Map()) {
   if (!texture || typeof texture !== 'object') {
     return { stored: texture, broadcast: texture };
   }
@@ -570,6 +585,9 @@ async function persistTexturePreview(sessionId, texture) {
     previewBase64: _previewBase64,
     previewUrl: _previewUrl,
     previewMimeType: _previewMimeType,
+    previewIdentifier,
+    previewWidth: rawPreviewWidth,
+    previewHeight: rawPreviewHeight,
     imageBase64: _imageBase64,
     ...rest
   } = texture;
@@ -580,6 +598,89 @@ async function persistTexturePreview(sessionId, texture) {
     storedTexture.textureId = textureId;
     broadcastTexture.textureId = textureId;
   }
+
+  const previewIdentifierSeed =
+    typeof previewIdentifier === 'string' && previewIdentifier.trim().length > 0
+      ? previewIdentifier.trim()
+      : textureId ?? rest?.name ?? 'texture';
+
+  let previewMimeType =
+    typeof _previewMimeType === 'string' && _previewMimeType.trim().length > 0
+      ? _previewMimeType.trim()
+      : null;
+  let previewWidth = normalizePreviewDimension(rawPreviewWidth);
+  let previewHeight = normalizePreviewDimension(rawPreviewHeight);
+
+  const { payload, contentType } = extractBase64Components(_previewBase64 ?? _imageBase64 ?? '');
+  if (payload) {
+    try {
+      const previewResult = await historyStore.persistTexturePreview({
+        sessionId,
+        textureId: textureId ?? null,
+        identifierSeed: previewIdentifierSeed,
+        base64: payload,
+        metadata: {
+          width: previewWidth ?? rest?.width ?? null,
+          height: previewHeight ?? rest?.height ?? null,
+          mimeType: previewMimeType ?? contentType ?? 'image/png',
+        },
+      });
+
+      if (previewResult?.saved && previewResult.previewUrl) {
+        storedTexture.previewUrl = previewResult.previewUrl;
+        broadcastTexture.previewUrl = previewResult.previewUrl;
+      }
+      previewMimeType = previewMimeType ?? contentType ?? 'image/png';
+    } catch (err) {
+      console.warn('Failed to persist texture preview', err);
+    }
+  } else if (textureId && existingTextureMap instanceof Map && existingTextureMap.has(textureId)) {
+    const existing = existingTextureMap.get(textureId);
+    if (existing) {
+      if (!storedTexture.previewUrl && typeof existing.previewUrl === 'string') {
+        storedTexture.previewUrl = existing.previewUrl;
+        broadcastTexture.previewUrl = existing.previewUrl;
+      }
+      if (!previewMimeType && typeof existing.previewMimeType === 'string') {
+        previewMimeType = existing.previewMimeType.trim();
+      }
+      if (previewWidth == null) {
+        previewWidth = normalizePreviewDimension(existing.previewWidth);
+      }
+      if (previewHeight == null) {
+        previewHeight = normalizePreviewDimension(existing.previewHeight);
+      }
+    }
+  }
+
+  if (!storedTexture.previewUrl && typeof _previewUrl === 'string' && _previewUrl.trim().length > 0) {
+    const trimmedUrl = _previewUrl.trim();
+    storedTexture.previewUrl = trimmedUrl;
+    broadcastTexture.previewUrl = trimmedUrl;
+  }
+
+  if (previewMimeType) {
+    storedTexture.previewMimeType = previewMimeType;
+    broadcastTexture.previewMimeType = previewMimeType;
+  }
+
+  if (previewWidth != null) {
+    storedTexture.previewWidth = previewWidth;
+    broadcastTexture.previewWidth = previewWidth;
+  }
+
+  if (previewHeight != null) {
+    storedTexture.previewHeight = previewHeight;
+    broadcastTexture.previewHeight = previewHeight;
+  }
+
+  delete storedTexture.previewBase64;
+  delete storedTexture.imageBase64;
+  delete storedTexture.previewIdentifier;
+  delete broadcastTexture.previewBase64;
+  delete broadcastTexture.imageBase64;
+  delete broadcastTexture.previewIdentifier;
+
   return { stored: storedTexture, broadcast: broadcastTexture };
 }
 
@@ -634,8 +735,45 @@ async function prepareFramePayload(sessionId, payload) {
   const broadcastFrame = { ...expandedFrame };
 
   if (Array.isArray(expandedFrame.textures) && expandedFrame.textures.length > 0) {
+    let cachedTextureMetadata = new Map();
+    const reuseIds = Array.from(
+      new Set(
+        expandedFrame.textures
+          .map((texture) => {
+            const id = normalizeTextureId(texture);
+            if (!id) {
+              return null;
+            }
+            const base64Payload = extractBase64Payload(
+              texture?.previewBase64 ?? texture?.imageBase64 ?? ''
+            );
+            if (base64Payload) {
+              return null;
+            }
+            return id;
+          })
+          .filter((id) => typeof id === 'string' && id.length > 0)
+      )
+    );
+
+    if (reuseIds.length > 0) {
+      try {
+        const existingTextures = await historyStore.getSessionTextures(sessionId, reuseIds);
+        cachedTextureMetadata = new Map(
+          existingTextures
+            .filter((entry) => entry && typeof entry.textureId === 'string')
+            .map((entry) => [entry.textureId, entry])
+        );
+      } catch (err) {
+        console.warn('Failed to load existing texture metadata for previews', err);
+        cachedTextureMetadata = new Map();
+      }
+    }
+
     const textures = await Promise.all(
-      expandedFrame.textures.map((texture) => persistTexturePreview(sessionId, texture))
+      expandedFrame.textures.map((texture) =>
+        persistTexturePreview(sessionId, texture, cachedTextureMetadata)
+      )
     );
     storedFrame.textures = textures.map((result) => result.stored);
     const textureReferences = await historyStore.ensureSessionTextures(sessionId, storedFrame.textures);
@@ -645,7 +783,9 @@ async function prepareFramePayload(sessionId, payload) {
 
   if (Array.isArray(expandedFrame.renderTextures) && expandedFrame.renderTextures.length > 0) {
     const renderTextures = await Promise.all(
-      expandedFrame.renderTextures.map((renderTexture) => persistTexturePreview(sessionId, renderTexture))
+      expandedFrame.renderTextures.map((renderTexture) =>
+        persistTexturePreview(sessionId, renderTexture)
+      )
     );
     storedFrame.renderTextures = renderTextures.map((result) => result.stored);
     broadcastFrame.renderTextures = renderTextures.map((result) => result.broadcast);
