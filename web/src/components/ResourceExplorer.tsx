@@ -692,29 +692,56 @@ function ResourceDiagnosticList({ title, items, variant = 'card' }: ResourceDiag
   );
 }
 
+function TextureThumbnail({ texture, size = 56 }: { texture: TextureInfo; size?: number }) {
+  const displayName = getTextureDisplayName(texture);
+  const previewUrl = typeof texture.previewUrl === 'string' ? texture.previewUrl.trim() : '';
+  const placeholderLabel = displayName.slice(0, 2).toUpperCase() || 'TX';
+  const showPlaceholder = previewUrl.length === 0;
+  const fontSize = Math.max(12, Math.min(18, size / 3.5));
+
+  const containerStyle: CSSProperties = {
+    width: size,
+    height: size,
+    borderRadius: 8,
+    overflow: 'hidden',
+    background: showPlaceholder ? 'linear-gradient(135deg, #5b8ff9, #1e3a8a)' : '#0f172a',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    color: showPlaceholder ? '#fff' : undefined,
+    fontWeight: 600,
+    fontSize,
+  };
+
+  if (showPlaceholder) {
+    return <div style={containerStyle}>{placeholderLabel}</div>;
+  }
+
+  return (
+    <div style={containerStyle}>
+      <img
+        src={previewUrl}
+        alt={displayName || '纹理缩略图'}
+        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+        loading="lazy"
+      />
+    </div>
+  );
+}
+
 function TextureNameCell({ texture }: { texture: TextureInfo }) {
   const displayName = getTextureDisplayName(texture);
-  const placeholderLabel = displayName.slice(0, 2).toUpperCase() || 'TX';
+  const width = Number.isFinite(texture.width) ? Math.max(0, Number(texture.width)) : null;
+  const height = Number.isFinite(texture.height) ? Math.max(0, Number(texture.height)) : null;
+  const sizeLabel = width != null && height != null ? `${width} × ${height}` : '尺寸未知';
 
   return (
     <Space align="start">
-      <div
-        style={{
-          width: 56,
-          height: 56,
-          borderRadius: 8,
-          background: 'linear-gradient(135deg, #5b8ff9, #1e3a8a)',
-          color: '#fff',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          fontWeight: 600,
-          fontSize: 14,
-        }}
-      >
-        {placeholderLabel}
-      </div>
-      <Typography.Text strong>{displayName}</Typography.Text>
+      <TextureThumbnail texture={texture} size={56} />
+      <Space direction="vertical" size={0}>
+        <Typography.Text strong>{displayName}</Typography.Text>
+        <Typography.Text type="secondary">{sizeLabel}</Typography.Text>
+      </Space>
     </Space>
   );
 }
@@ -759,9 +786,30 @@ function TextureDetails({ texture }: { texture: TextureInfo }) {
   const compressionRatio = originalBytes > 0 ? formatPercentage(estimatedBytes / originalBytes) : '—';
   const wrapLabel = formatWrapMode(texture.wrapMode);
   const filterLabel = formatFilterMode(texture.filterMode);
+  const previewWidth = Number.isFinite(texture.previewWidth)
+    ? Math.max(0, Number(texture.previewWidth))
+    : null;
+  const previewHeight = Number.isFinite(texture.previewHeight)
+    ? Math.max(0, Number(texture.previewHeight))
+    : null;
+  const previewSizeLabel =
+    previewWidth && previewHeight ? `${previewWidth} × ${previewHeight}` : '未提供';
+  const previewMimeType =
+    typeof texture.previewMimeType === 'string' && texture.previewMimeType.trim().length > 0
+      ? texture.previewMimeType.trim()
+      : null;
 
   return (
-    <Space direction="vertical" size={8} style={{ width: '100%' }}>
+    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      <Space align="center" size={16}>
+        <TextureThumbnail texture={texture} size={160} />
+        <Space direction="vertical" size={4}>
+          <Typography.Text type="secondary">缩略图尺寸：{previewSizeLabel}</Typography.Text>
+          {previewMimeType ? (
+            <Typography.Text type="secondary">缩略图格式：{previewMimeType}</Typography.Text>
+          ) : null}
+        </Space>
+      </Space>
       <Typography.Text type="secondary">
         资源路径：{texture.path || '未提供资源路径'}
       </Typography.Text>

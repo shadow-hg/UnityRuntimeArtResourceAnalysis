@@ -17,6 +17,12 @@ export interface TextureInfo {
   EstimatedBytes?: number;
   isRenderTexture?: boolean;
   textureClass?: string;
+  previewIdentifier?: string;
+  previewBase64?: string;
+  previewMimeType?: string;
+  previewWidth?: number;
+  previewHeight?: number;
+  previewUrl?: string;
 }
 
 export interface MeshInfo {
