@@ -1,17 +1,5 @@
 import { CSSProperties, useEffect, useMemo, useState } from 'react';
-import {
-  Card,
-  Collapse,
-  Empty,
-  Image,
-  Input,
-  List,
-  Progress,
-  Space,
-  Table,
-  Tag,
-  Typography,
-} from 'antd';
+import { Card, Collapse, Empty, Input, List, Progress, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type {
   MaterialInfo,
@@ -24,7 +12,6 @@ import type {
   TextureInfo,
 } from '../types';
 import { formatBytes, formatFps, formatInteger, formatPercentage } from '../utils/format';
-import { resolvePreviewSource } from '../utils/preview';
 import CollapsibleCard from './CollapsibleCard';
 import CollapsibleSection from './CollapsibleSection';
 
@@ -705,92 +692,54 @@ function ResourceDiagnosticList({ title, items, variant = 'card' }: ResourceDiag
   );
 }
 
-function TextureNameCell({ texture, serverBaseUrl }: { texture: TextureInfo; serverBaseUrl: string }) {
-  const previewSrc = useMemo(
-    () => resolvePreviewSource(texture, serverBaseUrl),
-    [texture, serverBaseUrl]
-  );
-  const hasPreview = Boolean(previewSrc);
+function TextureNameCell({ texture }: { texture: TextureInfo }) {
   const displayName = getTextureDisplayName(texture);
-  const placeholderLabel = displayName.slice(0, 2).toUpperCase();
+  const placeholderLabel = displayName.slice(0, 2).toUpperCase() || 'TX';
 
   return (
     <Space align="start">
-      {hasPreview ? (
-        <Image
-          src={previewSrc ?? undefined}
-          width={56}
-          height={56}
-          style={{ borderRadius: 8, objectFit: 'cover' }}
-          alt={displayName}
-          preview={{ mask: '预览' }}
-        />
-      ) : (
-        <div
-          style={{
-            width: 56,
-            height: 56,
-            borderRadius: 8,
-            background: 'linear-gradient(135deg, #5b8ff9, #1e3a8a)',
-            color: '#fff',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            fontWeight: 600,
-            fontSize: 14,
-          }}
-        >
-          {placeholderLabel}
-        </div>
-      )}
+      <div
+        style={{
+          width: 56,
+          height: 56,
+          borderRadius: 8,
+          background: 'linear-gradient(135deg, #5b8ff9, #1e3a8a)',
+          color: '#fff',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontWeight: 600,
+          fontSize: 14,
+        }}
+      >
+        {placeholderLabel}
+      </div>
       <Typography.Text strong>{displayName}</Typography.Text>
     </Space>
   );
 }
 
-function RenderTextureNameCell({
-  renderTexture,
-  serverBaseUrl,
-}: {
-  renderTexture: RenderTextureInfo;
-  serverBaseUrl: string;
-}) {
-  const previewSrc = useMemo(
-    () => resolvePreviewSource(renderTexture, serverBaseUrl),
-    [renderTexture, serverBaseUrl]
-  );
-  const hasPreview = Boolean(previewSrc);
+function RenderTextureNameCell({ renderTexture }: { renderTexture: RenderTextureInfo }) {
   const placeholderLabel = (renderTexture.name || 'RT').slice(0, 2).toUpperCase();
 
   return (
     <Space align="start">
-      {hasPreview ? (
-        <Image
-          src={previewSrc ?? undefined}
-          width={56}
-          height={56}
-          style={{ borderRadius: 8, objectFit: 'cover' }}
-          alt={renderTexture.name}
-          preview={{ mask: '预览' }}
-        />
-      ) : (
-        <div
-          style={{
-            width: 56,
-            height: 56,
-            borderRadius: 8,
-            background: 'linear-gradient(135deg, #f59e0b, #b45309)',
-            color: '#fff',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            fontWeight: 600,
-            fontSize: 14,
-          }}
-        >
-          {placeholderLabel}
-        </div>
-      )}
+      <div
+        style={{
+          width: 56,
+          height: 56,
+          borderRadius: 8,
+          background: 'linear-gradient(135deg, #f59e0b, #b45309)',
+          color: '#fff',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontWeight: 600,
+          fontSize: 14,
+        }}
+      >
+        {placeholderLabel}
+      </div>
       <Space direction="vertical" size={0}>
         <Typography.Text strong>{renderTexture.name || '未命名 RenderTexture'}</Typography.Text>
         <Typography.Text type="secondary">
@@ -1400,7 +1349,7 @@ export default function ResourceExplorer({
     {
       title: '纹理',
       key: 'texture',
-      render: (_, record) => <TextureNameCell texture={record} serverBaseUrl={serverBaseUrl} />,
+      render: (_, record) => <TextureNameCell texture={record} />,
       sorter: (a, b) => getTextureDisplayName(a).localeCompare(getTextureDisplayName(b)),
       width: 360,
     },
@@ -1471,7 +1420,7 @@ export default function ResourceExplorer({
       title: 'RenderTexture',
       key: 'renderTexture',
       render: (_, record) => (
-        <RenderTextureNameCell renderTexture={record} serverBaseUrl={serverBaseUrl} />
+        <RenderTextureNameCell renderTexture={record} />
       ),
       sorter: (a, b) => a.name.localeCompare(b.name),
       width: 320,

@@ -2755,119 +2755,6 @@ namespace UnityProfileV2.Telemetry
             return UnityEngine.Profiling.Profiler.GetRuntimeMemorySizeLong(texture);
         }
 
-        internal static bool TryCaptureTexturePreview(Texture texture, out string base64)
-        {
-            base64 = null;
-            if (texture is not Texture2D tex2D)
-            {
-                return false;
-            }
-
-            RenderTexture renderTexture = null;
-
-            try
-            {
-                const int previewSize = 128;
-                var width = Mathf.Clamp(previewSize, 16, tex2D.width);
-                var height = Mathf.Clamp(previewSize, 16, tex2D.height);
-
-                renderTexture = RenderTexture.GetTemporary(width, height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB);
-                Graphics.Blit(tex2D, renderTexture);
-
-                return TryEncodeRenderTarget(renderTexture, out base64);
-            }
-            catch
-            {
-                return false;
-            }
-            finally
-            {
-                if (renderTexture != null)
-                {
-                    RenderTexture.ReleaseTemporary(renderTexture);
-                }
-            }
-        }
-
-        internal static bool TryCaptureRenderTexturePreview(RenderTexture renderTexture, out string base64)
-        {
-            base64 = null;
-            if (renderTexture == null)
-            {
-                return false;
-            }
-
-            RenderTexture previewTarget = null;
-
-            try
-            {
-                const int previewSize = 128;
-                var width = Mathf.Clamp(previewSize, 16, renderTexture.width);
-                var height = Mathf.Clamp(previewSize, 16, renderTexture.height);
-
-                previewTarget = RenderTexture.GetTemporary(width, height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB);
-                Graphics.Blit(renderTexture, previewTarget);
-
-                return TryEncodeRenderTarget(previewTarget, out base64);
-            }
-            catch
-            {
-                return false;
-            }
-            finally
-            {
-                if (previewTarget != null)
-                {
-                    RenderTexture.ReleaseTemporary(previewTarget);
-                }
-            }
-        }
-
-        private static bool TryEncodeRenderTarget(RenderTexture renderTarget, out string base64)
-        {
-            base64 = null;
-            if (renderTarget == null)
-            {
-                return false;
-            }
-
-            Texture2D previewTexture = null;
-            var previousActive = RenderTexture.active;
-
-            try
-            {
-                RenderTexture.active = renderTarget;
-
-                var width = Mathf.Max(1, renderTarget.width);
-                var height = Mathf.Max(1, renderTarget.height);
-
-                previewTexture = new Texture2D(width, height, TextureFormat.RGBA32, false, false);
-                previewTexture.ReadPixels(new Rect(0, 0, width, height), 0, 0);
-                previewTexture.Apply(false, false);
-
-                var pngData = previewTexture.EncodeToPNG();
-                if (pngData != null && pngData.Length > 0)
-                {
-                    base64 = Convert.ToBase64String(pngData);
-                }
-
-                return !string.IsNullOrEmpty(base64);
-            }
-            catch
-            {
-                return false;
-            }
-            finally
-            {
-                RenderTexture.active = previousActive;
-
-                if (previewTexture != null)
-                {
-                    UnityEngine.Object.Destroy(previewTexture);
-                }
-            }
-        }
-
         internal static MaterialTextureReference[] GetMaterialTextureReferences(Material material)
         {
             if (material == null)
@@ -3379,8 +3266,6 @@ namespace UnityProfileV2.Telemetry
         public int mipCount;
         public long originalBytes;
         public long EstimatedBytes;
-        public string previewBase64;
-        public string previewMimeType;
         public bool isRenderTexture;
         public string textureClass;
         public bool IsValid => width > 0 && height > 0;
@@ -3392,8 +3277,6 @@ namespace UnityProfileV2.Telemetry
             var mipCount = tex2D != null ? tex2D.mipmapCount : 1;
             var typeName = texture != null ? texture.GetType().Name : string.Empty;
             var isRenderTexture = AssetTelemetryUtility.IsRenderTextureLike(texture);
-            AssetTelemetryUtility.TryCaptureTexturePreview(texture, out var previewBase64);
-
             var assetPath = AssetTelemetryUtility.GetAssetPath(texture);
             var stableId = BuildStableTextureId(texture);
             var width = texture != null ? texture.width : 0;
@@ -3418,8 +3301,6 @@ namespace UnityProfileV2.Telemetry
                 mipCount = mipCount,
                 originalBytes = AssetTelemetryUtility.GetTextureOriginalBytes(tex2D),
                 EstimatedBytes = AssetTelemetryUtility.GetTextureCompressedBytes(texture, format, width, height, mipCount),
-                previewBase64 = previewBase64,
-                previewMimeType = !string.IsNullOrEmpty(previewBase64) ? "image/png" : null,
                 isRenderTexture = isRenderTexture,
                 textureClass = typeName,
             };
@@ -3546,14 +3427,10 @@ namespace UnityProfileV2.Telemetry
         public string graphicsFormat;
         public int antiAliasing;
         public long EstimatedBytes;
-        public string previewBase64;
-        public string previewMimeType;
-        public string previewUrl;
         public bool IsValid => width > 0 && height > 0;
 
         public static RenderTextureInfo FromRenderTexture(RenderTexture renderTexture)
         {
-            AssetTelemetryUtility.TryCaptureRenderTexturePreview(renderTexture, out var previewBase64);
             var width = renderTexture != null ? renderTexture.width : 0;
             var height = renderTexture != null ? renderTexture.height : 0;
             var depth = renderTexture != null ? renderTexture.depth : 0;
@@ -3575,8 +3452,6 @@ namespace UnityProfileV2.Telemetry
                 graphicsFormat = renderTexture != null ? renderTexture.graphicsFormat.ToString() : string.Empty,
                 antiAliasing = renderTexture != null ? renderTexture.antiAliasing : 1,
                 EstimatedBytes = renderTexture != null ? UnityEngine.Profiling.Profiler.GetRuntimeMemorySizeLong(renderTexture) : 0,
-                previewBase64 = previewBase64,
-                previewMimeType = !string.IsNullOrEmpty(previewBase64) ? "image/png" : null,
             };
         }
     }

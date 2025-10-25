@@ -15,9 +15,6 @@ export interface TextureInfo {
   mipCount?: number;
   originalBytes?: number;
   EstimatedBytes?: number;
-  previewUrl?: string;
-  previewBase64?: string;
-  previewMimeType?: string;
   isRenderTexture?: boolean;
   textureClass?: string;
 }
@@ -50,9 +47,6 @@ export interface RenderTextureInfo {
   graphicsFormat: string;
   antiAliasing: number;
   EstimatedBytes: number;
-  previewUrl?: string;
-  previewBase64?: string;
-  previewMimeType?: string;
 }
 
 export interface FramePreviewInfo {
