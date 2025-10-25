@@ -2,7 +2,6 @@ using System;
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
@@ -70,8 +69,6 @@ namespace UnityProfileV2.Telemetry
         private readonly ConcurrentDictionary<int, PendingSnapshotStatus> _pendingSnapshots = new();
         private readonly ConcurrentQueue<Action> _mainThreadActions = new();
         private readonly object _snapshotUploadLock = new();
-        private readonly HashSet<string> _uploadedTexturePreviewIds = new(StringComparer.Ordinal);
-        private readonly HashSet<string> _uploadedRenderTexturePreviewIds = new(StringComparer.Ordinal);
         private CancellationTokenSource _snapshotUploadCts;
         private Task _snapshotUploadTask;
         private int _pendingSnapshotSequence;
@@ -229,8 +226,6 @@ namespace UnityProfileV2.Telemetry
             _serverEndpoint = ResolveServerEndpoint();
             _collectionState = new AssetTelemetryUtility.TelemetryCollectionState();
             _lastAppliedClientDefaults = null;
-            _uploadedTexturePreviewIds.Clear();
-            _uploadedRenderTexturePreviewIds.Clear();
 
             if (wasActive)
             {
@@ -889,8 +884,6 @@ namespace UnityProfileV2.Telemetry
             {
                 ApplyClientDefaults(response.clientConfig);
             }
-            _uploadedTexturePreviewIds.Clear();
-            _uploadedRenderTexturePreviewIds.Clear();
             _sessionId = response.sessionId;
             _lastSampleTime = Time.realtimeSinceStartup;
             _lastSampleRealtime = _lastSampleTime;
@@ -1468,8 +1461,6 @@ namespace UnityProfileV2.Telemetry
                 return false;
             }
 
-            PruneUploadedPreviews(snapshot);
-
             var sessionId = _sessionId;
             if (string.IsNullOrEmpty(sessionId))
             {
@@ -1512,109 +1503,6 @@ namespace UnityProfileV2.Telemetry
             EnsureSnapshotUploadLoop();
 
             return true;
-        }
-
-        private void PruneUploadedPreviews(TelemetrySnapshot snapshot)
-        {
-            if (snapshot == null)
-            {
-                return;
-            }
-
-            var textures = snapshot.textures;
-            if (textures != null && textures.Length > 0)
-            {
-                for (var index = 0; index < textures.Length; index += 1)
-                {
-                    var info = textures[index];
-                    if (string.IsNullOrEmpty(info.previewBase64))
-                    {
-                        continue;
-                    }
-
-                    var key = ResolveTexturePreviewKey(info);
-                    if (string.IsNullOrEmpty(key))
-                    {
-                        continue;
-                    }
-
-                    if (_uploadedTexturePreviewIds.Add(key))
-                    {
-                        continue;
-                    }
-
-                    info.previewBase64 = null;
-                    textures[index] = info;
-                }
-            }
-
-            var renderTextures = snapshot.renderTextures;
-            if (renderTextures != null && renderTextures.Length > 0)
-            {
-                for (var index = 0; index < renderTextures.Length; index += 1)
-                {
-                    var info = renderTextures[index];
-                    if (string.IsNullOrEmpty(info.previewBase64))
-                    {
-                        continue;
-                    }
-
-                    var key = ResolveRenderTexturePreviewKey(info);
-                    if (string.IsNullOrEmpty(key))
-                    {
-                        continue;
-                    }
-
-                    if (_uploadedRenderTexturePreviewIds.Add(key))
-                    {
-                        continue;
-                    }
-
-                    info.previewBase64 = null;
-                    renderTextures[index] = info;
-                }
-            }
-        }
-
-        private static string ResolveTexturePreviewKey(TextureInfo info)
-        {
-            var key = AssetTelemetryUtility.GetStableTextureKey(info);
-            if (!string.IsNullOrEmpty(key))
-            {
-                return key;
-            }
-
-            if (!string.IsNullOrEmpty(info.name))
-            {
-                return $"name:{info.name}";
-            }
-
-            if (info.instanceId != 0)
-            {
-                return $"instance:{info.instanceId.ToString(CultureInfo.InvariantCulture)}";
-            }
-
-            return null;
-        }
-
-        private static string ResolveRenderTexturePreviewKey(RenderTextureInfo info)
-        {
-            if (!string.IsNullOrEmpty(info.textureId))
-            {
-                return info.textureId;
-            }
-
-            if (info.instanceId != 0)
-            {
-                return $"instance:{info.instanceId.ToString(CultureInfo.InvariantCulture)}";
-            }
-
-            if (!string.IsNullOrEmpty(info.name))
-            {
-                return $"name:{info.name}";
-            }
-
-            return null;
         }
 
         private void EnsureSnapshotUploadLoop()

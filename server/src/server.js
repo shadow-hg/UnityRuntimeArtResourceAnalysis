@@ -31,56 +31,6 @@ app.use(express.json({ limit: '30mb' }));
 const configStore = createConfigStore();
 const historyStore = createHistoryStoreClient({ configStore });
 
-const sessionTexturePreviewCache = new Map();
-
-function getSessionTexturePreviewCache(sessionId) {
-  if (!sessionId) {
-    return null;
-  }
-  let cache = sessionTexturePreviewCache.get(sessionId);
-  if (!cache) {
-    cache = new Map();
-    sessionTexturePreviewCache.set(sessionId, cache);
-  }
-  return cache;
-}
-
-function rememberTexturePreview(sessionId, textureId, previewUrl, previewMimeType = null) {
-  if (!sessionId || !textureId || !previewUrl) {
-    return;
-  }
-  const cache = getSessionTexturePreviewCache(sessionId);
-  if (!cache) {
-    return;
-  }
-  cache.set(textureId, {
-    previewUrl,
-    previewMimeType: previewMimeType ?? null,
-  });
-}
-
-function resolveCachedTexturePreview(sessionId, textureId) {
-  if (!sessionId || !textureId) {
-    return null;
-  }
-  const cache = sessionTexturePreviewCache.get(sessionId);
-  if (!cache) {
-    return null;
-  }
-  return cache.get(textureId) ?? null;
-}
-
-function clearTexturePreviewCache(sessionId) {
-  if (!sessionId) {
-    return;
-  }
-  sessionTexturePreviewCache.delete(sessionId);
-}
-
-function clearAllTexturePreviewCaches() {
-  sessionTexturePreviewCache.clear();
-}
-
 configStore.onChange((config) => {
   historyStore.applyConfig(config).catch((err) => {
     console.warn('Failed to apply config change', err);
@@ -616,93 +566,20 @@ async function persistTexturePreview(sessionId, texture) {
     return { stored: texture, broadcast: texture };
   }
 
-  const { previewBase64, ...rest } = texture;
-  const broadcastTexture = { ...texture };
+  const {
+    previewBase64: _previewBase64,
+    previewUrl: _previewUrl,
+    previewMimeType: _previewMimeType,
+    imageBase64: _imageBase64,
+    ...rest
+  } = texture;
   const storedTexture = { ...rest };
+  const broadcastTexture = { ...rest };
   const textureId = normalizeTextureId(texture);
   if (textureId) {
     storedTexture.textureId = textureId;
     broadcastTexture.textureId = textureId;
   }
-
-  const { payload, contentType } = extractBase64Components(previewBase64 ?? '');
-  const normalizedMimeType = texture.previewMimeType ?? contentType ?? 'image/png';
-
-  if (!payload) {
-    if (textureId) {
-      let cached = resolveCachedTexturePreview(sessionId, textureId);
-      if (!cached) {
-        try {
-          const existing = await historyStore.getSessionTextures(sessionId, [textureId]);
-          const first = Array.isArray(existing) ? existing[0] : null;
-          if (first?.previewUrl) {
-            cached = {
-              previewUrl: first.previewUrl,
-              previewMimeType: first.previewMimeType ?? null,
-            };
-            rememberTexturePreview(sessionId, textureId, cached.previewUrl, cached.previewMimeType ?? null);
-          }
-        } catch (err) {
-          console.warn(`Failed to load cached texture preview for ${textureId}`, err);
-        }
-      }
-
-      if (cached?.previewUrl) {
-        storedTexture.previewUrl = storedTexture.previewUrl ?? cached.previewUrl;
-        broadcastTexture.previewUrl = broadcastTexture.previewUrl ?? cached.previewUrl;
-      }
-
-      const cachedMime = cached?.previewMimeType ?? normalizedMimeType;
-      if (cachedMime && !storedTexture.previewMimeType) {
-        storedTexture.previewMimeType = cachedMime;
-      }
-      if (cachedMime && !broadcastTexture.previewMimeType) {
-        broadcastTexture.previewMimeType = cachedMime;
-      }
-    }
-
-    delete storedTexture.previewBase64;
-    return { stored: storedTexture, broadcast: broadcastTexture };
-  }
-
-  try {
-    const previewSeed = `${
-      textureId ?? `anonymous:${texture.name ?? 'unknown'}`
-    }|${texture.width ?? 0}|${texture.height ?? 0}|${texture.formatName ?? texture.format ?? ''}`;
-    const metadataMimeType = normalizedMimeType;
-    const previewResult = await historyStore.persistTexturePreview({
-      sessionId,
-      textureId: textureId ?? null,
-      identifierSeed: previewSeed,
-      base64: payload,
-      metadata: {
-        width: texture.width ?? null,
-        height: texture.height ?? null,
-        format: texture.formatName ?? texture.format ?? '',
-        mimeType: metadataMimeType,
-      },
-    });
-
-    if (previewResult?.previewUrl) {
-      storedTexture.previewUrl = previewResult.previewUrl;
-      broadcastTexture.previewUrl = previewResult.previewUrl;
-      if (textureId) {
-        rememberTexturePreview(sessionId, textureId, previewResult.previewUrl, metadataMimeType);
-      }
-    } else if (textureId && storedTexture.previewUrl) {
-      rememberTexturePreview(sessionId, textureId, storedTexture.previewUrl, metadataMimeType);
-    }
-  } catch (err) {
-    console.warn('Failed to persist texture preview', err);
-  }
-
-  if (normalizedMimeType) {
-    storedTexture.previewMimeType = normalizedMimeType;
-    broadcastTexture.previewMimeType = normalizedMimeType;
-  }
-
-  delete storedTexture.previewBase64;
-
   return { stored: storedTexture, broadcast: broadcastTexture };
 }
 
@@ -979,7 +856,6 @@ app.delete('/sessions/:sessionId', async (req, res) => {
     }
 
     await fs.rm(path.join(PREVIEW_ROOT, sessionId), { recursive: true, force: true });
-    clearTexturePreviewCache(sessionId);
     io.emit('session:deleted', { sessionId });
     return res.status(204).end();
   } catch (err) {
@@ -992,7 +868,6 @@ app.delete('/sessions', async (_req, res) => {
   try {
     await historyStore.clearHistory();
     await fs.rm(PREVIEW_ROOT, { recursive: true, force: true });
-    clearAllTexturePreviewCaches();
     io.emit('history:cleared');
     res.status(204).end();
   } catch (err) {
