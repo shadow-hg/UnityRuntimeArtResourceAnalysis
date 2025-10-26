@@ -12,6 +12,7 @@ import type {
   TextureInfo,
 } from '../types';
 import { formatBytes, formatFps, formatInteger, formatPercentage } from '../utils/format';
+import { resolvePreviewSource } from '../utils/preview';
 import CollapsibleCard from './CollapsibleCard';
 import CollapsibleSection from './CollapsibleSection';
 
@@ -692,11 +693,19 @@ function ResourceDiagnosticList({ title, items, variant = 'card' }: ResourceDiag
   );
 }
 
-function TextureThumbnail({ texture, size = 56 }: { texture: TextureInfo; size?: number }) {
+function TextureThumbnail({
+  texture,
+  size = 56,
+  serverBaseUrl,
+}: {
+  texture: TextureInfo;
+  size?: number;
+  serverBaseUrl: string;
+}) {
   const displayName = getTextureDisplayName(texture);
-  const previewUrl = typeof texture.previewUrl === 'string' ? texture.previewUrl.trim() : '';
+  const previewSource = resolvePreviewSource(texture, serverBaseUrl || '') ?? '';
   const placeholderLabel = displayName.slice(0, 2).toUpperCase() || 'TX';
-  const showPlaceholder = previewUrl.length === 0;
+  const showPlaceholder = previewSource.length === 0;
   const fontSize = Math.max(12, Math.min(18, size / 3.5));
 
   const containerStyle: CSSProperties = {
@@ -720,7 +729,7 @@ function TextureThumbnail({ texture, size = 56 }: { texture: TextureInfo; size?:
   return (
     <div style={containerStyle}>
       <img
-        src={previewUrl}
+        src={previewSource}
         alt={displayName || '纹理缩略图'}
         style={{ width: '100%', height: '100%', objectFit: 'cover' }}
         loading="lazy"
@@ -729,7 +738,13 @@ function TextureThumbnail({ texture, size = 56 }: { texture: TextureInfo; size?:
   );
 }
 
-function TextureNameCell({ texture }: { texture: TextureInfo }) {
+function TextureNameCell({
+  texture,
+  serverBaseUrl,
+}: {
+  texture: TextureInfo;
+  serverBaseUrl: string;
+}) {
   const displayName = getTextureDisplayName(texture);
   const width = Number.isFinite(texture.width) ? Math.max(0, Number(texture.width)) : null;
   const height = Number.isFinite(texture.height) ? Math.max(0, Number(texture.height)) : null;
@@ -737,7 +752,7 @@ function TextureNameCell({ texture }: { texture: TextureInfo }) {
 
   return (
     <Space align="start">
-      <TextureThumbnail texture={texture} size={56} />
+      <TextureThumbnail texture={texture} size={56} serverBaseUrl={serverBaseUrl} />
       <Space direction="vertical" size={0}>
         <Typography.Text strong>{displayName}</Typography.Text>
         <Typography.Text type="secondary">{sizeLabel}</Typography.Text>
@@ -777,7 +792,13 @@ function RenderTextureNameCell({ renderTexture }: { renderTexture: RenderTexture
   );
 }
 
-function TextureDetails({ texture }: { texture: TextureInfo }) {
+function TextureDetails({
+  texture,
+  serverBaseUrl,
+}: {
+  texture: TextureInfo;
+  serverBaseUrl: string;
+}) {
   const compressionFormat = texture.compressionFormat ?? texture.formatName ?? texture.format ?? '未知';
   const estimatedBytes = getTextureEstimatedBytes(texture);
   const originalBytes = Number.isFinite(texture.originalBytes)
@@ -802,7 +823,7 @@ function TextureDetails({ texture }: { texture: TextureInfo }) {
   return (
     <Space direction="vertical" size={12} style={{ width: '100%' }}>
       <Space align="center" size={16}>
-        <TextureThumbnail texture={texture} size={160} />
+        <TextureThumbnail texture={texture} size={160} serverBaseUrl={serverBaseUrl} />
         <Space direction="vertical" size={4}>
           <Typography.Text type="secondary">缩略图尺寸：{previewSizeLabel}</Typography.Text>
           {previewMimeType ? (
@@ -1397,7 +1418,7 @@ export default function ResourceExplorer({
     {
       title: '纹理',
       key: 'texture',
-      render: (_, record) => <TextureNameCell texture={record} />,
+      render: (_, record) => <TextureNameCell texture={record} serverBaseUrl={serverBaseUrl} />,
       sorter: (a, b) => getTextureDisplayName(a).localeCompare(getTextureDisplayName(b)),
       width: 360,
     },
@@ -1735,7 +1756,9 @@ export default function ResourceExplorer({
                     size="small"
                     loading={isTextureLoading}
                     expandable={{
-                      expandedRowRender: (record) => <TextureDetails texture={record} />,
+                      expandedRowRender: (record) => (
+                        <TextureDetails texture={record} serverBaseUrl={serverBaseUrl} />
+                      ),
                       columnWidth: 48,
                     }}
                   />
