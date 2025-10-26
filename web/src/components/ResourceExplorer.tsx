@@ -705,7 +705,13 @@ function TextureThumbnail({
   const displayName = getTextureDisplayName(texture);
   const previewSource = resolvePreviewSource(texture, serverBaseUrl || '') ?? '';
   const placeholderLabel = displayName.slice(0, 2).toUpperCase() || 'TX';
-  const showPlaceholder = previewSource.length === 0;
+  const [isBroken, setIsBroken] = useState(false);
+
+  useEffect(() => {
+    setIsBroken(false);
+  }, [previewSource]);
+
+  const shouldShowPlaceholder = previewSource.length === 0 || isBroken;
   const fontSize = Math.max(12, Math.min(18, size / 3.5));
 
   const containerStyle: CSSProperties = {
@@ -713,16 +719,16 @@ function TextureThumbnail({
     height: size,
     borderRadius: 8,
     overflow: 'hidden',
-    background: showPlaceholder ? 'linear-gradient(135deg, #5b8ff9, #1e3a8a)' : '#0f172a',
+    background: shouldShowPlaceholder ? 'linear-gradient(135deg, #5b8ff9, #1e3a8a)' : '#0f172a',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    color: showPlaceholder ? '#fff' : undefined,
+    color: shouldShowPlaceholder ? '#fff' : undefined,
     fontWeight: 600,
     fontSize,
   };
 
-  if (showPlaceholder) {
+  if (shouldShowPlaceholder) {
     return <div style={containerStyle}>{placeholderLabel}</div>;
   }
 
@@ -733,6 +739,7 @@ function TextureThumbnail({
         alt={displayName || '纹理缩略图'}
         style={{ width: '100%', height: '100%', objectFit: 'cover' }}
         loading="lazy"
+        onError={() => setIsBroken(true)}
       />
     </div>
   );
