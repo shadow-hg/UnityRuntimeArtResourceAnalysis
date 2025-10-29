@@ -101,6 +101,17 @@ UnityRuntimeArtResourceAnalysis/
      pm2 start npm --name unity-telemetry-server -- run start
      ```
    - 将 `web/dist` 部署到 IIS、Nginx for Windows、或 `npm install -g serve` 后执行 `serve -s dist -l 5175`。
+   - 或者在仓库根目录运行 `deploy.ps1`，它会完成依赖安装、Web 构建，并可选择使用 PM2 或前台进程启动 API 与仪表盘服务：
+     ```powershell
+     # 使用自动模式（有 PM2 则用 PM2，否则使用前台进程）
+     .\deploy.ps1
+
+     # 仅准备构建产物，不启动服务
+     .\deploy.ps1 -NoStart
+
+     # 强制使用 PM2 并修改端口
+     .\deploy.ps1 -Mode Pm2 -ServerPort 5000 -WebPort 6000
+     ```
 4. **配置反向代理（可选）**：为便于内网访问，可在 IIS/Nginx 中将 `/api` 代理到 `http://localhost:48080`，静态资源指向 `web/dist`。
 5. **数据备份**：定期备份 `server/data` 目录（包含历史数据库、预览文件、配置），确保磁盘容量充足并开启增量备份策略。
 
