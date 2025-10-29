@@ -5,6 +5,8 @@ param (
     [switch]$NoStart,
     [ValidateSet('Auto', 'Process', 'Pm2')]
     [string]$Mode = 'Auto',
+    [ValidateSet('Production', 'LocalTest')]
+    [string]$DeploymentMode = 'Production',
     [int]$ServerPort = 48080,
     [int]$WebPort = 5175,
     [string]$ServerProcessName = 'unity-telemetry-server',
@@ -170,6 +172,8 @@ if ($usePm2) {
     Write-Host "Using plain PowerShell processes. They will stop when this script exits." -ForegroundColor Yellow
 }
 
+Write-Host "Deployment mode: $DeploymentMode"
+
 Invoke-Step -Description 'Ensuring required directories exist' -Action {
     New-Item -ItemType Directory -Path (Join-Path $serverDir 'data') -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $webDir 'dist') -Force | Out-Null
@@ -177,7 +181,8 @@ Invoke-Step -Description 'Ensuring required directories exist' -Action {
 
 if (-not $SkipInstall) {
     Invoke-Step -Description 'Installing server dependencies' -Action {
-        Invoke-Npm -Args @('install', '--production') -WorkingDirectory $serverDir -DisplayName 'npm install --production (server)'
+        $serverInstallArgs = if ($DeploymentMode -eq 'Production') { @('install', '--production') } else { @('install') }
+        Invoke-Npm -Args $serverInstallArgs -WorkingDirectory $serverDir -DisplayName "npm $($serverInstallArgs -join ' ') (server)"
     }
 
     Invoke-Step -Description 'Installing web dependencies' -Action {
@@ -187,12 +192,15 @@ if (-not $SkipInstall) {
     Write-Host 'Skipping dependency installation as requested.'
 }
 
-if (-not $SkipBuild) {
+$shouldBuild = ($DeploymentMode -eq 'Production') -and (-not $SkipBuild)
+if ($shouldBuild) {
     Invoke-Step -Description 'Building web dashboard' -Action {
         Invoke-Npm -Args @('run', 'build') -WorkingDirectory $webDir -DisplayName 'npm run build (web)'
     }
-} else {
+} elseif ($DeploymentMode -eq 'Production' -and $SkipBuild) {
     Write-Host 'Skipping web build as requested.'
+} elseif ($DeploymentMode -eq 'LocalTest') {
+    Write-Host 'Local test mode selected; skipping production build.'
 }
 
 if ($NoStart) {
@@ -200,44 +208,119 @@ if ($NoStart) {
     return
 }
 
-if ($usePm2) {
-    Invoke-Step -Description 'Starting API server via PM2' -Action {
-        Invoke-Pm2 -Args @('delete', $ServerProcessName) -IgnoreExitCode
-        Invoke-Pm2 -Args @(
-            'start',
-            (Join-Path $serverDir 'src/server.js'),
-            '--name', $ServerProcessName,
-            '--cwd', $serverDir,
-            '--',
-            "PORT=$ServerPort"
-        )
+if ($DeploymentMode -eq 'Production') {
+    if ($usePm2) {
+        Invoke-Step -Description 'Starting API server via PM2' -Action {
+            Invoke-Pm2 -Args @('delete', $ServerProcessName) -IgnoreExitCode
+            $previousPort = $env:PORT
+            try {
+                $env:PORT = $ServerPort.ToString()
+                Invoke-Pm2 -Args @(
+                    'start',
+                    (Join-Path $serverDir 'src/server.js'),
+                    '--name', $ServerProcessName,
+                    '--cwd', $serverDir,
+                    '--update-env'
+                )
+            } finally {
+                if ($null -ne $previousPort) {
+                    $env:PORT = $previousPort
+                } else {
+                    Remove-Item Env:PORT -ErrorAction SilentlyContinue
+                }
+            }
+        }
+
+        Invoke-Step -Description 'Starting web dashboard via PM2' -Action {
+            Invoke-Pm2 -Args @('delete', $WebProcessName) -IgnoreExitCode
+            Invoke-Pm2 -Args @(
+                'start',
+                $npmPath,
+                '--name', $WebProcessName,
+                '--cwd', $webDir,
+                '--',
+                'run', 'preview', '--', '--host', '0.0.0.0', '--port', $WebPort.ToString(), '--strictPort'
+            )
+        }
+
+        Write-Section 'PM2 status'
+        Invoke-Pm2 -Args @('status')
+        Write-Host "Use 'pm2 save' to persist the process list and 'pm2 logs <name>' to inspect logs." -ForegroundColor Green
+        return
     }
 
-    Invoke-Step -Description 'Starting web dashboard via PM2' -Action {
-        Invoke-Pm2 -Args @('delete', $WebProcessName) -IgnoreExitCode
+    $backgroundProcesses = @()
+    try {
+        $backgroundProcesses += Start-BackgroundProcess -Name 'Unity telemetry API server' -FilePath $nodePath -ArgumentList @((Join-Path $serverDir 'src/server.js')) -WorkingDirectory $serverDir -Environment @{ PORT = $ServerPort }
+
+        $backgroundProcesses += Start-BackgroundProcess -Name 'Unity telemetry web preview' -FilePath $npmPath -ArgumentList @('run', 'preview', '--', '--host', '0.0.0.0', '--port', $WebPort.ToString(), '--strictPort') -WorkingDirectory $webDir -Environment @{}
+
+        Write-Host "Production services are running. Press Ctrl+C to stop them." -ForegroundColor Green
+        Wait-Process -Id ($backgroundProcesses | ForEach-Object { $_.Id })
+    } finally {
+        foreach ($proc in $backgroundProcesses) {
+            if ($proc -and -not $proc.HasExited) {
+                try {
+                    $proc.Kill()
+                } catch {
+                    Write-Warning "Unable to stop process with PID $($proc.Id): $($_.Exception.Message)"
+                }
+            }
+        }
+    }
+    return
+}
+
+# Local test mode startup
+if ($usePm2) {
+    Invoke-Step -Description 'Starting local test API server via PM2' -Action {
+        Invoke-Pm2 -Args @('delete', "$ServerProcessName-local") -IgnoreExitCode
+        $previousPort = $env:PORT
+        try {
+            $env:PORT = $ServerPort.ToString()
+            Invoke-Pm2 -Args @(
+                'start',
+                $npmPath,
+                '--name', "$ServerProcessName-local",
+                '--cwd', $serverDir,
+                '--update-env',
+                '--',
+                'run', 'dev'
+            )
+        } finally {
+            if ($null -ne $previousPort) {
+                $env:PORT = $previousPort
+            } else {
+                Remove-Item Env:PORT -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
+    Invoke-Step -Description 'Starting local test web dev server via PM2' -Action {
+        Invoke-Pm2 -Args @('delete', "$WebProcessName-local") -IgnoreExitCode
         Invoke-Pm2 -Args @(
             'start',
             $npmPath,
-            '--name', $WebProcessName,
+            '--name', "$WebProcessName-local",
             '--cwd', $webDir,
             '--',
-            'run', 'preview', '--', '--host', '0.0.0.0', '--port', $WebPort.ToString(), '--strictPort'
+            'run', 'dev', '--', '--host', '0.0.0.0', '--port', $WebPort.ToString(), '--strictPort'
         )
     }
 
     Write-Section 'PM2 status'
     Invoke-Pm2 -Args @('status')
-    Write-Host "Use 'pm2 save' to persist the process list and 'pm2 logs <name>' to inspect logs." -ForegroundColor Green
+    Write-Host "Local test services are running under PM2. Use 'pm2 logs <name>' to inspect logs." -ForegroundColor Green
     return
 }
 
 $backgroundProcesses = @()
 try {
-    $backgroundProcesses += Start-BackgroundProcess -Name 'Unity telemetry API server' -FilePath $nodePath -ArgumentList @((Join-Path $serverDir 'src/server.js')) -WorkingDirectory $serverDir -Environment @{ PORT = $ServerPort }
+    $backgroundProcesses += Start-BackgroundProcess -Name 'Unity telemetry API server (local dev)' -FilePath $npmPath -ArgumentList @('run', 'dev') -WorkingDirectory $serverDir -Environment @{ PORT = $ServerPort }
 
-    $backgroundProcesses += Start-BackgroundProcess -Name 'Unity telemetry web preview' -FilePath $npmPath -ArgumentList @('run', 'preview', '--', '--host', '0.0.0.0', '--port', $WebPort.ToString(), '--strictPort') -WorkingDirectory $webDir -Environment @{}
+    $backgroundProcesses += Start-BackgroundProcess -Name 'Unity telemetry web dev server' -FilePath $npmPath -ArgumentList @('run', 'dev', '--', '--host', '0.0.0.0', '--port', $WebPort.ToString(), '--strictPort') -WorkingDirectory $webDir -Environment @{}
 
-    Write-Host "Both services are running. Press Ctrl+C to stop them." -ForegroundColor Green
+    Write-Host "Local test services are running. Press Ctrl+C to stop them." -ForegroundColor Green
     Wait-Process -Id ($backgroundProcesses | ForEach-Object { $_.Id })
 } finally {
     foreach ($proc in $backgroundProcesses) {

@@ -111,7 +111,12 @@ UnityRuntimeArtResourceAnalysis/
 
      # 强制使用 PM2 并修改端口
      .\deploy.ps1 -Mode Pm2 -ServerPort 5000 -WebPort 6000
+
+     # 启动本地测试模式（使用 nodemon + Vite dev server）
+     .\deploy.ps1 -DeploymentMode LocalTest
      ```
+     - `DeploymentMode` 默认为 `Production`，会安装服务端生产依赖并生成 Web `dist` 目录，确保线上环境不包含本地测试逻辑。
+     - 当设置为 `LocalTest` 时，脚本会安装包含开发依赖的版本，并启动 `npm run dev`/`vite` 开发服务器，方便在 Windows 环境下快速自测。
 4. **配置反向代理（可选）**：为便于内网访问，可在 IIS/Nginx 中将 `/api` 代理到 `http://localhost:48080`，静态资源指向 `web/dist`。
 5. **数据备份**：定期备份 `server/data` 目录（包含历史数据库、预览文件、配置），确保磁盘容量充足并开启增量备份策略。
 
