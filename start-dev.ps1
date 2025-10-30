@@ -54,8 +54,15 @@ $npmPath = (Get-Command npm.cmd).Source
 $npmPathQuoted = '"' + $npmPath + '"'  # 关键：强制整体加引号
 
 $originalPort = $env:PORT
+$originalDeploymentMode = $env:UNITYPROFILE_DEPLOYMENT_MODE
+$originalAppRuntimeMode = $env:VITE_APP_RUNTIME_MODE
+$originalLocalTestServerPort = $env:VITE_LOCAL_TEST_SERVER_PORT
 $serverProcess = $null
 $webProcess = $null
+
+$env:UNITYPROFILE_DEPLOYMENT_MODE = 'LocalTest'
+$env:VITE_APP_RUNTIME_MODE = 'local-test'
+$env:VITE_LOCAL_TEST_SERVER_PORT = $resolvedServerPort.ToString()
 
 Push-Location $scriptDir
 try {
@@ -98,6 +105,21 @@ try {
         $env:PORT = $originalPort
     } else {
         Remove-Item Env:PORT -ErrorAction SilentlyContinue
+    }
+    if ($null -ne $originalDeploymentMode) {
+        $env:UNITYPROFILE_DEPLOYMENT_MODE = $originalDeploymentMode
+    } else {
+        Remove-Item Env:UNITYPROFILE_DEPLOYMENT_MODE -ErrorAction SilentlyContinue
+    }
+    if ($null -ne $originalAppRuntimeMode) {
+        $env:VITE_APP_RUNTIME_MODE = $originalAppRuntimeMode
+    } else {
+        Remove-Item Env:VITE_APP_RUNTIME_MODE -ErrorAction SilentlyContinue
+    }
+    if ($null -ne $originalLocalTestServerPort) {
+        $env:VITE_LOCAL_TEST_SERVER_PORT = $originalLocalTestServerPort
+    } else {
+        Remove-Item Env:VITE_LOCAL_TEST_SERVER_PORT -ErrorAction SilentlyContinue
     }
     Pop-Location
 }

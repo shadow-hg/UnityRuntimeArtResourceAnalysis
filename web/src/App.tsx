@@ -66,11 +66,9 @@ import {
   resolveSessionGroupingValue,
 } from './utils/sessionGrouping';
 import { buildSessionSearchTokens } from './utils/sessionSearch';
+import { RUNTIME_DEFAULTS } from './config/runtime';
 
 const { Header, Sider, Content } = Layout;
-
-const DEFAULT_SERVER_PORT = 48080;
-const DEFAULT_SERVER_IP = '0.0.0.0';
 
 const FrameInsightsPanelLazy = lazy(() => import('./components/FrameInsightsPanel'));
 const SystemStatsPanelLazy = lazy(() => import('./components/SystemStatsPanel'));
@@ -202,6 +200,36 @@ function matchesSessionSearch(session: TelemetrySession, query: string): boolean
     }
     return raw.toLowerCase().includes(normalized);
   });
+}
+
+function useLocalTestAutoConnect({
+  enabled,
+  serverBaseUrl,
+  defaultBaseUrl,
+  setServerBaseUrl,
+}: {
+  enabled: boolean;
+  serverBaseUrl: string;
+  defaultBaseUrl: string;
+  setServerBaseUrl: (value: string) => void;
+}): void {
+  if (import.meta.env.PROD) {
+    return;
+  }
+
+  useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+    if (!defaultBaseUrl) {
+      return;
+    }
+    if (serverBaseUrl) {
+      return;
+    }
+
+    setServerBaseUrl(defaultBaseUrl);
+  }, [enabled, defaultBaseUrl, serverBaseUrl, setServerBaseUrl]);
 }
 
 type LazyPanelComponent = LazyExoticComponent<
@@ -912,9 +940,9 @@ function AppShell({
 }
 
 export default function App() {
-  const [serverIp, setServerIp] = useState(DEFAULT_SERVER_IP);
-  const [serverPort, setServerPort] = useState(String(DEFAULT_SERVER_PORT));
-  const [serverBaseUrl, setServerBaseUrl] = useState<string>('');
+  const [serverIp, setServerIp] = useState(RUNTIME_DEFAULTS.serverIp);
+  const [serverPort, setServerPort] = useState(RUNTIME_DEFAULTS.serverPort);
+  const [serverBaseUrl, setServerBaseUrl] = useState<string>(RUNTIME_DEFAULTS.serverBaseUrl);
 
   const {
     sessions,
@@ -986,7 +1014,7 @@ export default function App() {
       return;
     }
 
-    const trimmedIp = serverIp.trim() || DEFAULT_SERVER_IP;
+    const trimmedIp = serverIp.trim() || RUNTIME_DEFAULTS.serverIp;
     const parsedPort = Number.parseInt(serverPort, 10);
     if (!Number.isInteger(parsedPort) || parsedPort <= 0 || parsedPort > 65535) {
       messageApi.error('请输入有效的端口号');
@@ -1104,6 +1132,13 @@ export default function App() {
       messageApi.destroy(key);
     };
   }, [isSessionsLoading, messageApi]);
+
+  useLocalTestAutoConnect({
+    enabled: RUNTIME_DEFAULTS.autoConnect,
+    serverBaseUrl,
+    defaultBaseUrl: RUNTIME_DEFAULTS.serverBaseUrl,
+    setServerBaseUrl,
+  });
 
   return (
     <ConfigProvider

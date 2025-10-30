@@ -172,7 +172,23 @@ if ($usePm2) {
     Write-Host "Using plain PowerShell processes. They will stop when this script exits." -ForegroundColor Yellow
 }
 
-Write-Host "Deployment mode: $DeploymentMode"
+
+$previousDeploymentModeEnv = $env:UNITYPROFILE_DEPLOYMENT_MODE
+$previousAppRuntimeModeEnv = $env:VITE_APP_RUNTIME_MODE
+$previousLocalTestServerPortEnv = $env:VITE_LOCAL_TEST_SERVER_PORT
+
+try {
+    if ($DeploymentMode -eq 'Production') {
+        $env:UNITYPROFILE_DEPLOYMENT_MODE = 'Production'
+        $env:VITE_APP_RUNTIME_MODE = 'production'
+        Remove-Item Env:VITE_LOCAL_TEST_SERVER_PORT -ErrorAction SilentlyContinue
+    } else {
+        $env:UNITYPROFILE_DEPLOYMENT_MODE = 'LocalTest'
+        $env:VITE_APP_RUNTIME_MODE = 'local-test'
+        $env:VITE_LOCAL_TEST_SERVER_PORT = $ServerPort.ToString()
+    }
+
+    Write-Host "Deployment mode: $DeploymentMode"
 
 Invoke-Step -Description 'Ensuring required directories exist' -Action {
     New-Item -ItemType Directory -Path (Join-Path $serverDir 'data') -Force | Out-Null
@@ -331,5 +347,22 @@ try {
                 Write-Warning "Unable to stop process with PID $($proc.Id): $($_.Exception.Message)"
             }
         }
+    }
+}
+} finally {
+    if ($null -ne $previousDeploymentModeEnv) {
+        $env:UNITYPROFILE_DEPLOYMENT_MODE = $previousDeploymentModeEnv
+    } else {
+        Remove-Item Env:UNITYPROFILE_DEPLOYMENT_MODE -ErrorAction SilentlyContinue
+    }
+    if ($null -ne $previousAppRuntimeModeEnv) {
+        $env:VITE_APP_RUNTIME_MODE = $previousAppRuntimeModeEnv
+    } else {
+        Remove-Item Env:VITE_APP_RUNTIME_MODE -ErrorAction SilentlyContinue
+    }
+    if ($null -ne $previousLocalTestServerPortEnv) {
+        $env:VITE_LOCAL_TEST_SERVER_PORT = $previousLocalTestServerPortEnv
+    } else {
+        Remove-Item Env:VITE_LOCAL_TEST_SERVER_PORT -ErrorAction SilentlyContinue
     }
 }
